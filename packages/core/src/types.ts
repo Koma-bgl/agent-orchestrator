@@ -32,6 +32,7 @@ export type SessionStatus =
   | "changes_requested"
   | "approved"
   | "mergeable"
+  | "merge_conflicts"
   | "merged"
   | "cleanup"
   | "needs_input"
@@ -80,6 +81,7 @@ export const SESSION_STATUS = {
   CHANGES_REQUESTED: "changes_requested" as const,
   APPROVED: "approved" as const,
   MERGEABLE: "mergeable" as const,
+  MERGE_CONFLICTS: "merge_conflicts" as const,
   MERGED: "merged" as const,
   CLEANUP: "cleanup" as const,
   NEEDS_INPUT: "needs_input" as const,
@@ -212,6 +214,9 @@ export interface Runtime {
   /** Check if the session environment is still alive */
   isAlive(handle: RuntimeHandle): Promise<boolean>;
 
+  /** Send raw keystrokes to the session (no escaping, no Ctrl-U clear) */
+  sendKeys?(handle: RuntimeHandle, keys: string): Promise<void>;
+
   /** Get resource metrics (uptime, memory, etc.) */
   getMetrics?(handle: RuntimeHandle): Promise<RuntimeMetrics>;
 
@@ -296,6 +301,9 @@ export interface Agent {
    */
   getRestoreCommand?(session: Session, project: ProjectConfig): Promise<string | null>;
 
+  /** Optional: run setup BEFORE agent is launched (e.g. write permission settings) */
+  preLaunchSetup?(workspacePath: string): Promise<void>;
+
   /** Optional: run setup after agent is launched (e.g. configure MCP servers) */
   postLaunchSetup?(session: Session): Promise<void>;
 
@@ -320,7 +328,7 @@ export interface AgentLaunchConfig {
   projectConfig: ProjectConfig;
   issueId?: string;
   prompt?: string;
-  permissions?: "skip" | "default";
+  permissions?: "skip" | "default" | "dontAsk" | "acceptEdits";
   model?: string;
   /**
    * System prompt to pass to the agent for orchestrator context.
@@ -361,6 +369,8 @@ export interface AgentSessionInfo {
   agentSessionId: string | null;
   /** Estimated cost so far */
   cost?: CostEstimate;
+  /** Human-readable description of what the agent is currently doing (e.g. "Reading src/index.ts") */
+  progressText?: string | null;
 }
 
 export interface CostEstimate {
@@ -463,13 +473,17 @@ export interface Issue {
 
 export interface IssueFilters {
   state?: "open" | "closed" | "all";
+  /** Filter by exact workflow state name (e.g. "Ready to start") */
+  statusName?: string;
   labels?: string[];
   assignee?: string;
   limit?: number;
 }
 
 export interface IssueUpdate {
-  state?: "open" | "in_progress" | "closed";
+  state?: "open" | "in_progress" | "review" | "closed";
+  /** Move to exact workflow state by name (e.g. "In Progress") */
+  statusName?: string;
   labels?: string[];
   assignee?: string;
   comment?: string;
@@ -542,6 +556,14 @@ export interface SCM {
 
   /** Check if PR is ready to merge */
   getMergeability(pr: PRInfo): Promise<MergeReadiness>;
+
+  // --- Comments ---
+
+  /** Post a comment on a PR (text or with image attachments) */
+  postComment?(pr: PRInfo, body: string, images?: string[]): Promise<string>;
+
+  /** Get list of files changed in a PR */
+  getChangedFiles?(pr: PRInfo): Promise<string[]>;
 }
 
 // --- PR Types ---
@@ -732,6 +754,15 @@ export type EventType =
   // Reactions
   | "reaction.triggered"
   | "reaction.escalated"
+  // Verification
+  | "verify.started"
+  | "verify.completed"
+  | "verify.failed"
+  // Queue poller
+  | "queue.polled"
+  | "queue.session_spawned"
+  | "queue.spawn_failed"
+  | "queue.cap_reached"
   // Summary
   | "summary.all_complete";
 
@@ -756,8 +787,8 @@ export interface ReactionConfig {
   /** Whether this reaction is enabled */
   auto: boolean;
 
-  /** What to do: send message to agent, notify human, auto-merge */
-  action: "send-to-agent" | "notify" | "auto-merge";
+  /** What to do: send message to agent, notify human, auto-merge, or fetch & forward review comments */
+  action: "send-to-agent" | "send-comments-to-agent" | "notify" | "auto-merge";
 
   /** Message to send (for send-to-agent) */
   message?: string;
@@ -790,6 +821,13 @@ export interface ReactionResult {
 // CONFIGURATION
 // =============================================================================
 
+/**
+ * Agent persona identifier — maps to a .md file in the personas directory.
+ * Built-in: security-auditor, code-reviewer, test-writer, bug-fixer, refactorer, full-stack-dev.
+ * Custom: drop any .md file into the personas directory and reference it by filename (without extension).
+ */
+export type AgentPersona = string;
+
 /** Top-level orchestrator configuration (from agent-orchestrator.yaml) */
 export interface OrchestratorConfig {
   /**
@@ -810,6 +848,9 @@ export interface OrchestratorConfig {
 
   /** Milliseconds before a "ready" session becomes "idle" (default: 300000 = 5 min) */
   readyThresholdMs: number;
+
+  /** Directory containing agent persona .md files (default: ./personas) */
+  personasDir?: string;
 
   /** Default plugin selections */
   defaults: DefaultPlugins;
@@ -877,6 +918,9 @@ export interface ProjectConfig {
   /** Per-project reaction overrides */
   reactions?: Record<string, Partial<ReactionConfig>>;
 
+  /** Pre-built agent personas to activate (e.g. ["security-auditor", "test-writer"]) */
+  agentPersonas?: AgentPersona[];
+
   /** Inline rules/instructions passed to every agent prompt */
   agentRules?: string;
 
@@ -885,6 +929,49 @@ export interface ProjectConfig {
 
   /** Rules for the orchestrator agent (stored, reserved for future use) */
   orchestratorRules?: string;
+
+  /** Visual verification config for this project */
+  verify?: VerifyConfig;
+
+  /** Queue poller config — auto-spawn sessions from tracker issues */
+  queuePoller?: QueuePollerConfig;
+
+  /** Worktree cleanup config — auto-remove worktrees after PR merge */
+  worktreeCleanup?: WorktreeCleanupConfig;
+}
+
+export interface QueuePollerConfig {
+  /** Enable the queue poller for this project */
+  enabled: boolean;
+  /** Polling interval — "30s", "5m", "1h" or milliseconds */
+  interval: string | number;
+  /** Maximum concurrent active sessions for this project */
+  maxSessions: number;
+  /** Filters for which issues to pick up */
+  filters?: {
+    labels?: string[];
+    /** Exact workflow state name (e.g. "Ready to start") */
+    statusName?: string;
+    assignee?: string;
+  };
+  /** Actions to take after spawning a session */
+  onSpawn?: {
+    /** Move issue to this workflow state (e.g. "In Progress") */
+    moveToStatus?: string;
+    /** Add this label to the issue */
+    addLabel?: string;
+    /** Remove this label from the issue */
+    removeLabel?: string;
+  };
+  /** Max issues to fetch per poll (default 50) */
+  limit?: number;
+}
+
+export interface WorktreeCleanupConfig {
+  /** Enable automatic worktree cleanup after PR merge */
+  enabled: boolean;
+  /** Grace period before cleanup — "1d", "6h", "30m" or milliseconds */
+  delayAfterMerge: string | number;
 }
 
 export interface TrackerConfig {
@@ -904,9 +991,131 @@ export interface NotifierConfig {
 }
 
 export interface AgentSpecificConfig {
-  permissions?: "skip" | "default";
+  permissions?: "skip" | "default" | "dontAsk" | "acceptEdits";
   model?: string;
   [key: string]: unknown;
+}
+
+// =============================================================================
+// VISUAL VERIFICATION
+// =============================================================================
+
+/** Auth strategy for visual verification screenshots */
+export type VerifyAuthStrategy = "none" | "firebase-password" | "stored";
+
+/** Configuration for visual verification of agent changes */
+export interface VerifyConfig {
+  /** Whether visual verification is enabled */
+  enabled: boolean;
+
+  /** Auth configuration for the target app */
+  auth: VerifyAuthConfig;
+
+  /** Base URL of the app to screenshot (e.g. "http://localhost:3000") */
+  baseUrl: string;
+
+  /** Pages to capture after PR is created */
+  paths: VerifyPageConfig[];
+
+  /** Viewport dimensions */
+  viewport?: { width: number; height: number };
+
+  /** Whether to post screenshots as PR comments */
+  postToPR?: boolean;
+
+  /**
+   * Glob patterns for files that indicate visible UI changes.
+   * Verification only runs if the PR touches at least one file matching these patterns.
+   * If empty/omitted, verification always runs.
+   * Example: ["src/components/**", "src/app/**", "**\/*.tsx", "**\/*.css"]
+   */
+  filePatterns?: string[];
+}
+
+/** Auth configuration for visual verification */
+export interface VerifyAuthConfig {
+  /** How to authenticate */
+  strategy: VerifyAuthStrategy;
+
+  /** URL to navigate to before login (for firebase-password strategy) */
+  loginUrl?: string;
+
+  /** Username/email — supports ${ENV_VAR} syntax */
+  username?: string;
+
+  /** Password — supports ${ENV_VAR} syntax */
+  password?: string;
+
+  /** Path to persisted auth state JSON (for stored strategy) */
+  storageStatePath?: string;
+
+  /**
+   * CSS selectors for the login flow elements.
+   * Use when login is triggered by a button that opens an in-page dialog/modal.
+   * If omitted, defaults are used (common input[type=email], input[type=password], etc.)
+   */
+  selectors?: LoginSelectors;
+}
+
+/**
+ * CSS selectors for the login flow.
+ * Covers apps where login is triggered by clicking a button that opens
+ * an in-page dialog/modal with email + password fields.
+ */
+export interface LoginSelectors {
+  /** Selector for the button that opens the login dialog (e.g. "button:has-text('Login')") */
+  loginButton?: string;
+
+  /** Selector for the email/username input inside the dialog */
+  emailInput?: string;
+
+  /** Selector for the password input inside the dialog */
+  passwordInput?: string;
+
+  /** Selector for the submit button inside the dialog */
+  submitButton?: string;
+
+  /** Selector to wait for after successful login (e.g. "[data-testid='dashboard']") */
+  successIndicator?: string;
+}
+
+/** A page to screenshot during verification */
+export interface VerifyPageConfig {
+  /** URL path to navigate to (e.g. "/dashboard") */
+  url: string;
+
+  /** Human-readable name for this page */
+  name: string;
+
+  /** Optional: wait for a specific selector before capturing */
+  waitForSelector?: string;
+
+  /** Optional: delay in ms after page load before capture */
+  delayMs?: number;
+}
+
+/** Result of a visual verification run */
+export interface VerifyResult {
+  /** Whether verification completed successfully */
+  success: boolean;
+
+  /** Screenshot file paths */
+  screenshots: VerifyScreenshot[];
+
+  /** Error message if verification failed */
+  error?: string;
+}
+
+/** A captured screenshot */
+export interface VerifyScreenshot {
+  /** Page name */
+  name: string;
+
+  /** URL that was captured */
+  url: string;
+
+  /** Local file path to the screenshot */
+  filePath: string;
 }
 
 // =============================================================================
@@ -969,6 +1178,8 @@ export interface SessionMetadata {
   createdAt?: string;
   runtimeHandle?: string;
   restoredAt?: string;
+  mergedAt?: string; // ISO timestamp when PR was merged
+  worktreeCleanedAt?: string; // ISO timestamp when worktree was cleaned up
   dashboardPort?: number;
   terminalWsPort?: number;
   directTerminalWsPort?: number;

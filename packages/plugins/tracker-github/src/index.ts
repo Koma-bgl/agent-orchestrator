@@ -19,21 +19,112 @@ import type {
 const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
+// Rate-limit-aware retry
+// ---------------------------------------------------------------------------
+
+let rateLimitResetAt = 0;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function detectRateLimit(message: string): number {
+  const lower = message.toLowerCase();
+  if (
+    !lower.includes("rate limit") &&
+    !lower.includes("abuse detection") &&
+    !lower.includes("secondary rate") &&
+    !lower.includes("api rate limit") &&
+    !lower.includes("403") &&
+    !lower.includes("429")
+  ) {
+    return 0;
+  }
+  const retryMatch = message.match(/retry[\s-]*after[:\s]*(\d+)/i);
+  if (retryMatch) {
+    return parseInt(retryMatch[1], 10) * 1000;
+  }
+  return 60_000;
+}
+
+const MAX_RETRIES = 3;
+const BASE_BACKOFF_MS = 5_000;
+
+// ---------------------------------------------------------------------------
+// Concurrency limiter — prevents API stampede on laptop wake / reconnect
+// ---------------------------------------------------------------------------
+
+const MAX_CONCURRENT_GH = 4;
+let activeGhCalls = 0;
+const ghQueue: Array<() => void> = [];
+
+function acquireGhSlot(): Promise<void> {
+  if (activeGhCalls < MAX_CONCURRENT_GH) {
+    activeGhCalls++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    ghQueue.push(() => {
+      activeGhCalls++;
+      resolve();
+    });
+  });
+}
+
+function releaseGhSlot(): void {
+  activeGhCalls--;
+  const next = ghQueue.shift();
+  if (next) next();
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 async function gh(args: string[]): Promise<string> {
+  await acquireGhSlot();
   try {
-    const { stdout } = await execFileAsync("gh", args, {
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 30_000,
-    });
-    return stdout.trim();
-  } catch (err) {
-    throw new Error(`gh ${args.slice(0, 3).join(" ")} failed: ${(err as Error).message}`, {
-      cause: err,
-    });
+    return await ghInner(args);
+  } finally {
+    releaseGhSlot();
   }
+}
+
+async function ghInner(args: string[]): Promise<string> {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const waitUntil = rateLimitResetAt - Date.now();
+    if (waitUntil > 0) {
+      await sleep(Math.min(waitUntil, 120_000));
+    }
+
+    try {
+      const { stdout } = await execFileAsync("gh", args, {
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 60_000,
+      });
+      return stdout.trim();
+    } catch (err) {
+      const message = (err as Error).message ?? "";
+      const rateLimitWait = detectRateLimit(message);
+
+      if (rateLimitWait > 0 && attempt < MAX_RETRIES) {
+        rateLimitResetAt = Date.now() + rateLimitWait;
+        const backoff = Math.min(
+          rateLimitWait,
+          BASE_BACKOFF_MS * Math.pow(2, attempt),
+        );
+        await sleep(backoff);
+        continue;
+      }
+
+      throw new Error(
+        `gh ${args.slice(0, 3).join(" ")} failed: ${message}`,
+        { cause: err },
+      );
+    }
+  }
+
+  throw new Error(`gh ${args.slice(0, 3).join(" ")} failed after ${MAX_RETRIES} retries`);
 }
 
 function mapState(ghState: string, stateReason?: string | null): Issue["state"] {

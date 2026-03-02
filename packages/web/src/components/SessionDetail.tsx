@@ -83,21 +83,56 @@ async function askAgentToFix(
   sessionId: string,
   comment: { url: string; path: string; body: string },
   onSuccess: () => void,
-  onError: () => void,
+  onError: (errorMsg?: string) => void,
+  onStatusUpdate?: (status: string) => void,
 ) {
   try {
     const { title, description } = cleanBugbotComment(comment.body);
     const message = `Please address this review comment:\n\nFile: ${comment.path}\nComment: ${title}\nDescription: ${description}\n\nComment URL: ${comment.url}\n\nAfter fixing, mark the comment as resolved at ${comment.url}`;
-    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/message`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const sendMessage = async (): Promise<Response> => {
+      return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+      });
+    };
+
+    const res = await sendMessage();
+
+    // If agent is not running (409), auto-restore and send via server-side endpoint
+    if (res.status === 409) {
+      onStatusUpdate?.("Restarting agent…");
+
+      const restoreAndSendRes = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/restore-and-send`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message }),
+        },
+      );
+
+      if (!restoreAndSendRes.ok) {
+        const data = await restoreAndSendRes.json().catch(() => ({
+          error: `Restore failed (HTTP ${restoreAndSendRes.status})`,
+        })) as { error?: string };
+        throw new Error(data.error ?? "Failed to restore and send");
+      }
+
+      onSuccess();
+      return;
+    }
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      throw new Error(data.error ?? `HTTP ${res.status}`);
+    }
+
     onSuccess();
   } catch (err) {
     console.error("Failed to send message to agent:", err);
-    onError();
+    onError(err instanceof Error ? err.message : undefined);
   }
 }
 
@@ -425,6 +460,8 @@ function PRCard({ pr, sessionId }: { pr: DashboardPR; sessionId: string }) {
   const [sendingComments, setSendingComments] = useState<Set<string>>(new Set());
   const [sentComments, setSentComments] = useState<Set<string>>(new Set());
   const [errorComments, setErrorComments] = useState<Set<string>>(new Set());
+  const [errorMessages, setErrorMessages] = useState<Map<string, string>>(new Map());
+  const [statusMessages, setStatusMessages] = useState<Map<string, string>>(new Map());
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   useEffect(() => {
@@ -437,6 +474,7 @@ function PRCard({ pr, sessionId }: { pr: DashboardPR; sessionId: string }) {
   const handleAskAgentToFix = async (comment: { url: string; path: string; body: string }) => {
     setSentComments((prev) => { const next = new Set(prev); next.delete(comment.url); return next; });
     setErrorComments((prev) => { const next = new Set(prev); next.delete(comment.url); return next; });
+    setStatusMessages((prev) => { const next = new Map(prev); next.delete(comment.url); return next; });
     setSendingComments((prev) => new Set(prev).add(comment.url));
 
     await askAgentToFix(
@@ -444,6 +482,7 @@ function PRCard({ pr, sessionId }: { pr: DashboardPR; sessionId: string }) {
       comment,
       () => {
         setSendingComments((prev) => { const next = new Set(prev); next.delete(comment.url); return next; });
+        setStatusMessages((prev) => { const next = new Map(prev); next.delete(comment.url); return next; });
         setSentComments((prev) => new Set(prev).add(comment.url));
         const existing = timersRef.current.get(comment.url);
         if (existing) clearTimeout(existing);
@@ -453,16 +492,23 @@ function PRCard({ pr, sessionId }: { pr: DashboardPR; sessionId: string }) {
         }, 3000);
         timersRef.current.set(comment.url, timer);
       },
-      () => {
+      (errorMsg?: string) => {
         setSendingComments((prev) => { const next = new Set(prev); next.delete(comment.url); return next; });
+        setStatusMessages((prev) => { const next = new Map(prev); next.delete(comment.url); return next; });
         setErrorComments((prev) => new Set(prev).add(comment.url));
+        if (errorMsg) {
+          setErrorMessages((prev) => new Map(prev).set(comment.url, errorMsg));
+        }
         const existing = timersRef.current.get(comment.url);
         if (existing) clearTimeout(existing);
         const timer = setTimeout(() => {
           setErrorComments((prev) => { const next = new Set(prev); next.delete(comment.url); return next; });
           timersRef.current.delete(comment.url);
-        }, 3000);
+        }, 5000);
         timersRef.current.set(comment.url, timer);
+      },
+      (status: string) => {
+        setStatusMessages((prev) => new Map(prev).set(comment.url, status));
       },
     );
   };
@@ -603,13 +649,18 @@ function PRCard({ pr, sessionId }: { pr: DashboardPR; sessionId: string }) {
                         )}
                       >
                         {sendingComments.has(c.url)
-                          ? "Sending…"
+                          ? (statusMessages.get(c.url) || "Sending…")
                           : sentComments.has(c.url)
                             ? "Sent ✓"
                             : errorComments.has(c.url)
                               ? "Failed"
                               : "Ask Agent to Fix"}
                       </button>
+                      {errorComments.has(c.url) && errorMessages.get(c.url) && (
+                        <p className="mt-1 text-[10px] text-[var(--color-status-error)]">
+                          {errorMessages.get(c.url)}
+                        </p>
+                      )}
                     </div>
                   </details>
                 );

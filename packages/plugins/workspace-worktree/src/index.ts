@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, lstatSync, symlinkSync, rmSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, symlinkSync, rmSync, mkdirSync, readdirSync, cpSync } from "node:fs";
 import { join, resolve, basename, dirname } from "node:path";
 import { homedir } from "node:os";
 import type {
@@ -249,7 +249,11 @@ export function create(config?: Record<string, unknown>): Workspace {
     async postCreate(info: WorkspaceInfo, project: ProjectConfig): Promise<void> {
       const repoPath = expandPath(project.path);
 
-      // Symlink shared resources
+      // Symlink (or copy) shared resources into the worktree.
+      // Git hooks directories (.husky, .githooks, etc.) must be COPIED because
+      // git refuses to execute hooks that are "beyond a symbolic link" (security).
+      const COPY_INSTEAD_OF_SYMLINK = new Set([".husky", ".githooks", ".git-hooks", "hooks"]);
+
       if (project.symlinks) {
         for (const symlinkPath of project.symlinks) {
           // Guard against absolute paths and directory traversal
@@ -283,7 +287,15 @@ export function create(config?: Record<string, unknown>): Workspace {
 
           // Ensure parent directory exists for nested symlink targets
           mkdirSync(dirname(targetPath), { recursive: true });
-          symlinkSync(sourcePath, targetPath);
+
+          // Copy hook directories instead of symlinking — git won't execute
+          // hooks through symlinks ("is beyond a symbolic link" error)
+          const baseName = basename(symlinkPath);
+          if (COPY_INSTEAD_OF_SYMLINK.has(baseName)) {
+            cpSync(sourcePath, targetPath, { recursive: true });
+          } else {
+            symlinkSync(sourcePath, targetPath);
+          }
         }
       }
 

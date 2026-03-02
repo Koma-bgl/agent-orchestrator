@@ -14,6 +14,22 @@ export async function GET(): Promise<Response> {
   const encoder = new TextEncoder();
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let updates: ReturnType<typeof setInterval> | undefined;
+  let closed = false;
+
+  /** Safe enqueue — silently drops writes after the stream is closed. */
+  function safeEnqueue(controller: ReadableStreamDefaultController, data: Uint8Array): boolean {
+    if (closed) return false;
+    try {
+      controller.enqueue(data);
+      return true;
+    } catch {
+      // Stream closed between our check and the enqueue call — clean up
+      closed = true;
+      clearInterval(heartbeat);
+      clearInterval(updates);
+      return false;
+    }
+  }
 
   const stream = new ReadableStream({
     start(controller) {
@@ -32,12 +48,14 @@ export async function GET(): Promise<Response> {
               activity: s.activity,
               attentionLevel: getAttentionLevel(s),
               lastActivityAt: s.lastActivityAt,
+              progressText: s.progressText,
             })),
           };
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(initialEvent)}\n\n`));
+          safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify(initialEvent)}\n\n`));
         } catch {
           // If services aren't available, send empty snapshot
-          controller.enqueue(
+          safeEnqueue(
+            controller,
             encoder.encode(`data: ${JSON.stringify({ type: "snapshot", sessions: [] })}\n\n`),
           );
         }
@@ -45,12 +63,7 @@ export async function GET(): Promise<Response> {
 
       // Send periodic heartbeat
       heartbeat = setInterval(() => {
-        try {
-          controller.enqueue(encoder.encode(`: heartbeat\n\n`));
-        } catch {
-          clearInterval(heartbeat);
-          clearInterval(updates);
-        }
+        safeEnqueue(controller, encoder.encode(`: heartbeat\n\n`));
       }, 15000);
 
       // Poll for session state changes every 5 seconds
@@ -66,27 +79,23 @@ export async function GET(): Promise<Response> {
             return;
           }
 
-          try {
-            const event = {
-              type: "snapshot",
-              sessions: dashboardSessions.map((s) => ({
-                id: s.id,
-                status: s.status,
-                activity: s.activity,
-                attentionLevel: getAttentionLevel(s),
-                lastActivityAt: s.lastActivityAt,
-              })),
-            };
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-          } catch {
-            // enqueue failure means the stream is closed — clean up both intervals
-            clearInterval(updates);
-            clearInterval(heartbeat);
-          }
+          const event = {
+            type: "snapshot",
+            sessions: dashboardSessions.map((s) => ({
+              id: s.id,
+              status: s.status,
+              activity: s.activity,
+              attentionLevel: getAttentionLevel(s),
+              lastActivityAt: s.lastActivityAt,
+              progressText: s.progressText,
+            })),
+          };
+          safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
         })();
       }, 5000);
     },
     cancel() {
+      closed = true;
       clearInterval(heartbeat);
       clearInterval(updates);
     },

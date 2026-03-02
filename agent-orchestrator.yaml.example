@@ -10,6 +10,11 @@ worktreeDir: ~/.worktrees
 # Web dashboard port
 port: 3000
 
+# Agent personas directory (default: ./personas relative to this file)
+# Drop .md files here to create custom personas. Built-in: security-auditor,
+# code-reviewer, test-writer, bug-fixer, refactorer, full-stack-dev
+# personasDir: ~/my-personas
+
 # Terminal server ports (defaults: 14800/14801 — chosen to avoid conflicts with dev tools)
 # Override when running multiple dashboards to avoid EADDRINUSE
 # terminalPort: 14800
@@ -48,6 +53,10 @@ projects:
     #   permissions: skip    # --dangerously-skip-permissions
     #   model: opus
 
+    # Agent personas — pre-built behavior profiles (combinable)
+    # Available: security-auditor, code-reviewer, test-writer, bug-fixer, refactorer, full-stack-dev
+    # agentPersonas: [test-writer, security-auditor]
+
     # Inline rules included in every agent prompt for this project
     # agentRules: |
     #   Always run tests before pushing.
@@ -59,6 +68,12 @@ projects:
     # Rules for the orchestrator agent (reserved for future use)
     # orchestratorRules: |
     #   Prefer to batch-spawn related issues together.
+
+    # Automatic worktree cleanup after PR merge
+    # Frees disk space while keeping sessions visible in the dashboard
+    # worktreeCleanup:
+    #   enabled: true
+    #   delayAfterMerge: "1d"   # grace period: "30m", "6h", "1d", etc.
 
     # Per-project reaction overrides
     # reactions:
@@ -89,13 +104,18 @@ projects:
 #
 #   changes-requested:
 #     auto: true
-#     action: send-to-agent
+#     action: send-comments-to-agent
 #     escalateAfter: 30m
 #
 #   approved-and-green:
-#     auto: false              # set to true for auto-merge
-#     action: notify
+#     auto: true
+#     action: auto-merge       # squash-merges when CI green + approved
 #     priority: action
+#
+#   approved-behind:
+#     auto: true
+#     action: auto-merge       # rebases first if behind, then squash-merges
+#     escalateAfter: 15m
 #
 #   agent-stuck:
 #     threshold: 10m

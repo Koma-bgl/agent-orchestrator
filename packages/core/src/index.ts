@@ -51,13 +51,20 @@ export type { SessionManagerDeps } from "./session-manager.js";
 export { createLifecycleManager } from "./lifecycle-manager.js";
 export type { LifecycleManagerDeps } from "./lifecycle-manager.js";
 
+// Queue poller — auto-spawn sessions from tracker issues
+export { createQueuePoller } from "./queue-poller.js";
+export type { QueuePollerDeps, QueuePoller, QueuePollStatus } from "./queue-poller.js";
+
 // Prompt builder — layered prompt composition
-export { buildPrompt, BASE_AGENT_PROMPT } from "./prompt-builder.js";
+export { buildPrompt, BASE_AGENT_PROMPT, AGENT_PERSONAS, loadPersona } from "./prompt-builder.js";
 export type { PromptBuildConfig } from "./prompt-builder.js";
 
 // Orchestrator prompt — generates orchestrator context for `ao start`
 export { generateOrchestratorPrompt } from "./orchestrator-prompt.js";
 export type { OrchestratorPromptConfig } from "./orchestrator-prompt.js";
+
+// Visual verification runner
+export { runVerification } from "./verify-runner.js";
 
 // Shared utilities
 export { shellEscape, escapeAppleScript, validateUrl, readLastJsonlEntry } from "./utils.js";

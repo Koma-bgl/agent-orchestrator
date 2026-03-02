@@ -28,17 +28,20 @@ import {
   type Runtime,
   type Agent,
   type SCM,
+  type Tracker,
   type Notifier,
   type Session,
   type EventPriority,
+  type Workspace,
   type ProjectConfig as _ProjectConfig,
 } from "./types.js";
-import { updateMetadata } from "./metadata.js";
+import { updateMetadata, readMetadataRaw } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";
+import { createQueuePoller } from "./queue-poller.js";
 
-/** Parse a duration string like "10m", "30s", "1h" to milliseconds. */
+/** Parse a duration string like "10m", "30s", "1h", "1d" to milliseconds. */
 function parseDuration(str: string): number {
-  const match = str.match(/^(\d+)(s|m|h)$/);
+  const match = str.match(/^(\d+)(s|m|h|d)$/);
   if (!match) return 0;
   const value = parseInt(match[1], 10);
   switch (match[2]) {
@@ -48,6 +51,8 @@ function parseDuration(str: string): number {
       return value * 60_000;
     case "h":
       return value * 3_600_000;
+    case "d":
+      return value * 86_400_000;
     default:
       return 0;
   }
@@ -115,6 +120,8 @@ function statusToEventType(_from: SessionStatus | undefined, to: SessionStatus):
       return "review.approved";
     case "mergeable":
       return "merge.ready";
+    case "merge_conflicts":
+      return "merge.conflicts";
     case "merged":
       return "merge.completed";
     case "needs_input":
@@ -143,6 +150,8 @@ function eventToReactionKey(eventType: EventType): string | null {
       return "merge-conflicts";
     case "merge.ready":
       return "approved-and-green";
+    case "review.approved":
+      return "approved-behind";
     case "session.stuck":
       return "agent-stuck";
     case "session.needs_input":
@@ -151,9 +160,91 @@ function eventToReactionKey(eventType: EventType): string | null {
       return "agent-exited";
     case "summary.all_complete":
       return "all-complete";
+    case "pr.created":
+      return "pr-created";
     default:
       return null;
   }
+}
+
+/** Build a human-readable notification message for a status transition. */
+function buildTransitionMessage(
+  sessionId: SessionId,
+  oldStatus: SessionStatus,
+  newStatus: SessionStatus,
+  session: Session,
+): string {
+  const pr = session.pr;
+  const prTag = pr ? ` (PR #${pr.number})` : "";
+  const issueTag = session.issueId ? ` [${session.issueId}]` : "";
+
+  switch (newStatus) {
+    case "working":
+      return `${sessionId}${issueTag} is now working`;
+    case "pr_open":
+      return `${sessionId}${issueTag} opened a PR${prTag}`;
+    case "ci_failed":
+      return `CI is failing on ${sessionId}${prTag}`;
+    case "review_pending":
+      return `${sessionId}${prTag} is waiting for review`;
+    case "changes_requested":
+      return `Changes requested on ${sessionId}${prTag}`;
+    case "approved":
+      return `${sessionId}${prTag} has been approved`;
+    case "mergeable":
+      return `${sessionId}${prTag} is ready to merge — CI green + approved`;
+    case "merge_conflicts":
+      return `${sessionId}${prTag} has merge conflicts — agent needs to rebase`;
+    case "merged":
+      return `${sessionId}${prTag} has been merged`;
+    case "needs_input":
+      return `${sessionId} needs your input — agent is waiting for a response`;
+    case "stuck":
+      return `${sessionId} appears stuck — no progress detected`;
+    case "errored":
+      return `${sessionId} hit an error`;
+    case "killed":
+      return oldStatus === "spawning"
+        ? `${sessionId} failed to start`
+        : `${sessionId} agent process exited`;
+    default:
+      return `${sessionId}: ${oldStatus} → ${newStatus}`;
+  }
+}
+
+/** Build enriched event data including PR URL, CI status, etc. */
+function buildEventData(
+  oldStatus: SessionStatus,
+  newStatus: SessionStatus,
+  session: Session,
+): Record<string, unknown> {
+  const data: Record<string, unknown> = { oldStatus, newStatus };
+
+  if (session.pr) {
+    data["prUrl"] = session.pr.url;
+    data["prNumber"] = session.pr.number;
+    data["prTitle"] = session.pr.title;
+    data["branch"] = session.pr.branch;
+  } else if (session.branch) {
+    data["branch"] = session.branch;
+  }
+
+  if (session.issueId) {
+    data["issueId"] = session.issueId;
+  }
+
+  // Add status-specific context
+  if (newStatus === "ci_failed") {
+    data["ciStatus"] = "failing";
+  } else if (newStatus === "mergeable" || newStatus === "approved") {
+    data["ciStatus"] = "passing";
+  }
+
+  if (session.agentInfo?.summary) {
+    data["summary"] = session.agentInfo.summary;
+  }
+
+  return data;
 }
 
 export interface LifecycleManagerDeps {
@@ -178,6 +269,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   let polling = false; // re-entrancy guard
   let allCompleteEmitted = false; // guard against repeated all_complete
 
+  // Queue poller — auto-spawn sessions from tracker issues
+  const queuePoller = createQueuePoller({ config, registry, sessionManager });
+
   /** Determine current status for a session by polling plugins. */
   async function determineStatus(session: Session): Promise<SessionStatus> {
     const project = config.projects[session.projectId];
@@ -188,16 +282,29 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     const scm = project.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
 
     // 1. Check if runtime is alive
+    // Track whether the agent/runtime has exited — we defer returning "killed"
+    // until after the PR state check (step 4), because an exited agent with
+    // an open PR that has changes_requested or failing CI should not be "killed".
+    let agentExited = false;
+
     if (session.runtimeHandle) {
       const runtime = registry.get<Runtime>("runtime", project.runtime ?? config.defaults.runtime);
       if (runtime) {
         const alive = await runtime.isAlive(session.runtimeHandle).catch(() => true);
-        if (!alive) return "killed";
+        if (!alive) {
+          agentExited = true;
+        }
       }
     }
 
     // 2. Check agent activity via terminal output + process liveness
-    if (agent && session.runtimeHandle) {
+    //    NOTE: We detect waiting_input here but defer returning it until AFTER
+    //    the PR state check (step 4). PR-level states like merge_conflicts and
+    //    ci_failed take priority — the merge-conflicts reaction will restore
+    //    the agent and handle any stuck prompt automatically.
+    let agentWaitingInput = false;
+
+    if (!agentExited && agent && session.runtimeHandle) {
       try {
         const runtime = registry.get<Runtime>(
           "runtime",
@@ -208,7 +315,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         // empty output means the runtime probe failed, not that the agent exited.
         if (terminalOutput) {
           const activity = agent.detectActivity(terminalOutput);
-          if (activity === "waiting_input") return "needs_input";
+          if (activity === "waiting_input") {
+            agentWaitingInput = true;
+            // Don't return here — check PR state first (step 4)
+          }
 
           // Check whether the agent process is still alive. Some agents
           // (codex, aider, opencode) return "active" for any non-empty
@@ -216,7 +326,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           // Checking isProcessRunning for both "idle" and "active" ensures
           // exit detection works regardless of the agent's classifier.
           const processAlive = await agent.isProcessRunning(session.runtimeHandle);
-          if (!processAlive) return "killed";
+          if (!processAlive) {
+            agentExited = true;
+          }
         }
       } catch {
         // On probe failure, preserve current stuck/needs_input state rather
@@ -250,22 +362,39 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     }
 
     // 4. Check PR state if PR exists
+    //    PR-level states take priority over terminal-detected needs_input
     if (session.pr && scm) {
       try {
+        // Must check PR state first — merged/closed PRs short-circuit everything
         const prState = await scm.getPRState(session.pr);
         if (prState === PR_STATE.MERGED) return "merged";
         if (prState === PR_STATE.CLOSED) return "killed";
 
+        // Fetch CI, merge readiness, comments, and review decision in parallel
+        // to reduce sequential API calls and rate limit pressure.
+        const [ciStatus, mergeReady, pendingComments, reviewDecision] =
+          await Promise.all([
+            scm.getCISummary(session.pr),
+            scm.getMergeability(session.pr),
+            scm.getPendingComments(session.pr),
+            scm.getReviewDecision(session.pr),
+          ]);
+
         // Check CI
-        const ciStatus = await scm.getCISummary(session.pr);
         if (ciStatus === CI_STATUS.FAILING) return "ci_failed";
 
-        // Check reviews
-        const reviewDecision = await scm.getReviewDecision(session.pr);
+        // Check merge conflicts early — regardless of review status.
+        if (!mergeReady.noConflicts) return "merge_conflicts";
+
+        // Check for unresolved review comments first — regardless of the
+        // formal review decision. Reviewers often leave comments using
+        // "Comment" instead of "Request changes", so the review decision
+        // may be "pending" or "none" even when there's actionable feedback.
+        if (pendingComments.length > 0) return "changes_requested";
+
+        // Check formal review decision
         if (reviewDecision === "changes_requested") return "changes_requested";
         if (reviewDecision === "approved") {
-          // Check merge readiness
-          const mergeReady = await scm.getMergeability(session.pr);
           if (mergeReady.mergeable) return "mergeable";
           return "approved";
         }
@@ -277,7 +406,13 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       }
     }
 
-    // 5. Default: if agent is active, it's working
+    // 5. Agent is waiting for input and no PR-level issue was found
+    if (agentWaitingInput) return "needs_input";
+
+    // 6. If agent exited and PR check didn't provide a better status, it's killed
+    if (agentExited) return "killed";
+
+    // 7. Default: if agent is active, it's working
     if (
       session.status === "spawning" ||
       session.status === SESSION_STATUS.STUCK ||
@@ -372,6 +507,61 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         break;
       }
 
+      case "send-comments-to-agent": {
+        try {
+          const session = await sessionManager.get(sessionId);
+          if (!session?.pr) {
+            return { reactionType: reactionKey, success: false, action, escalated: false };
+          }
+
+          const project = config.projects[projectId];
+          const scm = project?.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
+          if (!scm) {
+            return { reactionType: reactionKey, success: false, action, escalated: false };
+          }
+
+          const comments = await scm.getPendingComments(session.pr);
+          if (comments.length === 0) {
+            // No unresolved comments — nothing to send
+            return { reactionType: reactionKey, success: true, action, escalated: false };
+          }
+
+          // Build a structured message with all unresolved comments
+          const commentLines = comments.map((c, i) => {
+            const location = c.path ? `File: ${c.path}${c.line ? `:${c.line}` : ""}` : "General";
+            return `### Comment ${i + 1} (by @${c.author})\n${location}\n${c.body}\nURL: ${c.url}`;
+          });
+
+          const message = [
+            `There are ${comments.length} unresolved review comment${comments.length !== 1 ? "s" : ""} on your PR. Please address each one:`,
+            "",
+            ...commentLines,
+            "",
+            "For each comment:",
+            "- If the feedback is valid, fix the code and push.",
+            "- If the feedback is not applicable or incorrect, reply to the comment explaining why and resolve it.",
+            "- After addressing all comments, push your changes.",
+          ].join("\n");
+
+          await sessionManager.send(sessionId, message);
+
+          return {
+            reactionType: reactionKey,
+            success: true,
+            action: "send-comments-to-agent",
+            message: `Sent ${comments.length} review comments to agent`,
+            escalated: false,
+          };
+        } catch {
+          return {
+            reactionType: reactionKey,
+            success: false,
+            action: "send-comments-to-agent",
+            escalated: false,
+          };
+        }
+      }
+
       case "notify": {
         const event = createEvent("reaction.triggered", {
           sessionId,
@@ -389,21 +579,91 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       }
 
       case "auto-merge": {
-        // Auto-merge is handled by the SCM plugin
-        // For now, just notify
-        const event = createEvent("reaction.triggered", {
-          sessionId,
-          projectId,
-          message: `Reaction '${reactionKey}' triggered auto-merge`,
-          data: { reactionKey },
-        });
-        await notifyHuman(event, "action");
-        return {
-          reactionType: reactionKey,
-          success: true,
-          action: "auto-merge",
-          escalated: false,
-        };
+        try {
+          const session = await sessionManager.get(sessionId);
+          if (!session?.pr) {
+            return { reactionType: reactionKey, success: false, action, escalated: false };
+          }
+
+          const project = config.projects[projectId];
+          const scm = project?.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
+          if (!scm) {
+            return { reactionType: reactionKey, success: false, action, escalated: false };
+          }
+
+          // Check if PR needs a rebase first (behind base branch)
+          const mergeReady = await scm.getMergeability(session.pr);
+
+          // Guard: verify the PR is actually approved before taking any
+          // merge/rebase action. The "approved" status may have been set
+          // from a previous poll cycle with stale or rate-limited data.
+          if (!mergeReady.approved) {
+            console.log(`[lifecycle] ${sessionId}: skipping auto-merge — PR is not approved (stale status?)`);
+            return { reactionType: reactionKey, success: false, action, escalated: false };
+          }
+
+          if (!mergeReady.noConflicts) {
+            // Real merge conflicts — can't auto-merge, escalate
+            const event = createEvent("reaction.triggered", {
+              sessionId,
+              projectId,
+              message: `Cannot auto-merge ${sessionId}: merge conflicts`,
+              data: { reactionKey },
+            });
+            await notifyHuman(event, "urgent");
+            return { reactionType: reactionKey, success: false, action, escalated: true };
+          }
+
+          if (!mergeReady.mergeable) {
+            // Approved but not yet mergeable — only rebase if CI is
+            // passing. If CI is pending/failing, wait for the next cycle
+            // rather than sending a premature rebase instruction.
+            if (!mergeReady.ciPassing) {
+              console.log(`[lifecycle] ${sessionId}: approved but CI not passing, waiting`);
+              return { reactionType: reactionKey, success: false, action, escalated: false };
+            }
+            console.log(`[lifecycle] ${sessionId}: approved + CI green but not mergeable, sending rebase instruction`);
+            await sessionManager.send(
+              sessionId,
+              "Your PR is approved but the branch is behind the base branch. Please rebase on the default branch and push so CI can run, then it will be auto-merged.",
+            );
+            return {
+              reactionType: reactionKey,
+              success: true,
+              action: "auto-merge",
+              message: "Sent rebase instruction before merge",
+              escalated: false,
+            };
+          }
+
+          // All clear — squash merge
+          console.log(`[lifecycle] ${sessionId}: auto-merging PR #${session.pr.number}`);
+          await scm.mergePR(session.pr, "squash");
+
+          const event = createEvent("merge.completed", {
+            sessionId,
+            projectId,
+            message: `Auto-merged ${sessionId} PR #${session.pr.number}`,
+            data: { reactionKey, prNumber: session.pr.number },
+          });
+          await notifyHuman(event, "info");
+
+          return {
+            reactionType: reactionKey,
+            success: true,
+            action: "auto-merge",
+            message: `Squash-merged PR #${session.pr.number}`,
+            escalated: false,
+          };
+        } catch (err) {
+          console.error(`[lifecycle] auto-merge failed for ${sessionId}:`, err);
+          return {
+            reactionType: reactionKey,
+            success: false,
+            action: "auto-merge",
+            escalated: false,
+          };
+        }
       }
     }
 
@@ -432,6 +692,48 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     }
   }
 
+  /**
+   * Sync issue tracker status when session transitions to key states.
+   *
+   * Only two transitions are synced:
+   * 1. working → "In Progress" (agent started coding)
+   * 2. pr_open / review_pending → "Ready for review" (PR created, needs human review)
+   *
+   * All other transitions (merged, ci_failed, etc.) do NOT move the issue —
+   * those are handled manually by the team.
+   */
+  async function syncIssueStatus(session: Session, newStatus: SessionStatus): Promise<void> {
+    if (!session.issueId) return;
+
+    const project = config.projects[session.projectId];
+    if (!project?.tracker) return;
+
+    const tracker = registry.get<Tracker>("tracker", project.tracker.plugin);
+    if (!tracker?.updateIssue) return;
+
+    // Map session status → exact workflow state name.
+    // Using statusName (exact name) instead of generic state type to avoid
+    // landing on the wrong status (e.g. QA instead of In Progress).
+    let statusName: string;
+    switch (newStatus) {
+      case "working":
+        statusName = "In Progress";
+        break;
+      case "pr_open":
+      case "review_pending":
+        statusName = "Ready for review";
+        break;
+      default:
+        return; // No issue update needed for other transitions
+    }
+
+    try {
+      await tracker.updateIssue(session.issueId, { statusName }, project);
+    } catch {
+      // Non-fatal — don't block lifecycle on tracker failures
+    }
+  }
+
   /** Poll a single session and handle state transitions. */
   async function checkSession(session: Session): Promise<void> {
     // Use tracked state if available; otherwise use the persisted metadata status
@@ -441,6 +743,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     const oldStatus =
       tracked ?? ((session.metadata?.["status"] as SessionStatus | undefined) || session.status);
     const newStatus = await determineStatus(session);
+    console.log(`[lifecycle] checkSession ${session.id}: old=${oldStatus} new=${newStatus} tracked=${tracked ?? "none"}`);
 
     if (newStatus !== oldStatus) {
       // State transition detected
@@ -450,8 +753,18 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       const project = config.projects[session.projectId];
       if (project) {
         const sessionsDir = getSessionsDir(config.configPath, project.path);
-        updateMetadata(sessionsDir, session.id, { status: newStatus });
+        const metadataUpdates: Record<string, string> = { status: newStatus };
+
+        // Record merge timestamp for delayed worktree cleanup
+        if (newStatus === "merged") {
+          metadataUpdates["mergedAt"] = new Date().toISOString();
+        }
+
+        updateMetadata(sessionsDir, session.id, metadataUpdates);
       }
+
+      // Update tracker issue status on key transitions
+      await syncIssueStatus(session, newStatus);
 
       // Reset allCompleteEmitted when any session becomes active again
       if (newStatus !== "merged" && newStatus !== "killed") {
@@ -507,16 +820,126 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             const event = createEvent(eventType, {
               sessionId: session.id,
               projectId: session.projectId,
-              message: `${session.id}: ${oldStatus} → ${newStatus}`,
-              data: { oldStatus, newStatus },
+              message: buildTransitionMessage(session.id, oldStatus, newStatus, session),
+              data: buildEventData(oldStatus, newStatus, session),
             });
             await notifyHuman(event, priority);
           }
         }
+
+        // NOTE: Visual verification is now handled by the agent via `ao verify`
+        // before PR creation, not auto-triggered here. The runVisualVerification()
+        // function is kept available for programmatic use (e.g. `ao start` orchestrator).
       }
     } else {
-      // No transition but track current state
+      // No transition — but check if the session is stuck in a state that
+      // has a "send-to-agent" reaction (e.g. merge_conflicts, ci_failed).
+      // This handles two scenarios:
+      //   a) Lifecycle manager restart — session was already in this state
+      //   b) Previous send didn't resolve the issue — agent finished but
+      //      the status is unchanged, so we retry on the next poll
+      // The reaction tracker + escalateAfter prevents infinite retries.
+      const eventType = statusToEventType(undefined, newStatus);
+      if (eventType) {
+        const reactionKey = eventToReactionKey(eventType);
+        if (reactionKey) {
+          const project = config.projects[session.projectId];
+          const globalReaction = config.reactions[reactionKey];
+          const projectReaction = project?.reactions?.[reactionKey];
+          const reactionConfig = projectReaction
+            ? { ...globalReaction, ...projectReaction }
+            : globalReaction;
+
+          if (
+            reactionConfig?.auto !== false &&
+            (reactionConfig?.action === "send-to-agent" ||
+              reactionConfig?.action === "send-comments-to-agent" ||
+              reactionConfig?.action === "auto-merge")
+          ) {
+            console.log(
+              `[lifecycle] Session ${session.id} still in "${newStatus}" — retrying "${reactionKey}" reaction`,
+            );
+            await executeReaction(
+              session.id,
+              session.projectId,
+              reactionKey,
+              reactionConfig as ReactionConfig,
+            );
+          }
+        }
+      }
+
       states.set(session.id, newStatus);
+    }
+  }
+
+  /**
+   * Clean up worktrees for merged sessions after the configured grace period.
+   * Only destroys the worktree — metadata is preserved so sessions remain in the dashboard.
+   */
+  async function cleanupMergedWorktrees(sessions: Session[]): Promise<void> {
+    const now = Date.now();
+
+    for (const session of sessions) {
+      if (session.status !== "merged") continue;
+
+      const project = config.projects[session.projectId];
+      if (!project) continue;
+
+      // Check if worktree cleanup is enabled for this project
+      const cleanupConfig = project.worktreeCleanup;
+      if (!cleanupConfig?.enabled) continue;
+
+      const sessionsDir = getSessionsDir(config.configPath, project.path);
+      const raw = readMetadataRaw(sessionsDir, session.id);
+      if (!raw) continue;
+
+      // Skip if already cleaned
+      if (raw["worktreeCleanedAt"]) continue;
+
+      // Skip if no worktree path or worktree is the project path (no isolation)
+      const worktreePath = raw["worktree"];
+      if (!worktreePath || worktreePath === project.path) continue;
+
+      // Check if grace period has elapsed
+      // Backfill mergedAt for sessions merged before this feature was deployed
+      let mergedAt = raw["mergedAt"];
+      if (!mergedAt) {
+        mergedAt = new Date().toISOString();
+        updateMetadata(sessionsDir, session.id, { mergedAt });
+        continue; // Start grace period from now — will be cleaned on a future poll
+      }
+
+      const mergedTime = new Date(mergedAt).getTime();
+      if (Number.isNaN(mergedTime)) continue;
+
+      const delay =
+        typeof cleanupConfig.delayAfterMerge === "number"
+          ? cleanupConfig.delayAfterMerge
+          : parseDuration(cleanupConfig.delayAfterMerge);
+
+      if (now - mergedTime < delay) continue;
+
+      // Grace period elapsed — destroy the worktree
+      const workspaceName = project.workspace ?? config.defaults.workspace;
+      const workspacePlugin = registry.get<Workspace>("workspace", workspaceName);
+      if (!workspacePlugin) continue;
+
+      try {
+        await workspacePlugin.destroy(worktreePath);
+        updateMetadata(sessionsDir, session.id, {
+          worktreeCleanedAt: new Date().toISOString(),
+          worktree: "",
+        });
+        console.log(
+          `[lifecycle] Cleaned up worktree for merged session ${session.id} (merged ${mergedAt})`,
+        );
+      } catch {
+        // Non-fatal — will retry on next poll
+        console.log(
+          `[lifecycle] Failed to clean worktree for ${session.id}, will retry`,
+        );
+      }
     }
   }
 
@@ -540,6 +963,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
       // Poll all sessions concurrently
       await Promise.allSettled(sessionsToCheck.map((s) => checkSession(s)));
+
+      // Delayed worktree cleanup for merged sessions
+      await cleanupMergedWorktrees(sessions);
 
       // Prune stale entries from states and reactionTrackers for sessions
       // that no longer appear in the session list (e.g., after kill/cleanup)
@@ -585,6 +1011,14 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       pollTimer = setInterval(() => void pollAll(), intervalMs);
       // Run immediately on start
       void pollAll();
+
+      // Start queue poller if any project has it enabled
+      const hasQueue = Object.values(config.projects).some(
+        (p) => p.queuePoller?.enabled,
+      );
+      if (hasQueue) {
+        queuePoller.start();
+      }
     },
 
     stop(): void {
@@ -592,6 +1026,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         clearInterval(pollTimer);
         pollTimer = null;
       }
+      queuePoller.stop();
     },
 
     getStates(): Map<SessionId, SessionStatus> {

@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import {
   type DashboardSession,
   type DashboardStats,
@@ -19,11 +20,102 @@ interface DashboardProps {
   stats: DashboardStats;
   orchestratorId?: string | null;
   projectName?: string;
+  version?: string;
+}
+
+interface SSESessionSnapshot {
+  id: string;
+  status: string;
+  activity: string | null;
+  attentionLevel: string;
+  progressText?: string | null;
 }
 
 const KANBAN_LEVELS = ["working", "pending", "review", "respond", "merge"] as const;
 
-export function Dashboard({ sessions, stats, orchestratorId, projectName }: DashboardProps) {
+/**
+ * Connect to the /api/events SSE stream.
+ * When session count or any session's status/activity changes, trigger
+ * router.refresh() to re-fetch server-rendered data with full enrichment.
+ */
+function useAutoRefresh(
+  sessions: DashboardSession[],
+  setProgressMap: (map: Record<string, string | null>) => void,
+) {
+  const router = useRouter();
+  const lastSnapshotRef = useRef<string>("");
+
+  // Build a fingerprint from current sessions so we can detect changes
+  useEffect(() => {
+    const fingerprint = sessions
+      .map((s) => `${s.id}:${s.status}:${s.activity}`)
+      .sort()
+      .join("|");
+    lastSnapshotRef.current = fingerprint;
+  }, [sessions]);
+
+  const handleSnapshot = useCallback(
+    (sseSessions: SSESessionSnapshot[]) => {
+      // Update progress text from SSE (lightweight, no full refresh)
+      const newProgressMap: Record<string, string | null> = {};
+      for (const s of sseSessions) {
+        newProgressMap[s.id] = s.progressText ?? null;
+      }
+      setProgressMap(newProgressMap);
+
+      const newFingerprint = sseSessions
+        .map((s) => `${s.id}:${s.status}:${s.activity ?? ""}`)
+        .sort()
+        .join("|");
+
+      if (newFingerprint !== lastSnapshotRef.current) {
+        lastSnapshotRef.current = newFingerprint;
+        router.refresh();
+      }
+    },
+    [router, setProgressMap],
+  );
+
+  useEffect(() => {
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function connect() {
+      es = new EventSource("/api/events");
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as {
+            type: string;
+            sessions?: SSESessionSnapshot[];
+          };
+          if (data.type === "snapshot" && data.sessions) {
+            handleSnapshot(data.sessions);
+          }
+        } catch {
+          // Malformed SSE payload — ignore
+        }
+      };
+
+      es.onerror = () => {
+        es?.close();
+        // Reconnect after 5 seconds
+        reconnectTimer = setTimeout(connect, 5000);
+      };
+    }
+
+    connect();
+
+    return () => {
+      es?.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
+  }, [handleSnapshot]);
+}
+
+export function Dashboard({ sessions, stats, orchestratorId, projectName, version }: DashboardProps) {
+  const [progressMap, setProgressMap] = useState<Record<string, string | null>>({});
+  useAutoRefresh(sessions, setProgressMap);
   const [rateLimitDismissed, setRateLimitDismissed] = useState(false);
   const grouped = useMemo(() => {
     const zones: Record<AttentionLevel, DashboardSession[]> = {
@@ -40,11 +132,16 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName }: Dash
     return zones;
   }, [sessions]);
 
+  const terminalStatuses = new Set(["merged", "killed", "cleanup", "done", "terminated"]);
   const openPRs = useMemo(() => {
     return sessions
-      .filter((s): s is DashboardSession & { pr: DashboardPR } => s.pr?.state === "open")
+      .filter(
+        (s): s is DashboardSession & { pr: DashboardPR } =>
+          s.pr?.state === "open" && !terminalStatuses.has(s.status),
+      )
       .map((s) => s.pr)
       .sort((a, b) => mergeScore(a) - mergeScore(b));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessions]);
 
   const handleSend = async (sessionId: string, message: string) => {
@@ -100,6 +197,11 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName }: Dash
         <div className="flex items-center gap-6">
           <h1 className="text-[17px] font-semibold tracking-[-0.02em] text-[var(--color-text-primary)]">
             Orchestrator
+            {version && (
+              <span className="ml-2 text-[11px] font-normal text-[var(--color-text-muted)]">
+                v{version}
+              </span>
+            )}
           </h1>
           <StatusLine stats={stats} />
         </div>
@@ -150,6 +252,7 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName }: Dash
                   level={level}
                   sessions={grouped[level]}
                   variant="column"
+                  progressMap={progressMap}
                   onSend={handleSend}
                   onKill={handleKill}
                   onMerge={handleMerge}
@@ -168,6 +271,7 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName }: Dash
             level="done"
             sessions={grouped.done}
             variant="grid"
+            progressMap={progressMap}
             onSend={handleSend}
             onKill={handleKill}
             onMerge={handleMerge}

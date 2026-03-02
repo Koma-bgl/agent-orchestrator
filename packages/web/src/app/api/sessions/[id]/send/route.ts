@@ -31,6 +31,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   try {
     const { sessionManager } = await getServices();
+    const session = await sessionManager.get(id);
+
+    if (!session) {
+      return NextResponse.json({ error: `Session "${id}" not found` }, { status: 404 });
+    }
+
+    if (!session.runtimeHandle) {
+      return NextResponse.json({ error: "Session has no runtime handle" }, { status: 400 });
+    }
+
+    // sessionManager.send() handles agent liveness checks internally:
+    // if the agent has exited, it will attempt to restore the session
+    // before sending the message (avoids typing into zsh).
     await sessionManager.send(id, message);
     return NextResponse.json({ ok: true, sessionId: id, message });
   } catch (err) {

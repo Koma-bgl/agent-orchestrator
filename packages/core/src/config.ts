@@ -24,7 +24,7 @@ import { generateSessionPrefix } from "./paths.js";
 
 const ReactionConfigSchema = z.object({
   auto: z.boolean().default(true),
-  action: z.enum(["send-to-agent", "notify", "auto-merge"]).default("notify"),
+  action: z.enum(["send-to-agent", "send-comments-to-agent", "notify", "auto-merge"]).default("notify"),
   message: z.string().optional(),
   priority: z.enum(["urgent", "action", "warning", "info"]).optional(),
   retries: z.number().optional(),
@@ -53,10 +53,75 @@ const NotifierConfigSchema = z
 
 const AgentSpecificConfigSchema = z
   .object({
-    permissions: z.enum(["skip", "default"]).optional(),
+    permissions: z.enum(["skip", "default", "dontAsk", "acceptEdits"]).optional(),
     model: z.string().optional(),
   })
   .passthrough();
+
+const LoginSelectorsSchema = z.object({
+  loginButton: z.string().optional(),
+  emailInput: z.string().optional(),
+  passwordInput: z.string().optional(),
+  submitButton: z.string().optional(),
+  successIndicator: z.string().optional(),
+});
+
+const VerifyAuthConfigSchema = z.object({
+  strategy: z.enum(["none", "firebase-password", "stored"]).default("none"),
+  loginUrl: z.string().optional(),
+  username: z.string().optional(),
+  password: z.string().optional(),
+  storageStatePath: z.string().optional(),
+  selectors: LoginSelectorsSchema.optional(),
+});
+
+const VerifyPageConfigSchema = z.object({
+  url: z.string(),
+  name: z.string(),
+  waitForSelector: z.string().optional(),
+  delayMs: z.number().optional(),
+});
+
+const VerifyConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  auth: VerifyAuthConfigSchema.default({ strategy: "none" }),
+  baseUrl: z.string(),
+  paths: z.array(VerifyPageConfigSchema).default([]),
+  viewport: z
+    .object({
+      width: z.number().default(1280),
+      height: z.number().default(900),
+    })
+    .optional(),
+  postToPR: z.boolean().default(true),
+  filePatterns: z.array(z.string()).optional(),
+});
+
+const QueuePollerConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  interval: z.union([z.string(), z.number()]).default("30s"),
+  maxSessions: z.number().positive().default(5),
+  filters: z
+    .object({
+      labels: z.array(z.string()).optional(),
+      statusName: z.string().optional(),
+      assignee: z.string().optional(),
+    })
+    .default({}),
+  onSpawn: z
+    .object({
+      moveToStatus: z.string().optional(),
+      addLabel: z.string().optional(),
+      removeLabel: z.string().optional(),
+    })
+    .optional(),
+  limit: z.number().positive().optional(),
+});
+
+const WorktreeCleanupConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  delayAfterMerge: z.union([z.string(), z.number()]).default("1d"),
+});
 
 const ProjectConfigSchema = z.object({
   name: z.string().optional(),
@@ -76,9 +141,13 @@ const ProjectConfigSchema = z.object({
   postCreate: z.array(z.string()).optional(),
   agentConfig: AgentSpecificConfigSchema.optional(),
   reactions: z.record(ReactionConfigSchema.partial()).optional(),
+  agentPersonas: z.array(z.string()).optional(),
   agentRules: z.string().optional(),
   agentRulesFile: z.string().optional(),
   orchestratorRules: z.string().optional(),
+  verify: VerifyConfigSchema.optional(),
+  queuePoller: QueuePollerConfigSchema.optional(),
+  worktreeCleanup: WorktreeCleanupConfigSchema.optional(),
 });
 
 const DefaultPluginsSchema = z.object({
@@ -93,6 +162,7 @@ const OrchestratorConfigSchema = z.object({
   terminalPort: z.number().optional(),
   directTerminalPort: z.number().optional(),
   readyThresholdMs: z.number().nonnegative().default(300_000),
+  personasDir: z.string().optional(),
   defaults: DefaultPluginsSchema.default({}),
   projects: z.record(ProjectConfigSchema),
   notifiers: z.record(NotifierConfigSchema).default({}),
@@ -119,6 +189,10 @@ function expandHome(filepath: string): string {
 
 /** Expand all path fields in the config */
 function expandPaths(config: OrchestratorConfig): OrchestratorConfig {
+  if (config.personasDir) {
+    config.personasDir = expandHome(config.personasDir);
+  }
+
   for (const project of Object.values(config.projects)) {
     project.path = expandHome(project.path);
   }
@@ -224,15 +298,12 @@ function applyDefaultReactions(config: OrchestratorConfig): OrchestratorConfig {
     },
     "changes-requested": {
       auto: true,
-      action: "send-to-agent",
-      message:
-        "There are review comments on your PR. Check with `gh pr view --comments` and `gh api` for inline comments. Address each one, push fixes, and reply.",
+      action: "send-comments-to-agent",
       escalateAfter: "30m",
     },
     "bugbot-comments": {
       auto: true,
-      action: "send-to-agent",
-      message: "Automated review comments found on your PR. Fix the issues flagged by the bot.",
+      action: "send-comments-to-agent",
       escalateAfter: "30m",
     },
     "merge-conflicts": {
@@ -242,10 +313,14 @@ function applyDefaultReactions(config: OrchestratorConfig): OrchestratorConfig {
       escalateAfter: "15m",
     },
     "approved-and-green": {
-      auto: false,
-      action: "notify",
+      auto: true,
+      action: "auto-merge",
       priority: "action",
-      message: "PR is ready to merge",
+    },
+    "approved-behind": {
+      auto: true,
+      action: "auto-merge",
+      escalateAfter: "15m",
     },
     "agent-stuck": {
       auto: true,

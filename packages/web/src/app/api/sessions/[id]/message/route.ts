@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getServices } from "@/lib/services";
 import { stripControlChars, validateIdentifier, validateString } from "@/lib/validation";
-import type { Runtime } from "@composio/ao-core";
+import type { Runtime, Agent } from "@composio/ao-core";
 
 const MAX_MESSAGE_LENGTH = 10_000;
 
@@ -46,7 +46,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       );
     }
 
-    const { sessionManager, registry } = await getServices();
+    const { sessionManager, registry, config } = await getServices();
     const session = await sessionManager.get(id);
 
     if (!session) {
@@ -58,7 +58,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     // Get the runtime plugin that was used to create this session
-    // Use the runtime from the session handle, not from current project config
     const runtimeName = session.runtimeHandle.runtimeName;
     const runtime = registry.get<Runtime>("runtime", runtimeName);
     if (!runtime) {
@@ -66,6 +65,25 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         { error: `Runtime plugin '${runtimeName}' not found` },
         { status: 500 },
       );
+    }
+
+    // Check if the agent process is actually running before sending
+    const project = config.projects[session.projectId];
+    const agentName = project?.agent ?? config.defaults.agent;
+    const agent = registry.get<Agent>("agent", agentName);
+
+    if (agent?.isProcessRunning) {
+      const isRunning = await agent.isProcessRunning(session.runtimeHandle);
+      if (!isRunning) {
+        return NextResponse.json(
+          {
+            error:
+              "Agent is not running. The agent process has exited — " +
+              "use `ao send` or restart the session to send a new message.",
+          },
+          { status: 409 },
+        );
+      }
     }
 
     try {

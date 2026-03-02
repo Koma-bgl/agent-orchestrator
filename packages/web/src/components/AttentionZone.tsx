@@ -8,6 +8,7 @@ interface AttentionZoneProps {
   level: AttentionLevel;
   sessions: DashboardSession[];
   variant?: "column" | "grid";
+  progressMap?: Record<string, string | null>;
   onSend?: (sessionId: string, message: string) => void;
   onKill?: (sessionId: string) => void;
   onMerge?: (prNumber: number) => void;
@@ -58,6 +59,7 @@ export function AttentionZone({
   level,
   sessions,
   variant = "grid",
+  progressMap,
   onSend,
   onKill,
   onMerge,
@@ -108,6 +110,7 @@ export function AttentionZone({
               <SessionCard
                 key={session.id}
                 session={session}
+                progressText={progressMap?.[session.id] ?? session.progressText}
                 onSend={onSend}
                 onKill={onKill}
                 onMerge={onMerge}

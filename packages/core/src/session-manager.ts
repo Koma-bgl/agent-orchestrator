@@ -61,6 +61,11 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Promise-based delay */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Get the next session number for a project. */
 function getNextSessionNumber(existingSessions: string[], prefix: string): number {
   let max = 0;
@@ -454,6 +459,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       issueId: spawnConfig.issueId,
       issueContext,
       userPrompt: spawnConfig.prompt,
+      personasDir: config.personasDir,
+      configPath: config.configPath,
     });
 
     // Get agent launch config and create runtime — clean up workspace on failure
@@ -465,6 +472,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       permissions: project.agentConfig?.permissions,
       model: project.agentConfig?.model,
     };
+
+    // Write permission settings BEFORE launching agent to avoid race condition
+    if (plugins.agent.preLaunchSetup) {
+      await plugins.agent.preLaunchSetup(workspacePath);
+    }
 
     let handle: RuntimeHandle;
     try {
@@ -617,6 +629,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     const launchCommand = plugins.agent.getLaunchCommand(agentLaunchConfig);
     const environment = plugins.agent.getEnvironment(agentLaunchConfig);
 
+    // Write permission settings BEFORE launching agent
+    if (plugins.agent.preLaunchSetup) {
+      await plugins.agent.preLaunchSetup(project.path);
+    }
+
     const handle = await plugins.runtime.create({
       sessionId: tmuxName ?? sessionId,
       workspacePath: project.path,
@@ -747,26 +764,50 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     return null;
   }
 
-  async function kill(sessionId: SessionId): Promise<void> {
-    // Find the session in any project's sessions directory
-    let raw: Record<string, string> | null = null;
-    let sessionsDir: string | null = null;
-    let project: ProjectConfig | undefined;
-
+  /** Find session metadata and its project across all projects. */
+  function findSession(sessionId: SessionId): {
+    raw: Record<string, string>;
+    sessionsDir: string;
+    project: ProjectConfig | undefined;
+  } {
     for (const proj of Object.values(config.projects)) {
       const dir = getProjectSessionsDir(proj);
       const metadata = readMetadataRaw(dir, sessionId);
       if (metadata) {
-        raw = metadata;
-        sessionsDir = dir;
-        project = proj;
-        break;
+        return { raw: metadata, sessionsDir: dir, project: proj };
+      }
+    }
+    throw new Error(`Session ${sessionId} not found`);
+  }
+
+  /** Destroy only the runtime, keeping the worktree and metadata intact. */
+  async function killRuntime(sessionId: SessionId): Promise<void> {
+    const { raw, sessionsDir, project } = findSession(sessionId);
+
+    if (raw["runtimeHandle"]) {
+      const handle = safeJsonParse<RuntimeHandle>(raw["runtimeHandle"]);
+      if (handle) {
+        const runtimePlugin = registry.get<Runtime>(
+          "runtime",
+          handle.runtimeName ??
+            (project ? (project.runtime ?? config.defaults.runtime) : config.defaults.runtime),
+        );
+        if (runtimePlugin) {
+          try {
+            await runtimePlugin.destroy(handle);
+          } catch {
+            // Runtime might already be gone
+          }
+        }
       }
     }
 
-    if (!raw || !sessionsDir) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
+    // Mark status as idle so the session stays visible in the dashboard
+    updateMetadata(sessionsDir, sessionId, { status: "idle" });
+  }
+
+  async function kill(sessionId: SessionId): Promise<void> {
+    const { raw, sessionsDir, project } = findSession(sessionId);
 
     // Destroy runtime — prefer handle.runtimeName to find the correct plugin
     if (raw["runtimeHandle"]) {
@@ -788,9 +829,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     }
 
     // Destroy workspace — skip if worktree is the project path (no isolation was used)
+    // or if worktree was already cleaned up by delayed cleanup
     const worktree = raw["worktree"];
     const isProjectPath = project && worktree === project.path;
-    if (worktree && !isProjectPath) {
+    const alreadyCleaned = Boolean(raw["worktreeCleanedAt"]);
+    if (worktree && !isProjectPath && !alreadyCleaned) {
       const workspacePlugin = project
         ? resolvePlugins(project).workspace
         : registry.get<Workspace>("workspace", config.defaults.workspace);
@@ -824,13 +867,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
         const plugins = resolvePlugins(project);
         let shouldKill = false;
+        let prMergedOrClosed = false;
 
-        // Check if PR is merged
+        // Check if PR is merged/closed
         if (session.pr && plugins.scm) {
           try {
             const prState = await plugins.scm.getPRState(session.pr);
             if (prState === PR_STATE.MERGED || prState === PR_STATE.CLOSED) {
               shouldKill = true;
+              prMergedOrClosed = true;
             }
           } catch {
             // Can't check PR — skip
@@ -859,7 +904,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
         if (shouldKill) {
           if (!options?.dryRun) {
-            await kill(session.id);
+            // If the runtime is dead but the PR is still open, preserve
+            // the worktree so the branch backing the PR remains intact.
+            // Only fully kill (runtime + worktree + archive) when the PR
+            // is merged/closed or there's no open PR.
+            if (!prMergedOrClosed && session.pr) {
+              // Runtime-only cleanup: destroy runtime but keep worktree + metadata
+              await killRuntime(session.id);
+            } else {
+              await kill(session.id);
+            }
           }
           result.killed.push(session.id);
         } else {
@@ -914,7 +968,96 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       throw new Error(`No runtime plugin for session ${sessionId}`);
     }
 
+    // Verify the agent process is still running before sending.
+    // If the agent has exited, the tmux pane falls back to a shell (zsh/bash)
+    // and the message would be interpreted as a shell command — not what we want.
+    const agentPluginName = project
+      ? (project.agent ?? config.defaults.agent)
+      : config.defaults.agent;
+    const agentPlugin = registry.get<Agent>("agent", agentPluginName);
+    if (agentPlugin?.isProcessRunning) {
+      const agentAlive = await agentPlugin.isProcessRunning(handle).catch(() => false);
+      console.log(
+        `[send] Session ${sessionId}: agentAlive=${agentAlive}, handle=${handle.id}, message="${message.slice(0, 80)}…"`,
+      );
+      if (!agentAlive) {
+        console.log(
+          `[send] Agent not running for session ${sessionId} (handle: ${handle.id}). Attempting restore…`,
+        );
+        // Agent exited — attempt to restore before sending.
+        // restore() destroys the old runtime and creates a new one with a new handle,
+        // so we must re-read the handle from metadata afterwards.
+        // After restore, we must wait for the agent to become idle/ready before
+        // sending — a resumed agent may continue its previous work first.
+        try {
+          const restored = await restore(sessionId);
+          if (!restored.runtimeHandle) {
+            throw new Error("Restored session has no runtime handle");
+          }
+          handle = restored.runtimeHandle;
+
+          // Wait for the agent to be running AND idle (at the prompt).
+          // A resumed agent may continue its previous work — we must wait
+          // for it to finish before sending a new instruction.
+          const MAX_WAIT_MS = 120_000; // 2 minutes max
+          const POLL_MS = 5_000;
+          const startTime = Date.now();
+          let agentReady = false;
+
+          while (Date.now() - startTime < MAX_WAIT_MS) {
+            await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+
+            const isRunning = await agentPlugin
+              .isProcessRunning(handle)
+              .catch(() => false);
+            if (!isRunning) {
+              // Agent started then exited — might have crashed or finished
+              // Re-check in case it's restarting
+              continue;
+            }
+
+            // Check if agent is at the prompt (idle/ready)
+            if (agentPlugin.getActivityState) {
+              const current = await get(sessionId);
+              if (current) {
+                const activity = await agentPlugin.getActivityState(current);
+                if (activity && (activity.state === "ready" || activity.state === "idle")) {
+                  agentReady = true;
+                  console.log(`[send] Agent ready for session ${sessionId} after restore`);
+                  break;
+                }
+                console.log(
+                  `[send] Waiting for agent to be ready (state: ${activity?.state ?? "unknown"})…`,
+                );
+              }
+            } else {
+              // No getActivityState — fall back to process check only
+              agentReady = true;
+              break;
+            }
+          }
+
+          if (!agentReady) {
+            console.warn(
+              `[send] Agent did not become ready within ${MAX_WAIT_MS / 1000}s — sending anyway`,
+            );
+          }
+        } catch (restoreErr) {
+          const msg =
+            `Cannot send message to session ${sessionId}: agent has exited and restore failed`;
+          console.error(`[send] ${msg}`, restoreErr);
+          throw new Error(msg, { cause: restoreErr });
+        }
+      }
+    } else {
+      console.warn(
+        `[send] No agent plugin or isProcessRunning not available (plugin: ${agentPluginName}). Sending without liveness check.`,
+      );
+    }
+
+    console.log(`[send] Sending message to session ${sessionId} via handle ${handle.id}`);
     await runtimePlugin.sendMessage(handle, message);
+    console.log(`[send] Message sent successfully to session ${sessionId}`);
   }
 
   async function restore(sessionId: SessionId): Promise<Session> {
@@ -982,11 +1125,26 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     await enrichSessionWithRuntimeState(session, plugins, true);
 
     // 3. Validate restorability
-    if (!isRestorable(session)) {
-      if (NON_RESTORABLE_STATUSES.has(session.status)) {
-        throw new SessionNotRestorableError(sessionId, `status is "${session.status}"`);
-      }
-      throw new SessionNotRestorableError(sessionId, "session is not in a terminal state");
+    //    A session is restorable if:
+    //    - It's in a terminal state (killed, done, etc.) OR
+    //    - The agent process is not running (covers cases like changes_requested
+    //      where status is non-terminal but the agent has exited)
+    //    But never restore merged sessions.
+    if (NON_RESTORABLE_STATUSES.has(session.status)) {
+      throw new SessionNotRestorableError(sessionId, `status is "${session.status}"`);
+    }
+
+    const agentNotRunning =
+      session.activity === "exited" ||
+      (plugins.agent && session.runtimeHandle
+        ? !(await plugins.agent.isProcessRunning(session.runtimeHandle).catch(() => true))
+        : false);
+
+    if (!isRestorable(session) && !agentNotRunning) {
+      throw new SessionNotRestorableError(
+        sessionId,
+        `agent is still running (status: "${session.status}", activity: "${session.activity}")`,
+      );
     }
 
     // 4. Validate required plugins (plugins already resolved above for enrichment)
@@ -1060,9 +1218,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       launchCommand = plugins.agent.getLaunchCommand(agentLaunchConfig);
     }
 
+    console.log(`[restore] Session ${sessionId}: launchCommand = ${launchCommand}`);
+    console.log(`[restore] Session ${sessionId}: workspacePath = ${workspacePath}`);
+
     const environment = plugins.agent.getEnvironment(agentLaunchConfig);
 
-    // 8. Create runtime (reuse tmuxName from metadata)
+    // 8. Write permission settings BEFORE launching agent
+    if (plugins.agent.preLaunchSetup) {
+      await plugins.agent.preLaunchSetup(workspacePath);
+    }
+
+    // 9. Create runtime (reuse tmuxName from metadata)
     const tmuxName = raw["tmuxName"];
     const handle = await plugins.runtime.create({
       sessionId: tmuxName ?? sessionId,
@@ -1076,6 +1242,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         ...(tmuxName && { AO_TMUX_NAME: tmuxName }),
       },
     });
+
+    console.log(`[restore] Session ${sessionId}: runtime created, handle = ${JSON.stringify(handle)}`);
 
     // 9. Update metadata — merge updates, preserving existing fields
     const now = new Date().toISOString();
@@ -1101,6 +1269,28 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       } catch {
         // Non-fatal — session is already running
       }
+    }
+
+    // 11. Auto-accept Claude Code startup prompts (fire-and-forget).
+    //     Two prompts may appear:
+    //     a) Workspace trust: "Yes, I trust this folder" — pre-selected, just Enter.
+    //     b) Bypass permissions warning: "No, exit" is pre-selected (option 1).
+    //        Must send Down to select "Yes, I accept" (option 2), then Enter.
+    //     We handle both by sending Down+Enter — if the trust prompt is showing,
+    //     Down is harmless (single option); if bypass prompt is showing, Down
+    //     selects the correct option. Then Enter confirms.
+    const sendKeys = plugins.runtime.sendKeys?.bind(plugins.runtime);
+    if (sendKeys) {
+      void (async () => {
+        try {
+          await sleep(3000);
+          await sendKeys(handle, "Down");
+          await sleep(200);
+          await sendKeys(handle, "Enter");
+        } catch {
+          // Non-fatal — prompt may not have appeared
+        }
+      })();
     }
 
     return restoredSession;

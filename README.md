@@ -44,10 +44,12 @@ ao spawn my-project 123
 
 1. **Workspace** creates an isolated git worktree with a feature branch
 2. **Runtime** starts a tmux session (or Docker container)
-3. **Agent** launches Claude Code (or Codex, or Aider) with issue context
+3. **Agent** launches Claude Code (or Codex, or Aider) with issue context + persona behavior
 4. Agent works autonomously — reads code, writes tests, creates PR
-5. **Reactions** auto-handle CI failures and review comments
-6. **Notifier** pings you only when judgment is needed
+5. **Lifecycle** monitors CI, reviews, merge conflicts — auto-handles or escalates
+6. **Reactions** auto-fix CI failures, forward review comments, auto-merge when approved
+7. **Visual Verification** captures screenshots before PR creation (optional, Playwright-based)
+8. **Notifier** pings you only when judgment is needed
 
 ### Plugin Architecture
 
@@ -84,6 +86,22 @@ projects:
     path: ~/my-app
     defaultBranch: main
     sessionPrefix: app
+    agentPersonas: [test-writer, security-auditor]  # combinable behavior profiles
+
+    # Auto-spawn agents from issue tracker
+    queuePoller:
+      enabled: true
+      interval: 30s
+      maxSessions: 5
+      filters:
+        labels: [agent]
+        statusName: "Ready to start"
+
+    # Visual verification (Playwright screenshots before PR)
+    # verify:
+    #   enabled: true
+    #   baseUrl: http://localhost:3000
+    #   paths: [{ url: "/dashboard", name: "Dashboard" }]
 
 reactions:
   ci-failed:
@@ -92,14 +110,64 @@ reactions:
     retries: 2
   changes-requested:
     auto: true
-    action: send-to-agent
+    action: send-comments-to-agent
     escalateAfter: 30m
   approved-and-green:
-    auto: false       # flip to true for auto-merge
-    action: notify
+    auto: true
+    action: auto-merge      # squash-merges when CI green + approved
 ```
 
-CI fails → agent gets the logs and fixes it. Reviewer requests changes → agent addresses them. PR approved with green CI → you get a notification to merge.
+CI fails → agent gets the logs and fixes it. Reviewer requests changes → agent addresses them. PR approved with green CI → auto-merge (or notify, your choice).
+
+### Agent Personas
+
+Personas are pre-built behavior profiles that shape how agents approach their work. Combine multiple personas per project — they stack.
+
+| Persona | Focus |
+|---------|-------|
+| `security-auditor` | Vulnerability scanning, dependency audits, secrets detection |
+| `code-reviewer` | Code quality, patterns, linting, dead code removal |
+| `test-writer` | Unit/integration/E2E tests, coverage, mocking |
+| `bug-fixer` | Root cause analysis, minimal fixes, regression tests |
+| `refactorer` | Behavior-preserving cleanup, type safety, modularity |
+| `full-stack-dev` | End-to-end feature implementation, API design, UI states |
+
+**Custom personas:** drop a `.md` file in the `personas/` directory (or set `personasDir` in config) and reference it by filename. No code changes needed.
+
+### Queue Poller
+
+Automatically spawn agent sessions from your issue tracker — no manual intervention needed. Configure filters (labels, status, assignee) and the poller picks up matching issues, spawns sessions, and moves issues to "In Progress".
+
+```yaml
+queuePoller:
+  enabled: true
+  interval: 30s
+  maxSessions: 5
+  filters:
+    labels: [agent]
+    statusName: "Ready to start"
+  onSpawn:
+    moveToStatus: "In Progress"
+```
+
+### Visual Verification
+
+Capture screenshots of your running app after agent changes — before the PR is even created. Supports authentication (Firebase, stored auth state), smart file-pattern matching (only runs when UI files are touched), and auto-posts screenshots as PR comments.
+
+```bash
+ao verify INT-123    # Run verification manually
+```
+
+### Auto-Merge & Lifecycle
+
+The lifecycle manager tracks every session through a full state machine: `spawning → working → pr_open → ci_failed/ci_passing → review_pending → approved → merged`. At each stage, configurable reactions handle the routine work:
+
+- **CI failures** → send logs to agent for auto-fix (with retry + escalation)
+- **Review comments** → forward to agent with file/line context
+- **Merge conflicts** → agent rebases and resolves
+- **Approved + CI green** → auto-merge (squash, merge, or rebase)
+
+Rate-limited GitHub API calls with exponential backoff and PR state caching for efficient polling.
 
 See [`agent-orchestrator.yaml.example`](agent-orchestrator.yaml.example) for the full reference.
 
@@ -112,6 +180,7 @@ ao send <session> "Fix the tests"      # Send instructions
 ao session ls                          # List sessions
 ao session kill <session>              # Kill a session
 ao session restore <session>           # Revive a crashed agent
+ao verify <issue>                      # Run visual verification
 ao dashboard                           # Open web dashboard
 ```
 

@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# Update GitNexus code index (non-blocking — skipped in CI)
+npm run gitnexus:index

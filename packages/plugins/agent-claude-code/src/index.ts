@@ -18,7 +18,7 @@ import { execFile } from "node:child_process";
 import { readdir, readFile, stat, open, writeFile, mkdir, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -146,8 +146,11 @@ if [[ "$command" =~ ^git[[:space:]]+checkout[[:space:]]+([^[:space:]-]+[/-][^[:s
    [[ "$command" =~ ^git[[:space:]]+switch[[:space:]]+([^[:space:]-]+[/-][^[:space:]]+) ]]; then
   branch="\${BASH_REMATCH[1]}"
 
-  # Avoid updating for checkout of commits/tags
-  if [[ -n "$branch" && "$branch" != "HEAD" ]]; then
+  # Avoid updating for checkout of commits/tags, remote refs, or base branches
+  if [[ -n "$branch" && "$branch" != "HEAD" && \
+        ! "$branch" =~ ^origin/ && \
+        "$branch" != "main" && "$branch" != "master" && \
+        "$branch" != "develop" && "$branch" != "dev" ]]; then
     update_metadata_key "branch" "$branch"
     echo '{"systemMessage": "Updated metadata: branch = '"$branch"'"}'
     exit 0
@@ -234,6 +237,10 @@ interface JsonlLine {
   type?: string;
   summary?: string;
   message?: { content?: string; role?: string };
+  // Tool use fields (for progress extraction)
+  tool?: string;
+  name?: string;
+  input?: Record<string, unknown>;
   // Cost/usage fields
   costUSD?: number;
   usage?: {
@@ -380,6 +387,108 @@ function extractCost(lines: JsonlLine[]): CostEstimate | undefined {
   }
 
   return { inputTokens, outputTokens, estimatedCostUsd: totalCost };
+}
+
+/**
+ * Extract a human-readable progress description from the last few JSONL entries.
+ * Scans backwards to find the most recent actionable entry (tool_use, assistant thinking, etc.)
+ * and produces a short description like "Reading src/index.ts" or "Running tests".
+ */
+function extractProgressText(lines: JsonlLine[]): string | null {
+  // Scan backwards to find last meaningful entry
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line?.type) continue;
+
+    if (line.type === "tool_use") {
+      const toolName = line.tool ?? line.name ?? "tool";
+      return formatToolProgress(toolName, line.input);
+    }
+
+    if (line.type === "tool_result") {
+      // Look further back for the tool_use that triggered this result
+      continue;
+    }
+
+    if (line.type === "assistant") {
+      // Agent is thinking / composing a response
+      return "Thinking…";
+    }
+
+    if (line.type === "progress") {
+      // Direct progress message from Claude Code
+      const msg =
+        typeof line.message?.content === "string" ? line.message.content : null;
+      return msg ? truncateProgress(msg) : "Working…";
+    }
+
+    if (line.type === "summary") {
+      return null; // Session is done, no active progress
+    }
+
+    if (line.type === "result") {
+      return null; // Agent completed
+    }
+  }
+  return null;
+}
+
+/** Format a tool use into a human-readable progress string */
+function formatToolProgress(
+  toolName: string,
+  input?: Record<string, unknown>,
+): string {
+  const name = toolName.toLowerCase();
+
+  if (name === "read" || name === "read_file") {
+    const path = typeof input?.file_path === "string" ? shortenPath(input.file_path) : null;
+    return path ? `Reading ${path}` : "Reading file…";
+  }
+
+  if (name === "write" || name === "write_file") {
+    const path = typeof input?.file_path === "string" ? shortenPath(input.file_path) : null;
+    return path ? `Writing ${path}` : "Writing file…";
+  }
+
+  if (name === "edit" || name === "edit_file") {
+    const path = typeof input?.file_path === "string" ? shortenPath(input.file_path) : null;
+    return path ? `Editing ${path}` : "Editing file…";
+  }
+
+  if (name === "bash" || name === "execute_command") {
+    const cmd = typeof input?.command === "string" ? input.command : null;
+    if (cmd) {
+      // Extract first meaningful word(s) from command
+      const short = cmd.split("\n")[0]?.trim() ?? cmd;
+      return `Running: ${truncateProgress(short, 60)}`;
+    }
+    return "Running command…";
+  }
+
+  if (name === "glob" || name === "search" || name === "grep") {
+    return "Searching files…";
+  }
+
+  if (name === "task" || name === "todowrite") {
+    return "Planning…";
+  }
+
+  // Generic fallback: capitalize tool name
+  const display = toolName.charAt(0).toUpperCase() + toolName.slice(1);
+  return `Using ${display}…`;
+}
+
+/** Shorten a file path to just the last 2 segments */
+function shortenPath(filePath: string): string {
+  const parts = filePath.replace(/\\/g, "/").split("/").filter(Boolean);
+  if (parts.length <= 2) return parts.join("/");
+  return "…/" + parts.slice(-2).join("/");
+}
+
+/** Truncate a progress string to a max length */
+function truncateProgress(text: string, maxLen = 80): string {
+  if (text.length <= maxLen) return text;
+  return text.substring(0, maxLen - 1) + "…";
 }
 
 // =============================================================================
@@ -574,6 +683,140 @@ async function setupHookInWorkspace(workspacePath: string, hookCommand: string):
   await writeFile(settingsPath, JSON.stringify(existingSettings, null, 2) + "\n", "utf-8");
 }
 
+/**
+ * Default allowed tools for automated agent sessions.
+ * These are written to settings.local.json in the workspace so that
+ * --permission-mode dontAsk doesn't deny critical commands like gh, git, npm.
+ */
+/**
+ * Tools to auto-allow when running in --permission-mode dontAsk.
+ *
+ * We use "Bash" (no pattern) to allow ALL bash commands because:
+ *  1. Pattern matching breaks on complex shell constructs (heredocs, subshells,
+ *     env-var prefixes like GIT_AUTHOR_NAME=... git commit)
+ *  2. The agent is a trusted automated process — restricting specific command
+ *     prefixes adds no real security since git/gh/npm are all equally powerful
+ *  3. Playing whack-a-mole with patterns is fragile and causes CI/PR failures
+ */
+const DEFAULT_ALLOWED_TOOLS: string[] = [
+  // Allow all bash commands — agent is trusted, pattern matching is too fragile
+  "Bash",
+  // File editing tools
+  "Edit",
+  "Write",
+  "Read",
+  "Glob",
+  "Grep",
+  "NotebookEdit",
+  // Agent delegation
+  "Task",
+  // Web tools
+  "WebFetch",
+  "WebSearch",
+];
+
+/**
+ * Merge DEFAULT_ALLOWED_TOOLS into a settings.local.json file.
+ * Creates the file if missing, or adds new tools to the existing allowlist
+ * (preserves any user-added entries while ensuring required tools are present).
+ */
+async function mergeAllowlistInto(settingsPath: string): Promise<void> {
+  const dir = dirname(settingsPath);
+  try {
+    await mkdir(dir, { recursive: true });
+  } catch {
+    // Directory might already exist
+  }
+
+  // Read existing settings if present
+  let existing: Record<string, unknown> = {};
+  if (existsSync(settingsPath)) {
+    try {
+      existing = JSON.parse(await readFile(settingsPath, "utf-8")) as Record<string, unknown>;
+    } catch {
+      // Corrupted file — overwrite
+    }
+  }
+
+  // Merge: ensure all DEFAULT_ALLOWED_TOOLS are in the allowlist
+  const perms = (existing.permissions ?? {}) as Record<string, unknown>;
+  const currentAllow = Array.isArray(perms.allow) ? (perms.allow as string[]) : [];
+  const merged = [...new Set([...currentAllow, ...DEFAULT_ALLOWED_TOOLS])];
+
+  // Skip write if nothing changed
+  if (merged.length === currentAllow.length && merged.every((t) => currentAllow.includes(t))) {
+    return;
+  }
+
+  const settings = {
+    ...existing,
+    permissions: {
+      ...perms,
+      allow: merged,
+    },
+  };
+
+  await writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+}
+
+/**
+ * Resolve the git repo root from a path (handles worktrees).
+ * In a worktree, `git rev-parse --show-toplevel` returns the worktree root,
+ * but `git rev-parse --git-common-dir` returns the main repo's .git dir,
+ * from which we can derive the main repo root.
+ */
+async function resolveGitRepoRoot(workspacePath: string): Promise<string | null> {
+  try {
+    // Get the common .git directory (shared across worktrees)
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--git-common-dir"], {
+      cwd: workspacePath,
+      timeout: 5000,
+    });
+    const gitCommonDir = stdout.trim();
+    if (!gitCommonDir || gitCommonDir === ".git") {
+      // Not a worktree — return the workspace path itself
+      return workspacePath;
+    }
+    // gitCommonDir is something like /Users/x/repo/.git — parent is the repo root
+    const resolved = resolve(workspacePath, gitCommonDir);
+    return dirname(resolved);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ensure permissions allowlist for --permission-mode dontAsk.
+ * Writes to ALL relevant locations so Claude Code finds it:
+ *   1. Global:    ~/.claude/settings.local.json — always found
+ *   2. Repo root: {mainRepo}/.claude/settings.local.json — where Claude Code looks
+ *   3. Workspace: {workspacePath}/.claude/settings.local.json — if different from repo root
+ *
+ * Claude Code merges allow lists from all levels, so all contribute.
+ */
+async function ensureLocalSettings(workspacePath: string): Promise<void> {
+  // 1. Global settings — always found by Claude Code
+  const globalSettingsPath = join(homedir(), ".claude", "settings.local.json");
+  await mergeAllowlistInto(globalSettingsPath);
+
+  // 2. Main git repo root — where Claude Code determines the project
+  const repoRoot = await resolveGitRepoRoot(workspacePath);
+  if (repoRoot && repoRoot !== workspacePath) {
+    try {
+      await mergeAllowlistInto(join(repoRoot, ".claude", "settings.local.json"));
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  // 3. Per-workspace settings — belt-and-suspenders for worktrees
+  try {
+    await mergeAllowlistInto(join(workspacePath, ".claude", "settings.local.json"));
+  } catch {
+    // Non-fatal — global + repo root settings should suffice
+  }
+}
+
 // =============================================================================
 // Agent Implementation
 // =============================================================================
@@ -590,6 +833,8 @@ function createClaudeCodeAgent(): Agent {
 
       if (config.permissions === "skip") {
         parts.push("--dangerously-skip-permissions");
+      } else if (config.permissions === "dontAsk" || config.permissions === "acceptEdits") {
+        parts.push("--permission-mode", config.permissions);
       }
 
       if (config.model) {
@@ -726,6 +971,7 @@ function createClaudeCodeAgent(): Agent {
         summaryIsFallback: summaryResult?.isFallback,
         agentSessionId,
         cost: extractCost(lines),
+        progressText: extractProgressText(lines),
       };
     },
 
@@ -749,6 +995,11 @@ function createClaudeCodeAgent(): Agent {
 
       if (project.agentConfig?.permissions === "skip") {
         parts.push("--dangerously-skip-permissions");
+      } else if (
+        project.agentConfig?.permissions === "dontAsk" ||
+        project.agentConfig?.permissions === "acceptEdits"
+      ) {
+        parts.push("--permission-mode", project.agentConfig.permissions);
       }
 
       if (project.agentConfig?.model) {
@@ -758,10 +1009,18 @@ function createClaudeCodeAgent(): Agent {
       return parts.join(" ");
     },
 
+    async preLaunchSetup(workspacePath: string): Promise<void> {
+      // Write permissions allowlist BEFORE agent starts — avoids race condition
+      // where agent tries gh/git commands before settings.local.json exists
+      await ensureLocalSettings(workspacePath);
+    },
+
     async setupWorkspaceHooks(workspacePath: string, _config: WorkspaceHooksConfig): Promise<void> {
       // Use absolute path for hook command (specific to this workspace)
       const hookScriptPath = join(workspacePath, ".claude", "metadata-updater.sh");
       await setupHookInWorkspace(workspacePath, hookScriptPath);
+      // Also ensure permissions (belt-and-suspenders)
+      await ensureLocalSettings(workspacePath);
     },
 
     async postLaunchSetup(session: Session): Promise<void> {

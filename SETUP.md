@@ -45,6 +45,37 @@ Comprehensive guide to installing, configuring, and troubleshooting Agent Orches
   # See: https://github.com/cli/cli/blob/trunk/docs/install_linux.md
   ```
 
+- **Claude Code CLI** (for claude-code agent) - The default AI coding agent
+
+  ```bash
+  claude --version
+
+  # Install globally via npm
+  npm install -g @anthropic-ai/claude-code
+
+  # Verify
+  claude --version
+  ```
+
+  > **Note:** Claude Code must be on your `PATH` for `ao spawn` to work. The orchestrator invokes the `claude` command directly.
+
+- **pnpm** (for building from source) - Fast, disk-efficient package manager
+
+  ```bash
+  pnpm --version
+
+  # Install via corepack (recommended, ships with Node 20+)
+  corepack enable
+  corepack prepare pnpm@latest --activate
+
+  # Or install via npm
+  npm install -g pnpm
+
+  # If pnpm warns about missing global bin dir:
+  pnpm setup
+  source ~/.zshrc  # or ~/.bashrc
+  ```
+
 ### Optional
 
 - **Linear API Key** - If using Linear for issue tracking
@@ -73,7 +104,9 @@ pnpm install
 pnpm build
 
 # Link CLI globally
-npm link -g packages/cli
+cd packages/cli
+pnpm link --global
+cd ../..
 
 # Verify
 ao --version
@@ -81,11 +114,24 @@ ao --version
 
 > **Coming soon:** `npm install -g @composio/ao-cli` once published to npm.
 
-**If you don't have pnpm:**
+> **Troubleshooting `pnpm link`:** If you see `ERR_PNPM_NO_GLOBAL_BIN_DIR`, run `pnpm setup` first, then `source ~/.zshrc` (or restart your terminal) before retrying.
+
+### Trust the Worktree Directory
+
+Claude Code prompts for trust the first time it runs in an unfamiliar directory. Since agents run unattended in worktrees, you must pre-trust the worktree base directory to avoid agents getting stuck on the trust prompt:
 
 ```bash
-npm install -g pnpm
+# Create the worktree directory if it doesn't exist
+mkdir -p ~/.worktrees
+
+# Launch Claude Code once to trust this directory, then exit (Ctrl+C)
+cd ~/.worktrees
+claude
 ```
+
+When prompted, select "Yes, I trust this folder." This registers `~/.worktrees` (and all subdirectories) as trusted, so future agent sessions in worktrees won't be blocked by the trust prompt.
+
+> **Tip:** If you use a custom `worktreeDir` in your config, trust that directory instead.
 
 ## First-Time Configuration
 

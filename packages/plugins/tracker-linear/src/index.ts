@@ -380,7 +380,30 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
       const filter: Record<string, unknown> = {};
       const variables: Record<string, unknown> = {};
 
-      if (filters.state === "closed") {
+      if (filters.statusName) {
+        // Resolve status name to workflow state ID(s) first, then filter by ID.
+        // We look up matching states by name because the Linear IssueFilter
+        // reliably supports state.id but state.name may not be available.
+        const teamIdForLookup = project.tracker?.["teamId"];
+        const teamFilter = teamIdForLookup
+          ? `, filter: { team: { id: { eq: "${String(teamIdForLookup)}" } } }`
+          : "";
+        const statesData = await query<{
+          workflowStates: { nodes: Array<{ id: string; name: string; type: string }> };
+        }>(
+          `query { workflowStates(first: 100${teamFilter}) { nodes { id name type } } }`,
+        );
+        const targetName = filters.statusName.toLowerCase();
+        const matchingIds = statesData.workflowStates.nodes
+          .filter((s) => s.name.toLowerCase() === targetName)
+          .map((s) => s.id);
+        if (matchingIds.length > 0) {
+          filter["state"] = { id: { in: matchingIds } };
+        } else {
+          // No matching state found — return empty results
+          return [];
+        }
+      } else if (filters.state === "closed") {
         filter["state"] = { type: { in: ["completed", "canceled"] } };
       } else if (filters.state !== "all") {
         // Default to open (exclude completed/canceled) to match tracker-github
@@ -451,8 +474,8 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
       const issueUuid = issueData.issue.id;
       const teamId = issueData.issue.team.id;
 
-      // Handle state change
-      if (update.state) {
+      // Handle state change (by name or by type)
+      if (update.statusName || update.state) {
         // Need to find the correct workflow state ID
         const statesData = await query<{
           workflowStates: { nodes: Array<{ id: string; name: string; type: string }> };
@@ -465,17 +488,42 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
           { teamId },
         );
 
-        const targetType =
-          update.state === "closed"
-            ? "completed"
-            : update.state === "open"
-              ? "unstarted"
-              : "started";
+        let targetState: { id: string; name: string; type: string } | undefined;
 
-        const targetState = statesData.workflowStates.nodes.find((s) => s.type === targetType);
+        if (update.statusName) {
+          // Match by exact workflow state name (e.g. "In Progress", "Ready to start")
+          const targetName = update.statusName.toLowerCase();
+          targetState = statesData.workflowStates.nodes.find(
+            (s) => s.name.toLowerCase() === targetName,
+          );
+          if (!targetState) {
+            throw new Error(
+              `No workflow state named "${update.statusName}" found for team ${teamId}`,
+            );
+          }
+        } else if (update.state === "review") {
+          // For "review", match by name first (e.g. "In Review", "Ready for Review")
+          // then fall back to type-based matching for other states
+          const reviewNames = ["in review", "ready for review", "review", "code review"];
+          targetState = statesData.workflowStates.nodes.find((s) =>
+            reviewNames.includes(s.name.toLowerCase()),
+          );
+          // Fall back to any "started" state if no review-named state found
+          if (!targetState) {
+            targetState = statesData.workflowStates.nodes.find((s) => s.type === "started");
+          }
+        } else {
+          const targetType =
+            update.state === "closed"
+              ? "completed"
+              : update.state === "open"
+                ? "unstarted"
+                : "started";
+          targetState = statesData.workflowStates.nodes.find((s) => s.type === targetType);
+        }
 
         if (!targetState) {
-          throw new Error(`No workflow state of type "${targetType}" found for team ${teamId}`);
+          throw new Error(`No workflow state for "${update.statusName ?? update.state}" found for team ${teamId}`);
         }
 
         await query(

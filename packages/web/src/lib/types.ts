@@ -68,6 +68,8 @@ export interface DashboardSession {
   summary: string | null;
   /** True when the summary is a low-quality fallback (e.g. truncated spawn prompt) */
   summaryIsFallback: boolean;
+  /** Human-readable description of what the agent is currently doing */
+  progressText: string | null;
   createdAt: string;
   lastActivityAt: string;
   pr: DashboardPR | null;
@@ -136,6 +138,7 @@ export interface SSESnapshotEvent {
     activity: ActivityState | null;
     attentionLevel: AttentionLevel;
     lastActivityAt: string;
+    progressText?: string | null;
   }>;
 }
 
@@ -206,7 +209,11 @@ export function getAttentionLevel(session: DashboardSession): AttentionLevel {
   }
 
   // ── Review: problems that need investigation ──────────────────────
-  if (session.status === "ci_failed" || session.status === "changes_requested") {
+  if (
+    session.status === "ci_failed" ||
+    session.status === "changes_requested" ||
+    session.status === "merge_conflicts"
+  ) {
     return "review";
   }
   if (session.pr && !isPRRateLimited(session.pr)) {

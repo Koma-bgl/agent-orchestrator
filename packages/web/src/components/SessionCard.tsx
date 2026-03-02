@@ -18,6 +18,7 @@ import { ActivityDot } from "./ActivityDot";
 
 interface SessionCardProps {
   session: DashboardSession;
+  progressText?: string | null;
   onSend?: (sessionId: string, message: string) => void;
   onKill?: (sessionId: string) => void;
   onMerge?: (prNumber: number) => void;
@@ -33,8 +34,8 @@ const borderColorByLevel: Record<AttentionLevel, string> = {
   done:    "border-l-[var(--color-border-default)]",
 };
 
-export function SessionCard({ session, onSend, onKill, onMerge, onRestore }: SessionCardProps) {
-  const [expanded, setExpanded] = useState(false);
+export function SessionCard({ session, progressText, onSend, onKill, onMerge, onRestore }: SessionCardProps) {
+  const [_expanded] = useState(false);
   const [sendingAction, setSendingAction] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const level = getAttentionLevel(session);
@@ -70,18 +71,18 @@ export function SessionCard({ session, onSend, onKill, onMerge, onRestore }: Ses
         isReadyToMerge
           ? "card-merge-ready border-[rgba(63,185,80,0.3)]"
           : "border-[var(--color-border-default)]",
-        expanded && "border-[var(--color-border-strong)]",
+        _expanded && "border-[var(--color-border-strong)]",
         pr?.state === "merged" && "opacity-55",
       )}
       style={{
         borderRadius: 7,
-        background: (expanded && !isReadyToMerge)
+        background: (_expanded && !isReadyToMerge)
           ? "linear-gradient(175deg, rgba(32,41,53,1) 0%, rgba(22,28,37,1) 100%)"
           : undefined,
       }}
       onClick={(e) => {
         if ((e.target as HTMLElement).closest("a, button, textarea")) return;
-        setExpanded(!expanded);
+        window.location.href = `/sessions/${encodeURIComponent(session.id)}`;
       }}
     >
       {/* Header row: dot + session ID + terminal link */}
@@ -121,6 +122,16 @@ export function SessionCard({ session, onSend, onKill, onMerge, onRestore }: Ses
           {title}
         </p>
       </div>
+
+      {/* Progress text — shows what the agent is currently doing */}
+      {progressText && session.activity === "active" && (
+        <div className="flex items-center gap-1.5 px-4 pb-2.5">
+          <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-[var(--color-status-working)]" />
+          <span className="truncate font-[var(--font-mono)] text-[10px] text-[var(--color-text-muted)]">
+            {progressText}
+          </span>
+        </div>
+      )}
 
       {/* Meta row: branch + PR pills */}
       <div className="flex flex-wrap items-center gap-1.5 px-4 pb-2.5">
@@ -195,7 +206,7 @@ export function SessionCard({ session, onSend, onKill, onMerge, onRestore }: Ses
       )}
 
       {/* Expandable detail panel */}
-      {expanded && (
+      {_expanded && (
         <div className="border-t border-[var(--color-border-subtle)] px-4 py-3.5">
           {session.summary && pr?.title && session.summary !== pr.title && (
             <DetailSection label="Summary">

@@ -30,8 +30,9 @@ TypeScript (ESM), Node 20+, pnpm workspaces. Next.js 15 (App Router) + Tailwind.
 ## Directory Structure
 
 ```
+personas/        — Agent persona .md files (extensible, drop-in)
 packages/
-  core/          — @composio/ao-core (types, config, services)
+  core/          — @composio/ao-core (types, config, services, prompt-builder)
   cli/           — @composio/ao-cli (the `ao` command)
   web/           — @composio/ao-web (Next.js dashboard)
   plugins/
@@ -48,10 +49,15 @@ packages/
 
 1. `packages/core/src/types.ts` — all interfaces (Runtime, Agent, Workspace, Tracker, SCM, Notifier, Terminal)
 2. `agent-orchestrator.yaml.example` — config format
-3. Plugin examples:
+3. `packages/core/src/prompt-builder.ts` — layered prompt composition + persona loading
+4. `packages/core/src/lifecycle-manager.ts` — session state machine + reaction engine
+5. `packages/core/src/queue-poller.ts` — auto-spawn sessions from tracker issues
+6. `packages/core/src/verify-runner.ts` — Playwright-based visual verification
+7. Plugin examples:
    - `packages/plugins/runtime-tmux/src/index.ts` — Runtime implementation
-   - `packages/plugins/agent-claude-code/src/index.ts` — Agent implementation
-4. This file (CLAUDE.md) — code conventions
+   - `packages/plugins/agent-claude-code/src/index.ts` — Agent implementation (includes metadata hooks)
+   - `packages/plugins/scm-github/src/index.ts` — SCM implementation (PR/CI/review pipeline + caching)
+8. This file (CLAUDE.md) — code conventions
 
 ## TypeScript Conventions (MUST follow)
 
@@ -212,6 +218,102 @@ Then use `browser_navigate` as normal. If Playwright was previously used in the 
 
 Config loaded from `agent-orchestrator.yaml` (see `agent-orchestrator.yaml.example`). Paths support `~` expansion. Validated with Zod at load time. Per-project overrides for plugins and reactions.
 
+## Agent Personas
+
+Pre-built behavior profiles injected into agent prompts. Defined as `.md` files — extensible without code changes.
+
+**Resolution order** (first match wins):
+1. `personasDir` from config → `{personasDir}/{name}.md`
+2. Default `./personas/` relative to config file
+3. Built-in `AGENT_PERSONAS` map in `prompt-builder.ts` (hardcoded fallback)
+
+**Built-in personas:** `security-auditor`, `code-reviewer`, `test-writer`, `bug-fixer`, `refactorer`, `full-stack-dev`
+
+**Adding a custom persona:** drop a `.md` file in `personas/` and reference by filename (without extension):
+
+```yaml
+projects:
+  my-app:
+    agentPersonas: [test-writer, my-custom-persona]
+```
+
+**Prompt layering order:**
+1. `BASE_AGENT_PROMPT` — session lifecycle, git workflow, PR practices
+2. **Agent Personas** — behavior profiles from `.md` files (Layer 1.5)
+3. Config-derived context — project name, repo, tracker, reactions
+4. User rules — `agentRules` + `agentRulesFile`
+5. User prompt — explicit instructions (highest priority)
+
+See `packages/core/src/prompt-builder.ts` for implementation.
+
+## Queue Poller
+
+Auto-spawns agent sessions from tracker issues. Polls on interval, filters by labels/status/assignee, respects `maxSessions` cap per project.
+
+- Config: `queuePoller` in project config (see `agent-orchestrator.yaml.example`)
+- Implementation: `packages/core/src/queue-poller.ts`
+- Events: `queue.polled`, `queue.session_spawned`, `queue.spawn_failed`, `queue.cap_reached`
+- Post-spawn actions: move issue to status, add/remove labels
+
+## Worktree Cleanup
+
+Automatic worktree cleanup after PR merge. Frees disk space from stale worktrees while keeping sessions visible in the dashboard.
+
+- Config: `worktreeCleanup` in project config (`enabled`, `delayAfterMerge`)
+- `delayAfterMerge` supports duration strings: `"30m"`, `"6h"`, `"1d"` (default: `"1d"`)
+- Records `mergedAt` timestamp when PR merges, checks grace period each poll cycle
+- Only destroys the worktree — metadata is preserved (session stays in dashboard as `merged`)
+- `worktreeCleanedAt` is written to metadata after cleanup; prevents double-cleanup
+- `kill()` skips workspace destroy if `worktreeCleanedAt` is already set
+
+```yaml
+projects:
+  my-app:
+    worktreeCleanup:
+      enabled: true
+      delayAfterMerge: "1d"
+```
+
+## Session Lifecycle & Auto-Merge
+
+Full state machine: `spawning → working → pr_open → ci_failed/ci_passing → review_pending → changes_requested/approved → mergeable → merged → done`
+
+**Two-tier reaction system:**
+- **Tier 1 (auto-handle):** CI failures → send to agent. Review comments → forward to agent. Merge conflicts → agent rebases.
+- **Tier 2 (escalate):** After N retries or timeout → notify human.
+
+Auto-merge: when `approved-and-green` reaction is enabled, squash-merges PRs that are approved with green CI. Handles rebase when branch is behind.
+
+Implementation: `packages/core/src/lifecycle-manager.ts`
+
+## Visual Verification
+
+Playwright-based screenshot capture for UI verification before PR creation.
+
+- Auth strategies: `none`, `firebase-password`, `stored` (persisted auth state)
+- Smart file-pattern matching: only runs when PR touches files matching configured globs
+- Screenshots auto-posted as PR comments (configurable)
+- CLI: `ao verify <issue>` — `packages/cli/src/commands/verify.ts`
+- Runner: `packages/core/src/verify-runner.ts`
+
+## Rate-Limit Handling (GitHub)
+
+All GitHub CLI calls (`gh`) use exponential backoff with retry:
+- Detects rate-limit errors and `retry-after` headers
+- Shared backoff state across concurrent calls
+- Max wait: 120s before escalating
+- Applied in both `scm-github` and `tracker-github` plugins
+
+PR state and CI summary caching: `packages/plugins/scm-github/src/cache.ts`
+
+## Agent Metadata Hooks
+
+Agents auto-update session metadata when they run git/gh commands:
+- **Claude Code:** `PostToolUse` hook in `.claude/settings.json` — intercepts `gh pr create`, `git checkout -b`, `gh pr merge`
+- **Codex:** Shell wrapper pattern via `AO_BIN_DIR`
+- Metadata updates: PR URL, branch name, status
+- Implementation: `setupWorkspaceHooks()` in each agent plugin
+
 ## Design Decisions
 
 1. **Stateless orchestrator** — no database, flat metadata files + event log
@@ -220,3 +322,29 @@ Config loaded from `agent-orchestrator.yaml` (see `agent-orchestrator.yaml.examp
 4. **Two-tier event handling** — auto-handle routine issues, notify human when judgment needed
 5. **Backwards-compatible metadata** — flat key=value files
 6. **Security first** — `execFile` not `exec`, validate all external input
+
+<!-- gitnexus:start -->
+# GitNexus MCP
+
+This project is indexed by GitNexus as **agent-orchestrator** (1210 symbols, 3068 relationships, 87 execution flows).
+
+## Always Start Here
+
+1. **Read `gitnexus://repo/{name}/context`** — codebase overview + check index freshness
+2. **Match your task to a skill below** and **read that skill file**
+3. **Follow the skill's workflow and checklist**
+
+> If step 1 warns the index is stale, run `npx gitnexus analyze` in the terminal first.
+
+## Skills
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->

@@ -147,6 +147,10 @@ export function create(): Runtime {
       await tmux("send-keys", "-t", handle.id, "Enter");
     },
 
+    async sendKeys(handle: RuntimeHandle, keys: string): Promise<void> {
+      await tmux("send-keys", "-t", handle.id, keys);
+    },
+
     async getOutput(handle: RuntimeHandle, lines = 50): Promise<string> {
       try {
         return await tmux("capture-pane", "-t", handle.id, "-p", "-S", `-${lines}`);

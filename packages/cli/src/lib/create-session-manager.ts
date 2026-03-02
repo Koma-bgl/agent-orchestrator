@@ -45,3 +45,15 @@ export async function getSessionManager(config: OrchestratorConfig): Promise<Ses
   return createSessionManager({ config, registry });
 }
 
+/**
+ * Create a SessionManager and return it alongside the PluginRegistry.
+ * Used by commands that need both (e.g., dashboard with lifecycle manager).
+ */
+export async function getSessionManagerWithRegistry(
+  config: OrchestratorConfig,
+): Promise<{ sessionManager: SessionManager; registry: PluginRegistry }> {
+  const registry = await getRegistry(config);
+  const sessionManager = createSessionManager({ config, registry });
+  return { sessionManager, registry };
+}
+

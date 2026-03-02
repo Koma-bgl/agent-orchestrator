@@ -58,6 +58,7 @@ export function sessionToDashboard(session: Session): DashboardSession {
     summaryIsFallback: agentSummary
       ? (session.agentInfo?.summaryIsFallback ?? false)
       : false,
+    progressText: session.agentInfo?.progressText ?? null,
     createdAt: session.createdAt.toISOString(),
     lastActivityAt: session.lastActivityAt.toISOString(),
     pr: session.pr ? basicPRToDashboard(session.pr) : null,
@@ -216,9 +217,10 @@ export async function enrichSessionPR(
     dashboard.pr.mergeability.blockers.push("API rate limited or unavailable");
   }
 
-  // If rate limited, cache the partial data with a long TTL (5 min) so we stop
-  // hammering the API on every page load. The rate-limit blocker flag tells the
-  // UI to show stale-data warnings instead of making decisions on bad data.
+  // If rate limited, cache the partial data with a short TTL so we stop
+  // hammering the API on every page load, but recover quickly once the
+  // rate limit resets. The rate-limit blocker flag tells the UI to show
+  // stale-data warnings instead of making decisions on bad data.
   if (mostFailed) {
     const rateLimitedData: PREnrichmentData = {
       state: dashboard.pr.state,
@@ -232,7 +234,7 @@ export async function enrichSessionPR(
       unresolvedThreads: dashboard.pr.unresolvedThreads,
       unresolvedComments: dashboard.pr.unresolvedComments,
     };
-    prCache.set(cacheKey, rateLimitedData, 60 * 60_000); // 60 min — GitHub rate limit resets hourly
+    prCache.set(cacheKey, rateLimitedData, 5 * 60_000); // 5 min — retry sooner once rate limit clears
     return true;
   }
 
@@ -286,15 +288,17 @@ export async function enrichSessionAgentSummary(
   coreSession: Session,
   agent: Agent,
 ): Promise<void> {
-  if (dashboard.summary) return;
   try {
     const info = await agent.getSessionInfo(coreSession);
-    if (info?.summary) {
+    if (info?.summary && !dashboard.summary) {
       dashboard.summary = info.summary;
       dashboard.summaryIsFallback = info.summaryIsFallback ?? false;
     }
+    if (info?.progressText) {
+      dashboard.progressText = info.progressText;
+    }
   } catch {
-    // Can't read agent session info — keep summary null
+    // Can't read agent session info — keep summary/progressText null
   }
 }
 

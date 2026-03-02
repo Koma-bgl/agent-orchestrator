@@ -101,6 +101,6 @@ export default async function Home() {
   }
 
   return (
-    <Dashboard sessions={sessions} stats={computeStats(sessions)} orchestratorId={orchestratorId} projectName={projectName} />
+    <Dashboard sessions={sessions} stats={computeStats(sessions)} orchestratorId={orchestratorId} projectName={projectName} version={process.env.AO_VERSION} />
   );
 }

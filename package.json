@@ -1,6 +1,6 @@
 {
   "name": "agent-orchestrator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Orchestrate parallel AI coding agents across any runtime, any repo, any issue tracker",
   "license": "MIT",
@@ -24,7 +24,9 @@
     "version-packages": "changeset version",
     "release": "pnpm -r --filter '!@composio/ao-web' build && changeset publish",
     "prepare": "husky",
-    "postinstall": "node scripts/rebuild-node-pty.js"
+    "postinstall": "node scripts/rebuild-node-pty.js",
+    "gitnexus:index": "[ -z \"$CI\" ] && npx -y gitnexus analyze || true",
+    "upgrade": "lsof -ti :${PORT:-3000} | xargs kill -9 2>/dev/null; pnpm build && pnpm dev"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",

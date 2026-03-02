@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import chalk from "chalk";
 import type { Command } from "commander";
-import { loadConfig } from "@composio/ao-core";
+import { loadConfig, createLifecycleManager } from "@composio/ao-core";
 import { findWebDir, buildDashboardEnv } from "../lib/web-dir.js";
+import { getSessionManagerWithRegistry } from "../lib/create-session-manager.js";
 import { cleanNextCache, findRunningDashboardPid, findProcessWebDir, waitForPortFree } from "../lib/dashboard-rebuild.js";
 
 export function registerDashboard(program: Command): void {
@@ -69,17 +70,84 @@ export function registerDashboard(program: Command): void {
         config.directTerminalPort,
       );
 
-      const child = spawn("npx", ["next", "dev", "-p", String(port)], {
+      const terminalPort = env["TERMINAL_PORT"] ?? "14800";
+      const directTerminalPort = env["DIRECT_TERMINAL_PORT"] ?? "14801";
+
+      console.log(
+        chalk.dim(
+          `Terminal servers: ws://localhost:${terminalPort} (ttyd), ws://localhost:${directTerminalPort} (direct)\n`,
+        ),
+      );
+
+      // Spawn all three processes: Next.js + terminal WebSocket server + direct terminal WebSocket server
+      const serverDir = resolve(webDir, "server");
+
+      const nextChild = spawn("npx", ["next", "dev", "-p", String(port)], {
         cwd: webDir,
         stdio: ["inherit", "inherit", "pipe"],
         env,
       });
 
+      const terminalChild = spawn("npx", ["tsx", resolve(serverDir, "terminal-websocket.ts")], {
+        cwd: webDir,
+        stdio: ["ignore", "inherit", "inherit"],
+        env,
+      });
+
+      const directTerminalChild = spawn("npx", ["tsx", resolve(serverDir, "direct-terminal-ws.ts")], {
+        cwd: webDir,
+        stdio: ["ignore", "inherit", "inherit"],
+        env,
+      });
+
+      const children: ChildProcess[] = [nextChild, terminalChild, directTerminalChild];
+
+      // Start lifecycle manager for session polling + notifications
+      let lifecycleManager: ReturnType<typeof createLifecycleManager> | null = null;
+      const POLL_INTERVAL_MS = 30_000;
+
+      getSessionManagerWithRegistry(config)
+        .then(({ sessionManager, registry }) => {
+          lifecycleManager = createLifecycleManager({
+            config,
+            registry,
+            sessionManager,
+          });
+          lifecycleManager.start(POLL_INTERVAL_MS);
+          console.log(
+            chalk.dim(`Lifecycle manager started (polling every ${POLL_INTERVAL_MS / 1000}s)\n`),
+          );
+        })
+        .catch((err) => {
+          console.error(
+            chalk.yellow("Lifecycle manager failed to start (notifications disabled):"),
+            chalk.dim(err instanceof Error ? err.message : String(err)),
+          );
+        });
+
+      // Kill all child processes on exit
+      function killAll(exitCode: number): void {
+        if (lifecycleManager) {
+          lifecycleManager.stop();
+        }
+        for (const c of children) {
+          try {
+            c.kill("SIGTERM");
+          } catch {
+            // Already dead — ignore
+          }
+        }
+        process.exit(exitCode);
+      }
+
+      process.on("SIGINT", () => killAll(0));
+      process.on("SIGTERM", () => killAll(0));
+
       const stderrChunks: string[] = [];
 
       const MAX_STDERR_CHUNKS = 100;
 
-      child.stderr?.on("data", (data: Buffer) => {
+      nextChild.stderr?.on("data", (data: Buffer) => {
         const text = data.toString();
         if (stderrChunks.length < MAX_STDERR_CHUNKS) {
           stderrChunks.push(text);
@@ -88,10 +156,18 @@ export function registerDashboard(program: Command): void {
         process.stderr.write(data);
       });
 
-      child.on("error", (err) => {
+      nextChild.on("error", (err) => {
         console.error(chalk.red("Could not start dashboard. Ensure Next.js is installed."));
         console.error(chalk.dim(String(err)));
-        process.exit(1);
+        killAll(1);
+      });
+
+      terminalChild.on("error", (err) => {
+        console.error(chalk.yellow("Terminal WebSocket server failed to start:"), chalk.dim(String(err)));
+      });
+
+      directTerminalChild.on("error", (err) => {
+        console.error(chalk.yellow("Direct terminal WebSocket server failed to start:"), chalk.dim(String(err)));
       });
 
       let browserTimer: ReturnType<typeof setTimeout> | undefined;
@@ -107,7 +183,7 @@ export function registerDashboard(program: Command): void {
         }, 3000);
       }
 
-      child.on("exit", (code) => {
+      nextChild.on("exit", (code) => {
         if (browserTimer) clearTimeout(browserTimer);
 
         if (code !== 0 && code !== null && !opts.rebuild) {
@@ -122,7 +198,7 @@ export function registerDashboard(program: Command): void {
           }
         }
 
-        process.exit(code ?? 0);
+        killAll(code ?? 0);
       });
     });
 }
