@@ -817,7 +817,7 @@ describe("scm-github plugin", () => {
       expect(result.blockers).toContain("Merge conflicts");
     });
 
-    it("reports UNKNOWN mergeable as noConflicts false", async () => {
+    it("reports UNKNOWN mergeable as noConflicts true (not evidence of conflicts)", async () => {
       mockGh({ state: "OPEN" }); // getPRState
       mockGh({
         mergeable: "UNKNOWN",
@@ -828,7 +828,8 @@ describe("scm-github plugin", () => {
       mockGh([{ name: "build", state: "SUCCESS" }]);
 
       const result = await scm.getMergeability(pr);
-      expect(result.noConflicts).toBe(false);
+      // UNKNOWN means GitHub is computing — not actual conflicts
+      expect(result.noConflicts).toBe(true);
       expect(result.blockers).toContain("Merge status unknown (GitHub is computing)");
       expect(result.mergeable).toBe(false);
     });
@@ -848,6 +849,52 @@ describe("scm-github plugin", () => {
       expect(result.mergeable).toBe(false);
     });
 
+    it("reports BEHIND branch as noConflicts true with behind blocker", async () => {
+      mockGh({ state: "OPEN" }); // getPRState
+      mockGh({
+        mergeable: "CONFLICTING",
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "BEHIND",
+        isDraft: false,
+      });
+      mockGh([{ name: "build", state: "SUCCESS" }]);
+
+      const result = await scm.getMergeability(pr);
+      // CONFLICTING + BEHIND = just outdated, not real conflicts
+      expect(result.noConflicts).toBe(true);
+      expect(result.blockers).toContain("Branch is behind the base branch");
+      expect(result.mergeable).toBe(false);
+    });
+
+    it("reports real CONFLICTING (not BEHIND) as noConflicts false", async () => {
+      mockGh({ state: "OPEN" }); // getPRState
+      mockGh({
+        mergeable: "CONFLICTING",
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "DIRTY",
+        isDraft: false,
+      });
+      mockGh([]);
+
+      const result = await scm.getMergeability(pr);
+      expect(result.noConflicts).toBe(false);
+      expect(result.blockers).toContain("Merge conflicts");
+    });
+
+    it("reports empty mergeable as noConflicts true", async () => {
+      mockGh({ state: "OPEN" }); // getPRState
+      mockGh({
+        mergeable: "",
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN",
+        isDraft: false,
+      });
+      mockGh([{ name: "build", state: "SUCCESS" }]);
+
+      const result = await scm.getMergeability(pr);
+      expect(result.noConflicts).toBe(true);
+    });
+
     it("reports multiple blockers simultaneously", async () => {
       mockGh({ state: "OPEN" }); // getPRState
       mockGh({
@@ -861,6 +908,38 @@ describe("scm-github plugin", () => {
       const result = await scm.getMergeability(pr);
       expect(result.blockers).toHaveLength(4);
       expect(result.mergeable).toBe(false);
+    });
+  });
+
+  // ---- mergePR (no --delete-branch) --------------------------------------
+
+  describe("mergePR does not delete branch", () => {
+    it("does not pass --delete-branch flag", async () => {
+      ghMock.mockResolvedValueOnce({ stdout: "" });
+      await scm.mergePR(pr);
+      const args = ghMock.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--delete-branch");
+    });
+  });
+
+  // ---- rebasePR ----------------------------------------------------------
+
+  describe("rebasePR", () => {
+    it("calls GitHub update-branch API with rebase method", async () => {
+      ghMock.mockResolvedValueOnce({ stdout: "" });
+      await scm.rebasePR(pr);
+      expect(ghMock).toHaveBeenCalledWith(
+        "gh",
+        [
+          "api",
+          "--method",
+          "PUT",
+          "/repos/acme/repo/pulls/42/update-branch",
+          "-f",
+          "update_method=rebase",
+        ],
+        expect.any(Object),
+      );
     });
   });
 });

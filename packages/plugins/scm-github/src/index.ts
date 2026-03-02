@@ -792,8 +792,14 @@ function createGitHubSCM(): SCM {
           const mergeable = (data.mergeable ?? "").toUpperCase();
           const mergeState = (data.mergeStateStatus ?? "").toUpperCase();
           const isBehind = mergeState === "BEHIND";
+          // noConflicts means "no actual file-level merge conflicts".
+          // UNKNOWN/empty means GitHub is still computing — NOT evidence of conflicts.
+          // CONFLICTING + BEHIND means the branch is just outdated, not conflicting.
           const noConflicts =
-            mergeable === "MERGEABLE" || (mergeable === "CONFLICTING" && isBehind);
+            mergeable === "MERGEABLE" ||
+            mergeable === "UNKNOWN" ||
+            mergeable === "" ||
+            (mergeable === "CONFLICTING" && isBehind);
           if (mergeable === "CONFLICTING" && !isBehind) {
             blockers.push("Merge conflicts");
           } else if (

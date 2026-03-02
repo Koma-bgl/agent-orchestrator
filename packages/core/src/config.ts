@@ -309,7 +309,11 @@ function applyDefaultReactions(config: OrchestratorConfig): OrchestratorConfig {
     "merge-conflicts": {
       auto: true,
       action: "send-to-agent",
-      message: "Your branch has merge conflicts. Rebase on the default branch and resolve them.",
+      message:
+        "Your branch has merge conflicts that need manual resolution. " +
+        "Run `git fetch origin && git rebase origin/main`, resolve the conflicting files, " +
+        "then `git rebase --continue && git push --force-with-lease`. " +
+        "Do NOT close or recreate the PR.",
       escalateAfter: "15m",
     },
     "approved-and-green": {

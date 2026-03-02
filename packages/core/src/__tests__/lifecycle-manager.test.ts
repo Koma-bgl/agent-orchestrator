@@ -837,6 +837,188 @@ describe("reactions", () => {
   });
 });
 
+describe("approved-behind reaction guards", () => {
+  function makeSCMWithMergeability(mergeReady: {
+    mergeable: boolean;
+    ciPassing: boolean;
+    approved: boolean;
+    noConflicts: boolean;
+    blockers: string[];
+  }): SCM {
+    return {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("open"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn().mockResolvedValue("passing"),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn().mockResolvedValue("approved"),
+      getPendingComments: vi.fn().mockResolvedValue([]),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn().mockResolvedValue(mergeReady),
+    };
+  }
+
+  it("does NOT send rebase when blockers are not about being behind", async () => {
+    const mockSCM = makeSCMWithMergeability({
+      mergeable: false,
+      ciPassing: true,
+      approved: true,
+      noConflicts: true,
+      blockers: ["Merge is blocked by branch protection"],
+    });
+
+    const registryWithSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return mockSCM;
+        return null;
+      }),
+    };
+
+    config.reactions = {
+      "approved-behind": {
+        auto: true,
+        action: "auto-merge",
+        escalateAfter: "15m",
+      },
+    };
+
+    const session = makeSession({ status: "pr_open", pr: makePR() });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "pr_open",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config,
+      registry: registryWithSCM,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    // Should NOT send any rebase instruction to the agent
+    expect(mockSessionManager.send).not.toHaveBeenCalled();
+  });
+
+  it("uses SCM rebasePR when branch is behind and rebasePR is available", async () => {
+    const mockRebasePR = vi.fn().mockResolvedValue(undefined);
+    const mockSCM = makeSCMWithMergeability({
+      mergeable: false,
+      ciPassing: true,
+      approved: true,
+      noConflicts: true,
+      blockers: ["Branch is behind the base branch"],
+    });
+    mockSCM.rebasePR = mockRebasePR;
+
+    const registryWithSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return mockSCM;
+        return null;
+      }),
+    };
+
+    config.reactions = {
+      "approved-behind": {
+        auto: true,
+        action: "auto-merge",
+        escalateAfter: "15m",
+      },
+    };
+
+    const session = makeSession({ status: "pr_open", pr: makePR() });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "pr_open",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config,
+      registry: registryWithSCM,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    // Should use SCM rebasePR, NOT send instruction to agent
+    expect(mockRebasePR).toHaveBeenCalled();
+    expect(mockSessionManager.send).not.toHaveBeenCalled();
+  });
+
+  it("does NOT transition to merge_conflicts when mergeable is UNKNOWN", async () => {
+    const mockSCM: SCM = {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("open"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn().mockResolvedValue("passing"),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn().mockResolvedValue("none"),
+      getPendingComments: vi.fn().mockResolvedValue([]),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn().mockResolvedValue({
+        mergeable: false,
+        ciPassing: true,
+        approved: false,
+        noConflicts: true, // UNKNOWN is NOT conflicts
+        blockers: ["Merge status unknown (GitHub is computing)"],
+      }),
+    };
+
+    const registryWithSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return mockSCM;
+        return null;
+      }),
+    };
+
+    const session = makeSession({ status: "pr_open", pr: makePR() });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "pr_open",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config,
+      registry: registryWithSCM,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    // Should NOT be merge_conflicts — UNKNOWN doesn't mean conflicts
+    expect(lm.getStates().get("app-1")).not.toBe("merge_conflicts");
+    // Should NOT send any rebase instruction
+    expect(mockSessionManager.send).not.toHaveBeenCalled();
+  });
+});
+
 describe("getStates", () => {
   it("returns copy of states map", async () => {
     const session = makeSession({ status: "spawning" });
