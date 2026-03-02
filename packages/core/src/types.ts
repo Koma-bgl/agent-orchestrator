@@ -527,6 +527,10 @@ export interface SCM {
   /** Merge a PR */
   mergePR(pr: PRInfo, method?: MergeMethod): Promise<void>;
 
+  /** Rebase a PR branch onto the base branch (server-side, non-destructive).
+   *  Optional — not all SCM providers support this. */
+  rebasePR?(pr: PRInfo): Promise<void>;
+
   /** Close a PR without merging */
   closePR(pr: PRInfo): Promise<void>;
 

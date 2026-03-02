@@ -615,18 +615,44 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           }
 
           if (!mergeReady.mergeable) {
-            // Approved but not yet mergeable — only rebase if CI is
-            // passing. If CI is pending/failing, wait for the next cycle
-            // rather than sending a premature rebase instruction.
-            if (!mergeReady.ciPassing) {
-              console.log(`[lifecycle] ${sessionId}: approved but CI not passing, waiting`);
+            // Approved but not yet mergeable. Only send a rebase instruction
+            // if the *sole* reason is the branch being behind (outdated).
+            // Other blockers (branch protection, draft, unknown merge state)
+            // should NOT trigger a rebase — just wait for the next cycle.
+            const behindBlockers = ["branch is behind", "branch is not up to date"];
+            const isBehindOnly =
+              mergeReady.ciPassing &&
+              mergeReady.blockers.length > 0 &&
+              mergeReady.blockers.every(
+                (b) => behindBlockers.some((pat) => b.toLowerCase().includes(pat)),
+              );
+
+            if (!isBehindOnly) {
+              console.log(
+                `[lifecycle] ${sessionId}: approved but not mergeable (blockers: ${mergeReady.blockers.join(", ") || "unknown"}), waiting`,
+              );
               return { reactionType: reactionKey, success: false, action, escalated: false };
             }
-            console.log(`[lifecycle] ${sessionId}: approved + CI green but not mergeable, sending rebase instruction`);
-            await sessionManager.send(
-              sessionId,
-              "Your PR is approved but the branch is behind the base branch. Please rebase on the default branch and push so CI can run, then it will be auto-merged.",
-            );
+
+            console.log(`[lifecycle] ${sessionId}: approved + CI green but behind base branch, attempting rebase via SCM`);
+
+            // Use SCM rebasePR if available (non-destructive GitHub API rebase),
+            // otherwise fall back to sending an instruction to the agent.
+            if (typeof scm.rebasePR === "function") {
+              try {
+                await scm.rebasePR(session.pr);
+                console.log(`[lifecycle] ${sessionId}: SCM rebase succeeded, will retry merge next cycle`);
+              } catch (rebaseErr) {
+                console.error(`[lifecycle] ${sessionId}: SCM rebase failed:`, rebaseErr);
+              }
+            } else {
+              await sessionManager.send(
+                sessionId,
+                "Your PR is approved but the branch is behind the base branch. " +
+                  "Please run `git fetch origin && git rebase origin/main && git push` so CI can run, then it will be auto-merged. " +
+                  "Do NOT close or recreate the PR.",
+              );
+            }
             return {
               reactionType: reactionKey,
               success: true,

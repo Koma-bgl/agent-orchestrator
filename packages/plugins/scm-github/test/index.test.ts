@@ -196,7 +196,7 @@ describe("scm-github plugin", () => {
       await scm.mergePR(pr);
       expect(ghMock).toHaveBeenCalledWith(
         "gh",
-        ["pr", "merge", "42", "--repo", "acme/repo", "--squash", "--delete-branch"],
+        ["pr", "merge", "42", "--repo", "acme/repo", "--squash"],
         expect.any(Object),
       );
     });

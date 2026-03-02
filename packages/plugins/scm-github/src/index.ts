@@ -219,6 +219,7 @@ function createGitHubSCM(): SCM {
       }
       const [owner, repo] = parts;
       try {
+        // Fetch up to 5 PRs to detect duplicates on the same branch
         const raw = await gh([
           "pr",
           "list",
@@ -229,7 +230,7 @@ function createGitHubSCM(): SCM {
           "--json",
           "number,url,title,headRefName,baseRefName,isDraft",
           "--limit",
-          "1",
+          "5",
         ]);
 
         const prs: Array<{
@@ -243,7 +244,20 @@ function createGitHubSCM(): SCM {
 
         if (prs.length === 0) return null;
 
-        const pr = prs[0];
+        if (prs.length > 1) {
+          console.warn(
+            `[scm-github] Multiple open PRs found for branch "${session.branch}": ${prs.map((p) => `#${p.number}`).join(", ")}. Using #${prs[0].number}.`,
+          );
+        }
+
+        // If the session already has a PR number recorded, prefer that one
+        // to avoid switching between PRs on the same branch.
+        let pr = prs[0];
+        if (session.pr?.number) {
+          const match = prs.find((p) => p.number === session.pr!.number);
+          if (match) pr = match;
+        }
+
         return {
           number: pr.number,
           url: pr.url,
@@ -311,7 +325,24 @@ function createGitHubSCM(): SCM {
     async mergePR(pr: PRInfo, method: MergeMethod = "squash"): Promise<void> {
       const flag = method === "rebase" ? "--rebase" : method === "merge" ? "--merge" : "--squash";
 
-      await gh(["pr", "merge", String(pr.number), "--repo", repoFlag(pr), flag, "--delete-branch"]);
+      // Do NOT use --delete-branch here. When multiple PRs share the same
+      // branch, deleting the branch closes ALL other PRs on that branch.
+      // Branch cleanup is handled separately by worktree cleanup.
+      await gh(["pr", "merge", String(pr.number), "--repo", repoFlag(pr), flag]);
+    },
+
+    async rebasePR(pr: PRInfo): Promise<void> {
+      // Use GitHub's "update branch" API to rebase server-side.
+      // This is non-destructive and avoids sending rebase instructions to agents
+      // which can go wrong (force-push issues, PR closure, etc.).
+      await gh([
+        "api",
+        "--method",
+        "PUT",
+        `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/update-branch`,
+        "-f",
+        "update_method=rebase",
+      ]);
     },
 
     async closePR(pr: PRInfo): Promise<void> {
@@ -771,8 +802,13 @@ function createGitHubSCM(): SCM {
           ) {
             blockers.push("Merge status unknown (GitHub is computing)");
           }
-          // BEHIND is not a blocker — GitHub enforces "up to date" at merge time.
-          // Treating it as a blocker causes agents to rebase every poll cycle.
+          // When branch is behind AND GitHub reports CONFLICTING, the branch
+          // needs updating. We add it as a blocker so the lifecycle manager
+          // knows WHY the PR isn't mergeable and can take targeted action
+          // (e.g. rebase) instead of blindly retrying merge.
+          if (isBehind && mergeable === "CONFLICTING") {
+            blockers.push("Branch is behind the base branch");
+          }
           if (mergeState === "BLOCKED") {
             blockers.push("Merge is blocked by branch protection");
           } else if (mergeState === "UNSTABLE") {
