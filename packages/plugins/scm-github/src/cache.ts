@@ -67,6 +67,15 @@ export class TTLCache {
     }
   }
 
+  /** Invalidate all entries whose keys start with the given prefix. */
+  invalidatePrefix(prefix: string): void {
+    for (const key of this.entries.keys()) {
+      if (key.startsWith(prefix)) {
+        this.entries.delete(key);
+      }
+    }
+  }
+
   /** Clear everything and stop the eviction timer. */
   clear(): void {
     clearInterval(this.evictTimer);

@@ -686,7 +686,29 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
             // All clear — squash merge
             console.log(`[lifecycle] ${sessionId}: auto-merging PR #${session.pr.number}`);
-            await scm.mergePR(session.pr, "squash");
+            try {
+              await scm.mergePR(session.pr, "squash");
+            } catch (mergeErr: unknown) {
+              // Merge can fail if the branch is behind (stale cache said mergeable).
+              // Try updating the branch so the next cycle can merge.
+              const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+              console.log(`[lifecycle] ${sessionId}: merge failed (${msg}), attempting branch update`);
+              if (typeof scm.rebasePR === "function") {
+                try {
+                  await scm.rebasePR(session.pr);
+                  console.log(`[lifecycle] ${sessionId}: branch update succeeded after merge failure, will retry next cycle`);
+                } catch {
+                  console.error(`[lifecycle] ${sessionId}: branch update also failed after merge failure`);
+                }
+              }
+              return {
+                reactionType: reactionKey,
+                success: false,
+                action: "auto-merge",
+                message: `Merge failed, attempted branch update: ${msg}`,
+                escalated: false,
+              };
+            }
 
             const event = createEvent("merge.completed", {
               sessionId,

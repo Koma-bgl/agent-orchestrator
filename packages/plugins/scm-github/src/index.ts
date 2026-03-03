@@ -329,6 +329,13 @@ function createGitHubSCM(): SCM {
       // branch, deleting the branch closes ALL other PRs on that branch.
       // Branch cleanup is handled separately by worktree cleanup.
       await gh(["pr", "merge", String(pr.number), "--repo", repoFlag(pr), flag]);
+
+      // Invalidate cached mergeability/PR state for ALL PRs in this repo.
+      // After a merge, other PRs become behind the base branch, so their
+      // cached "mergeable" status is stale. Without this, the next poll
+      // cycle would still see them as mergeable and attempt (and fail) to merge.
+      const repoPrefix = `${pr.owner}/${pr.repo}#`;
+      cache.invalidatePrefix(repoPrefix);
     },
 
     async rebasePR(pr: PRInfo): Promise<void> {
