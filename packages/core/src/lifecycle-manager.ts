@@ -906,39 +906,41 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       }
     } else {
       // No transition — but check if the session is stuck in a state that
-      // has a "send-to-agent" reaction (e.g. merge_conflicts, ci_failed).
+      // has a retryable reaction (e.g. merge_conflicts, ci_failed, mergeable).
       // This handles two scenarios:
       //   a) Lifecycle manager restart — session was already in this state
-      //   b) Previous send didn't resolve the issue — agent finished but
-      //      the status is unchanged, so we retry on the next poll
+      //   b) Previous action didn't resolve the issue — retry on the next poll
       // The reaction tracker + escalateAfter prevents infinite retries.
       const eventType = statusToEventType(undefined, newStatus);
-      if (eventType) {
-        const reactionKey = eventToReactionKey(eventType);
-        if (reactionKey) {
-          const project = config.projects[session.projectId];
-          const globalReaction = config.reactions[reactionKey];
-          const projectReaction = project?.reactions?.[reactionKey];
-          const reactionConfig = projectReaction
-            ? { ...globalReaction, ...projectReaction }
-            : globalReaction;
+      const reactionKey = eventType ? eventToReactionKey(eventType) : null;
 
-          if (
-            reactionConfig?.auto !== false &&
-            (reactionConfig?.action === "send-to-agent" ||
-              reactionConfig?.action === "send-comments-to-agent" ||
-              reactionConfig?.action === "auto-merge")
-          ) {
-            console.log(
-              `[lifecycle] Session ${session.id} still in "${newStatus}" — retrying "${reactionKey}" reaction`,
-            );
-            await executeReaction(
-              session.id,
-              session.projectId,
-              reactionKey,
-              reactionConfig as ReactionConfig,
-            );
-          }
+      if (reactionKey) {
+        const project = config.projects[session.projectId];
+        const globalReaction = config.reactions[reactionKey];
+        const projectReaction = project?.reactions?.[reactionKey];
+        const reactionConfig = projectReaction
+          ? { ...globalReaction, ...projectReaction }
+          : globalReaction;
+
+        if (
+          reactionConfig?.auto !== false &&
+          (reactionConfig?.action === "send-to-agent" ||
+            reactionConfig?.action === "send-comments-to-agent" ||
+            reactionConfig?.action === "auto-merge")
+        ) {
+          console.log(
+            `[lifecycle] Session ${session.id} still in "${newStatus}" — retrying "${reactionKey}" reaction (action=${reactionConfig.action})`,
+          );
+          await executeReaction(
+            session.id,
+            session.projectId,
+            reactionKey,
+            reactionConfig as ReactionConfig,
+          );
+        } else {
+          console.log(
+            `[lifecycle] Session ${session.id} still in "${newStatus}" — no retryable reaction (key=${reactionKey}, action=${reactionConfig?.action ?? "none"}, auto=${reactionConfig?.auto ?? "unset"})`,
+          );
         }
       }
 
