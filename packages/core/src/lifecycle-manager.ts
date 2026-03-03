@@ -265,6 +265,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
   const states = new Map<SessionId, SessionStatus>();
   const reactionTrackers = new Map<string, ReactionTracker>(); // "sessionId:reactionKey"
+  // Per-project merge lock: only one merge/rebase operation at a time per project.
+  // When one PR merges, all other PRs in the project become behind and need updating.
+  // Processing them one at a time avoids cascading rebase storms.
+  const projectMergeLocks = new Map<string, boolean>();
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let polling = false; // re-entrancy guard
   let allCompleteEmitted = false; // guard against repeated all_complete
@@ -614,73 +618,94 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             return { reactionType: reactionKey, success: false, action, escalated: true };
           }
 
-          if (!mergeReady.mergeable) {
-            // Approved but not yet mergeable. Only send a rebase instruction
-            // if the *sole* reason is the branch being behind (outdated).
-            // Other blockers (branch protection, draft, unknown merge state)
-            // should NOT trigger a rebase — just wait for the next cycle.
-            const behindBlockers = ["branch is behind", "branch is not up to date"];
-            const isBehindOnly =
-              mergeReady.ciPassing &&
-              mergeReady.blockers.length > 0 &&
-              mergeReady.blockers.every(
-                (b) => behindBlockers.some((pat) => b.toLowerCase().includes(pat)),
-              );
+          // Per-project merge lock: only one merge/rebase at a time per project.
+          // When one PR merges, all other PRs become behind. Processing them
+          // sequentially avoids cascading rebase storms where every PR updates
+          // its branch simultaneously, only to become behind again after the next merge.
+          if (projectMergeLocks.get(projectId)) {
+            console.log(
+              `[lifecycle] ${sessionId}: skipping auto-merge — another merge/rebase in progress for project "${projectId}"`,
+            );
+            return { reactionType: reactionKey, success: false, action, escalated: false };
+          }
 
-            if (!isBehindOnly) {
-              console.log(
-                `[lifecycle] ${sessionId}: approved but not mergeable (blockers: ${mergeReady.blockers.join(", ") || "unknown"}), waiting`,
-              );
-              return { reactionType: reactionKey, success: false, action, escalated: false };
-            }
+          projectMergeLocks.set(projectId, true);
+          try {
+            if (!mergeReady.mergeable) {
+              // Approved but not yet mergeable. Trigger a branch update if the
+              // blockers indicate the branch is behind OR GitHub is still computing
+              // merge status (common after another PR just merged into the base branch).
+              // Other blockers (branch protection, draft, failing CI) should NOT
+              // trigger a rebase — just wait for the next cycle.
+              const updatableBlockers = [
+                "branch is behind",
+                "branch is not up to date",
+                "merge status unknown", // GitHub still computing — often just behind
+              ];
+              const canUpdateBranch =
+                mergeReady.ciPassing &&
+                mergeReady.blockers.length > 0 &&
+                mergeReady.blockers.every(
+                  (b) => updatableBlockers.some((pat) => b.toLowerCase().includes(pat)),
+                );
 
-            console.log(`[lifecycle] ${sessionId}: approved + CI green but behind base branch, attempting rebase via SCM`);
-
-            // Use SCM rebasePR if available (non-destructive GitHub API rebase),
-            // otherwise fall back to sending an instruction to the agent.
-            if (typeof scm.rebasePR === "function") {
-              try {
-                await scm.rebasePR(session.pr);
-                console.log(`[lifecycle] ${sessionId}: SCM rebase succeeded, will retry merge next cycle`);
-              } catch (rebaseErr) {
-                console.error(`[lifecycle] ${sessionId}: SCM rebase failed:`, rebaseErr);
+              if (!canUpdateBranch) {
+                console.log(
+                  `[lifecycle] ${sessionId}: approved but not mergeable (blockers: ${mergeReady.blockers.join(", ") || "unknown"}), waiting`,
+                );
+                return { reactionType: reactionKey, success: false, action, escalated: false };
               }
-            } else {
-              await sessionManager.send(
-                sessionId,
-                "Your PR is approved but the branch is behind the base branch. " +
-                  "Please run `git fetch origin && git rebase origin/main && git push` so CI can run, then it will be auto-merged. " +
-                  "Do NOT close or recreate the PR.",
-              );
+
+              console.log(`[lifecycle] ${sessionId}: approved + CI green but branch needs update, attempting update via SCM`);
+
+              // Use SCM rebasePR if available (non-destructive GitHub API rebase),
+              // otherwise fall back to sending an instruction to the agent.
+              if (typeof scm.rebasePR === "function") {
+                try {
+                  await scm.rebasePR(session.pr);
+                  console.log(`[lifecycle] ${sessionId}: SCM rebase succeeded, will retry merge next cycle`);
+                } catch (rebaseErr) {
+                  console.error(`[lifecycle] ${sessionId}: SCM rebase failed:`, rebaseErr);
+                }
+              } else {
+                await sessionManager.send(
+                  sessionId,
+                  "Your PR is approved but the branch is behind the base branch. " +
+                    "Please run `git fetch origin && git rebase origin/main && git push` so CI can run, then it will be auto-merged. " +
+                    "Do NOT close or recreate the PR.",
+                );
+              }
+              return {
+                reactionType: reactionKey,
+                success: true,
+                action: "auto-merge",
+                message: "Sent rebase instruction before merge",
+                escalated: false,
+              };
             }
+
+            // All clear — squash merge
+            console.log(`[lifecycle] ${sessionId}: auto-merging PR #${session.pr.number}`);
+            await scm.mergePR(session.pr, "squash");
+
+            const event = createEvent("merge.completed", {
+              sessionId,
+              projectId,
+              message: `Auto-merged ${sessionId} PR #${session.pr.number}`,
+              data: { reactionKey, prNumber: session.pr.number },
+            });
+            await notifyHuman(event, "info");
+
             return {
               reactionType: reactionKey,
               success: true,
               action: "auto-merge",
-              message: "Sent rebase instruction before merge",
+              message: `Squash-merged PR #${session.pr.number}`,
               escalated: false,
             };
+          } finally {
+            projectMergeLocks.set(projectId, false);
           }
-
-          // All clear — squash merge
-          console.log(`[lifecycle] ${sessionId}: auto-merging PR #${session.pr.number}`);
-          await scm.mergePR(session.pr, "squash");
-
-          const event = createEvent("merge.completed", {
-            sessionId,
-            projectId,
-            message: `Auto-merged ${sessionId} PR #${session.pr.number}`,
-            data: { reactionKey, prNumber: session.pr.number },
-          });
-          await notifyHuman(event, "info");
-
-          return {
-            reactionType: reactionKey,
-            success: true,
-            action: "auto-merge",
-            message: `Squash-merged PR #${session.pr.number}`,
-            escalated: false,
-          };
         } catch (err) {
           console.error(`[lifecycle] auto-merge failed for ${sessionId}:`, err);
           return {
