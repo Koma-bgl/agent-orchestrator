@@ -929,17 +929,13 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             reactionConfig?.action === "auto-merge")
         ) {
           console.log(
-            `[lifecycle] Session ${session.id} still in "${newStatus}" — retrying "${reactionKey}" reaction (action=${reactionConfig.action})`,
+            `[lifecycle] Session ${session.id} still in "${newStatus}" — retrying "${reactionKey}" reaction`,
           );
           await executeReaction(
             session.id,
             session.projectId,
             reactionKey,
             reactionConfig as ReactionConfig,
-          );
-        } else {
-          console.log(
-            `[lifecycle] Session ${session.id} still in "${newStatus}" — no retryable reaction (key=${reactionKey}, action=${reactionConfig?.action ?? "none"}, auto=${reactionConfig?.auto ?? "unset"})`,
           );
         }
       }
