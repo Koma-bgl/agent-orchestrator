@@ -339,16 +339,16 @@ function createGitHubSCM(): SCM {
     },
 
     async rebasePR(pr: PRInfo): Promise<void> {
-      // Use GitHub's "update branch" API to rebase server-side.
-      // This is non-destructive and avoids sending rebase instructions to agents
-      // which can go wrong (force-push issues, PR closure, etc.).
+      // Use GitHub's "update branch" API to update server-side.
+      // `merge` method adds a merge commit from the base branch — avoids
+      // rewriting commit SHAs which would force-push the PR branch, re-trigger
+      // all CI checks, and send noisy notifications. Since PRs are squash-merged,
+      // the merge commit doesn't affect the final result on the base branch.
       await gh([
         "api",
         "--method",
         "PUT",
         `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/update-branch`,
-        "-f",
-        "update_method=rebase",
       ]);
     },
 

@@ -726,7 +726,12 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
               escalated: false,
             };
           } finally {
-            projectMergeLocks.set(projectId, false);
+            // NOTE: Lock is intentionally NOT released here. It persists for
+            // the remainder of this poll cycle so that only one merge/rebase
+            // operation runs per project per cycle. The lock is cleared at the
+            // start of the next pollAll() call. This prevents cascading rebases
+            // where all behind PRs update their branches simultaneously after
+            // a single merge, only to become behind again when the next one merges.
           }
         } catch (err) {
           console.error(`[lifecycle] auto-merge failed for ${sessionId}:`, err);
@@ -1019,6 +1024,14 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     // Re-entrancy guard: skip if previous poll is still running
     if (polling) return;
     polling = true;
+
+    // Reset per-project merge locks at the start of each poll cycle.
+    // Within a single cycle, once a session acquires the lock (for merge or
+    // rebase), no other session in the same project can acquire it. This
+    // ensures only ONE branch update per project per cycle, preventing
+    // cascading rebases where all behind PRs update simultaneously — only
+    // to become behind again when the first one merges.
+    projectMergeLocks.clear();
 
     try {
       const sessions = await sessionManager.list();
