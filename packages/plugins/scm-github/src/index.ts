@@ -317,25 +317,33 @@ async function fetchIssueComments(pr: PRInfo): Promise<ReviewComment[]> {
       html_url: string;
     }> = JSON.parse(raw);
 
-    return comments
-      .filter((c) => {
-        const author = c.user?.login ?? "";
-        // Filter out bots
-        if (BOT_AUTHORS.has(author)) return false;
-        // Filter out [bot] suffix accounts not in the explicit list
-        if (author.endsWith("[bot]")) return false;
-        return true;
-      })
-      .map((c) => ({
-        id: String(c.id),
-        author: c.user?.login ?? "unknown",
-        body: c.body,
-        isResolved: false,
-        createdAt: parseDate(c.created_at),
-        url: c.html_url,
-        commentType: "issue_comment" as const,
-      }));
-  } catch {
+    const filtered = comments.filter((c) => {
+      const author = c.user?.login ?? "";
+      // Filter out bots
+      if (BOT_AUTHORS.has(author)) return false;
+      // Filter out [bot] suffix accounts not in the explicit list
+      if (author.endsWith("[bot]")) return false;
+      return true;
+    });
+
+    console.log(
+      `[scm-github] fetchIssueComments PR #${pr.number}: ${comments.length} total, ${filtered.length} after bot filter` +
+        (filtered.length > 0
+          ? ` — authors: ${filtered.map((c) => c.user?.login).join(", ")}`
+          : ""),
+    );
+
+    return filtered.map((c) => ({
+      id: String(c.id),
+      author: c.user?.login ?? "unknown",
+      body: c.body,
+      isResolved: false,
+      createdAt: parseDate(c.created_at),
+      url: c.html_url,
+      commentType: "issue_comment" as const,
+    }));
+  } catch (err) {
+    console.error(`[scm-github] fetchIssueComments PR #${pr.number} failed:`, err);
     return [];
   }
 }

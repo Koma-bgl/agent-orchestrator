@@ -394,6 +394,12 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         // formal review decision. Reviewers often leave comments using
         // "Comment" instead of "Request changes", so the review decision
         // may be "pending" or "none" even when there's actionable feedback.
+        console.log(
+          `[lifecycle] ${session.id}: pendingComments=${pendingComments.length}, reviewDecision=${reviewDecision}, ci=${ciStatus}` +
+            (pendingComments.length > 0
+              ? ` — comments: ${pendingComments.map((c) => `${c.commentType}:@${c.author}`).join(", ")}`
+              : ""),
+        );
         if (pendingComments.length > 0) return "changes_requested";
 
         // Check formal review decision
@@ -525,6 +531,12 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           }
 
           const comments = await scm.getPendingComments(session.pr);
+          console.log(
+            `[lifecycle] ${sessionId}: getPendingComments returned ${comments.length} comment(s)` +
+              (comments.length > 0
+                ? ` — types: ${comments.map((c) => `${c.commentType}:@${c.author}`).join(", ")}`
+                : ""),
+          );
           if (comments.length === 0) {
             // No unresolved comments — nothing to send
             return { reactionType: reactionKey, success: true, action, escalated: false };
