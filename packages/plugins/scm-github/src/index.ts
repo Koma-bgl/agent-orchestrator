@@ -304,9 +304,7 @@ async function fetchIssueComments(pr: PRInfo): Promise<ReviewComment[]> {
   try {
     const raw = await gh([
       "api",
-      "-F",
-      "per_page=100",
-      `repos/${repoFlag(pr)}/issues/${pr.number}/comments`,
+      `repos/${repoFlag(pr)}/issues/${pr.number}/comments?per_page=100`,
     ]);
 
     const comments: Array<{
@@ -690,9 +688,7 @@ function createGitHubSCM(): SCM {
             // Fetch all review comments with max page size (100 is GitHub's limit)
             const raw = await gh([
               "api",
-              "-F",
-              "per_page=100",
-              `repos/${repoFlag(pr)}/pulls/${pr.number}/comments`,
+              `repos/${repoFlag(pr)}/pulls/${pr.number}/comments?per_page=100`,
             ]);
 
             const comments: Array<{
