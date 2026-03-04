@@ -566,6 +566,14 @@ export interface SCM {
   /** Post a comment on a PR (text or with image attachments) */
   postComment?(pr: PRInfo, body: string, images?: string[]): Promise<string>;
 
+  /** Add an emoji reaction to a PR comment */
+  addReaction?(
+    commentId: string,
+    pr: PRInfo,
+    reaction: string,
+    commentType: "issue_comment" | "review_comment",
+  ): Promise<void>;
+
   /** Get list of files changed in a PR */
   getChangedFiles?(pr: PRInfo): Promise<string[]>;
 }
@@ -635,6 +643,8 @@ export interface ReviewComment {
   isResolved: boolean;
   createdAt: Date;
   url: string;
+  /** Distinguishes inline review comments from general PR conversation comments */
+  commentType: "review_comment" | "issue_comment";
 }
 
 export interface AutomatedComment {

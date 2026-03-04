@@ -530,6 +530,27 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             return { reactionType: reactionKey, success: true, action, escalated: false };
           }
 
+          // React with 👀 on each comment to signal we're on it
+          const pr = session.pr;
+          if (scm.addReaction && pr) {
+            const addReaction = scm.addReaction.bind(scm);
+            await Promise.all(
+              comments.map((c) =>
+                addReaction(c.id, pr, "eyes", c.commentType).catch(() => {
+                  // Non-fatal — don't block on reaction failures
+                }),
+              ),
+            );
+          }
+
+          // Notify human that comments are being addressed
+          const notifyEvent = createEvent("reaction.triggered", {
+            sessionId,
+            projectId,
+            message: `Picking up ${comments.length} review comment${comments.length !== 1 ? "s" : ""} on ${session.id} (PR #${session.pr.number}) — sending to agent`,
+          });
+          await notifyHuman(notifyEvent, "info");
+
           // Build a structured message with all unresolved comments
           const commentLines = comments.map((c, i) => {
             const location = c.path ? `File: ${c.path}${c.line ? `:${c.line}` : ""}` : "General";

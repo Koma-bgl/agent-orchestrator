@@ -204,6 +204,142 @@ function cacheKey(pr: PRInfo, method: string): string {
   return `${pr.owner}/${pr.repo}#${pr.number}:${method}`;
 }
 
+// ---------------------------------------------------------------------------
+// Comment fetching helpers
+// ---------------------------------------------------------------------------
+
+/** Fetch unresolved inline review thread comments (code-level comments). */
+async function fetchReviewThreadComments(pr: PRInfo): Promise<ReviewComment[]> {
+  try {
+    const raw = await gh([
+      "api",
+      "graphql",
+      "-f",
+      `owner=${pr.owner}`,
+      "-f",
+      `name=${pr.repo}`,
+      "-F",
+      `number=${pr.number}`,
+      "-f",
+      `query=query($owner: String!, $name: String!, $number: Int!) {
+        repository(owner: $owner, name: $name) {
+          pullRequest(number: $number) {
+            reviewThreads(first: 100) {
+              nodes {
+                isResolved
+                comments(first: 1) {
+                  nodes {
+                    id
+                    author { login }
+                    body
+                    path
+                    line
+                    url
+                    createdAt
+                  }
+                }
+              }
+            }
+          }
+        }
+      }`,
+    ]);
+
+    const data: {
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: Array<{
+                isResolved: boolean;
+                comments: {
+                  nodes: Array<{
+                    id: string;
+                    author: { login: string } | null;
+                    body: string;
+                    path: string | null;
+                    line: number | null;
+                    url: string;
+                    createdAt: string;
+                  }>;
+                };
+              }>;
+            };
+          };
+        };
+      };
+    } = JSON.parse(raw);
+
+    const threads = data.data.repository.pullRequest.reviewThreads.nodes;
+
+    return threads
+      .filter((t) => {
+        if (t.isResolved) return false;
+        const c = t.comments.nodes[0];
+        if (!c) return false;
+        const author = c.author?.login ?? "";
+        return !BOT_AUTHORS.has(author);
+      })
+      .map((t) => {
+        const c = t.comments.nodes[0];
+        return {
+          id: c.id,
+          author: c.author?.login ?? "unknown",
+          body: c.body,
+          path: c.path || undefined,
+          line: c.line ?? undefined,
+          isResolved: t.isResolved,
+          createdAt: parseDate(c.createdAt),
+          url: c.url,
+          commentType: "review_comment" as const,
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/** Fetch general PR conversation comments (issue comments, not inline review). */
+async function fetchIssueComments(pr: PRInfo): Promise<ReviewComment[]> {
+  try {
+    const raw = await gh([
+      "api",
+      "-F",
+      "per_page=100",
+      `repos/${repoFlag(pr)}/issues/${pr.number}/comments`,
+    ]);
+
+    const comments: Array<{
+      id: number;
+      user: { login: string } | null;
+      body: string;
+      created_at: string;
+      html_url: string;
+    }> = JSON.parse(raw);
+
+    return comments
+      .filter((c) => {
+        const author = c.user?.login ?? "";
+        // Filter out bots
+        if (BOT_AUTHORS.has(author)) return false;
+        // Filter out [bot] suffix accounts not in the explicit list
+        if (author.endsWith("[bot]")) return false;
+        return true;
+      })
+      .map((c) => ({
+        id: String(c.id),
+        author: c.user?.login ?? "unknown",
+        body: c.body,
+        isResolved: false,
+        createdAt: parseDate(c.created_at),
+        url: c.html_url,
+        commentType: "issue_comment" as const,
+      }));
+  } catch {
+    return [];
+  }
+}
+
 function createGitHubSCM(): SCM {
   const cache = new TTLCache();
 
@@ -526,94 +662,13 @@ function createGitHubSCM(): SCM {
       return cache.getOrFetch<ReviewComment[]>(
         cacheKey(pr, "getPendingComments"),
         async () => {
-          try {
-            // Use GraphQL with variables to get review threads with actual isResolved status
-            const raw = await gh([
-              "api",
-              "graphql",
-              "-f",
-              `owner=${pr.owner}`,
-              "-f",
-              `name=${pr.repo}`,
-              "-F",
-              `number=${pr.number}`,
-              "-f",
-              `query=query($owner: String!, $name: String!, $number: Int!) {
-                repository(owner: $owner, name: $name) {
-                  pullRequest(number: $number) {
-                    reviewThreads(first: 100) {
-                      nodes {
-                        isResolved
-                        comments(first: 1) {
-                          nodes {
-                            id
-                            author { login }
-                            body
-                            path
-                            line
-                            url
-                            createdAt
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }`,
-            ]);
+          // Fetch inline review threads and general PR comments in parallel
+          const [reviewComments, issueComments] = await Promise.all([
+            fetchReviewThreadComments(pr),
+            fetchIssueComments(pr),
+          ]);
 
-            const data: {
-              data: {
-                repository: {
-                  pullRequest: {
-                    reviewThreads: {
-                      nodes: Array<{
-                        isResolved: boolean;
-                        comments: {
-                          nodes: Array<{
-                            id: string;
-                            author: { login: string } | null;
-                            body: string;
-                            path: string | null;
-                            line: number | null;
-                            url: string;
-                            createdAt: string;
-                          }>;
-                        };
-                      }>;
-                    };
-                  };
-                };
-              };
-            } = JSON.parse(raw);
-
-            const threads =
-              data.data.repository.pullRequest.reviewThreads.nodes;
-
-            return threads
-              .filter((t) => {
-                if (t.isResolved) return false;
-                const c = t.comments.nodes[0];
-                if (!c) return false;
-                const author = c.author?.login ?? "";
-                return !BOT_AUTHORS.has(author);
-              })
-              .map((t) => {
-                const c = t.comments.nodes[0];
-                return {
-                  id: c.id,
-                  author: c.author?.login ?? "unknown",
-                  body: c.body,
-                  path: c.path || undefined,
-                  line: c.line ?? undefined,
-                  isResolved: t.isResolved,
-                  createdAt: parseDate(c.createdAt),
-                  url: c.url,
-                };
-              });
-          } catch {
-            return [];
-          }
+          return [...reviewComments, ...issueComments];
         },
         CACHE_TTL.getPendingComments,
       );
@@ -731,6 +786,20 @@ function createGitHubSCM(): SCM {
       ]);
 
       return result;
+    },
+
+    async addReaction(
+      commentId: string,
+      pr: PRInfo,
+      reaction: string,
+      commentType: "issue_comment" | "review_comment",
+    ): Promise<void> {
+      const endpoint =
+        commentType === "issue_comment"
+          ? `repos/${repoFlag(pr)}/issues/comments/${commentId}/reactions`
+          : `repos/${repoFlag(pr)}/pulls/comments/${commentId}/reactions`;
+
+      await gh(["api", "--method", "POST", "-f", `content=${reaction}`, endpoint]);
     },
 
     async getMergeability(pr: PRInfo): Promise<MergeReadiness> {
