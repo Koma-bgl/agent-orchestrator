@@ -55,6 +55,7 @@ const AgentSpecificConfigSchema = z
   .object({
     permissions: z.enum(["skip", "default", "dontAsk", "acceptEdits"]).optional(),
     model: z.string().optional(),
+    oauthToken: z.string().optional(),
   })
   .passthrough();
 

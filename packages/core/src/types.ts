@@ -1007,6 +1007,13 @@ export interface NotifierConfig {
 export interface AgentSpecificConfig {
   permissions?: "skip" | "default" | "dontAsk" | "acceptEdits";
   model?: string;
+  /**
+   * OAuth token for Claude Code headless/server use.
+   * Generated via `claude setup-token` (valid for 1 year).
+   * Passed as CLAUDE_CODE_OAUTH_TOKEN env var to avoid daily re-login.
+   * Supports ${ENV_VAR} syntax for referencing environment variables.
+   */
+  oauthToken?: string;
   [key: string]: unknown;
 }
 

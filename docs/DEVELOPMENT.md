@@ -350,6 +350,9 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 
 # Anthropic (for Claude Code agent)
 ANTHROPIC_API_KEY=sk-ant-api03-...
+
+# Claude Code OAuth token for headless/server use (see below)
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
 ```
 
 **NEVER commit these to git!**
@@ -359,7 +362,40 @@ Use `.env.local` (in `.gitignore`):
 ```bash
 echo 'GITHUB_TOKEN=ghp_...' >> .env.local
 echo 'LINEAR_API_KEY=lin_api_...' >> .env.local
+echo 'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...' >> .env.local
 ```
+
+### Claude Code Authentication (Headless / Server)
+
+Claude Code's interactive OAuth tokens expire after ~10-15 hours and **do not auto-refresh** in headless mode (the `-p` flag used by the orchestrator). Running multiple concurrent agents also causes race conditions on the shared refresh token.
+
+**Solution: Use a long-lived token (valid for 1 year).**
+
+1. **Generate a token** on a machine with a browser (requires Claude Pro or Max):
+
+   ```bash
+   claude setup-token
+   ```
+
+2. **Set the environment variable** on your server:
+
+   ```bash
+   export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..."
+   ```
+
+   The orchestrator automatically forwards `CLAUDE_CODE_OAUTH_TOKEN` to all spawned Claude Code agent processes.
+
+3. **Verify it works:**
+
+   ```bash
+   CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..." claude -p "echo hello"
+   ```
+
+**How it works:** The `agent-claude-code` plugin passes the token via the `CLAUDE_CODE_OAUTH_TOKEN` environment variable to each agent process. This bypasses the browser-based OAuth flow entirely. If a token expires mid-session, the orchestrator detects the auth error and escalates to humans via the notification system.
+
+**Token priority** (highest to lowest):
+1. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
+2. `~/.claude/.credentials.json` (interactive login)
 
 ## Troubleshooting
 

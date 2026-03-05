@@ -585,6 +585,12 @@ function classifyTerminalOutput(terminalOutput: string): ActivityState {
   if (/\(Y\)es.*\(N\)o/i.test(tail)) return "waiting_input";
   if (/bypass.*permissions/i.test(tail)) return "waiting_input";
 
+  // Check for OAuth/auth errors — these mean the session is dead and needs
+  // human intervention (token refresh or `claude setup-token`).
+  if (/OAuth token has expired/i.test(tail)) return "blocked";
+  if (/authentication_error/i.test(tail)) return "blocked";
+  if (/Please run \/login/i.test(tail)) return "blocked";
+
   // Everything else is "active" — the agent is processing, waiting for
   // output, or showing content. Specific patterns (e.g. "esc to interrupt",
   // "Thinking", "Reading") all map to "active" so no need to check them
@@ -874,6 +880,25 @@ function createClaudeCodeAgent(): Agent {
 
       if (config.issueId) {
         env["AO_ISSUE_ID"] = config.issueId;
+      }
+
+      // Pass OAuth token for headless/server use (avoids daily re-login).
+      // Priority: config oauthToken > existing CLAUDE_CODE_OAUTH_TOKEN env var.
+      // Supports ${ENV_VAR} syntax for referencing environment variables.
+      const oauthToken = config.projectConfig.agentConfig?.oauthToken as
+        | string
+        | undefined;
+      if (oauthToken) {
+        const resolved = oauthToken.replace(
+          /\$\{(\w+)\}/g,
+          (_match: string, varName: string) => process.env[varName] ?? "",
+        );
+        if (resolved) {
+          env["CLAUDE_CODE_OAUTH_TOKEN"] = resolved;
+        }
+      } else if (process.env["CLAUDE_CODE_OAUTH_TOKEN"]) {
+        // Forward existing env var if no config override
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
       }
 
       return env;
