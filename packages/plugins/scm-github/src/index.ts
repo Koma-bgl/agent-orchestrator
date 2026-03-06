@@ -120,6 +120,19 @@ const BOT_AUTHORS = new Set([
   "lgtm-com[bot]",
 ]);
 
+/**
+ * Signature appended to comments posted by the AI agent.
+ * Used to filter out agent-authored comments in getPendingComments() so the
+ * agent doesn't waste tokens re-processing its own replies. This is necessary
+ * because the agent uses the user's GitHub account, not a bot account.
+ */
+export const AGENT_COMMENT_SIGNATURE = "\n\n---\n*— replied by AI agent (ao)*";
+
+/** Check whether a comment body contains the agent signature. */
+function isAgentComment(body: string): boolean {
+  return body.includes("— replied by AI agent (ao)");
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -278,7 +291,10 @@ async function fetchReviewThreadComments(pr: PRInfo): Promise<ReviewComment[]> {
         const c = t.comments.nodes[0];
         if (!c) return false;
         const author = c.author?.login ?? "";
-        return !BOT_AUTHORS.has(author);
+        if (BOT_AUTHORS.has(author)) return false;
+        // Skip comments posted by the AI agent (uses user's account, not a bot)
+        if (isAgentComment(c.body)) return false;
+        return true;
       })
       .map((t) => {
         const c = t.comments.nodes[0];
@@ -321,6 +337,8 @@ async function fetchIssueComments(pr: PRInfo): Promise<ReviewComment[]> {
       if (BOT_AUTHORS.has(author)) return false;
       // Filter out [bot] suffix accounts not in the explicit list
       if (author.endsWith("[bot]")) return false;
+      // Skip comments posted by the AI agent (uses user's account, not a bot)
+      if (isAgentComment(c.body)) return false;
       return true;
     });
 
@@ -759,7 +777,8 @@ function createGitHubSCM(): SCM {
 
     async postComment(pr: PRInfo, body: string, images?: string[]): Promise<string> {
       // If images are provided, upload them first and embed in the body
-      let commentBody = body;
+      // Append agent signature so getPendingComments() can filter out our own replies
+      let commentBody = body + AGENT_COMMENT_SIGNATURE;
 
       if (images && images.length > 0) {
         // GitHub doesn't support direct image upload via gh CLI.

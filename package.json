@@ -1,6 +1,6 @@
 {
   "name": "agent-orchestrator",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Orchestrate parallel AI coding agents across any runtime, any repo, any issue tracker",
   "license": "MIT",

@@ -35,6 +35,10 @@ export const BASE_AGENT_PROMPT = `You are an AI coding agent managed by the Agen
   - If the feedback is valid: fix the code, push, and resolve the comment thread.
   - If the feedback is not applicable or incorrect: reply to the comment explaining why, then resolve it.
   - Never leave a comment unaddressed — always either fix or push back with a clear explanation.
+  - IMPORTANT: When replying to PR comments, always end your reply with this signature on a new line:
+    \`---\`
+    \`*— replied by AI agent (ao)*\`
+    This prevents the orchestrator from re-processing your own replies.
 
 ## Git Workflow
 - Always create a feature branch from the default branch (never commit directly to it).
@@ -56,6 +60,15 @@ export const BASE_AGENT_PROMPT = `You are an AI coding agent managed by the Agen
 - This captures screenshots of the app to verify your UI changes look correct.
 - Review the screenshot output. If something looks wrong, fix it and re-run \`ao verify\`.
 - Only create the PR once verification passes or if your changes are backend-only (no UI impact).`;
+
+// TODO: Upgrade verification from passive screenshots to active agent-driven verification.
+// The agent should interactively verify its fix/feature works before creating a PR:
+// 1. Start the dev server if not running
+// 2. Use Playwright (via Bash) to navigate to the relevant pages
+// 3. Interact with the UI to confirm the fix/feature — click buttons, fill forms, check results
+// 4. Use verify.baseUrl and verify.auth config for target URL and credentials
+// 5. Only create PR once the agent confirms the change works, not just "looks right"
+// This doesn't require new tools — the agent already has Bash + Playwright access.
 
 // =============================================================================
 // LAYER 1.5: AGENT PERSONAS
