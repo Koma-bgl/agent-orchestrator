@@ -458,6 +458,9 @@ export interface Tracker {
 
   /** Optional: create a new issue */
   createIssue?(input: CreateIssueInput, project: ProjectConfig): Promise<Issue>;
+
+  /** Optional: fetch comments on an issue */
+  getComments?(identifier: string, project: ProjectConfig): Promise<TrackerComment[]>;
 }
 
 export interface Issue {
@@ -469,6 +472,14 @@ export interface Issue {
   labels: string[];
   assignee?: string;
   priority?: number;
+}
+
+export interface TrackerComment {
+  id: string;
+  author: string;
+  body: string;
+  createdAt: Date;
+  url: string;
 }
 
 export interface IssueFilters {

@@ -346,6 +346,30 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       }
     }
 
+    // 2.5 Check for new tracker comments (e.g., QA feedback on Linear) when no PR exists.
+    //     Once a PR exists, SCM-level comments (step 4) take over.
+    if (!session.pr && session.issueId && project.tracker) {
+      try {
+        const tracker = registry.get<Tracker>("tracker", project.tracker.plugin);
+        if (tracker?.getComments) {
+          const comments = await tracker.getComments(session.issueId, project);
+          // Only consider comments posted after session creation to avoid
+          // re-sending comments already included in the initial prompt.
+          const sentIds = new Set(
+            (session.metadata["trackerCommentsSent"] ?? "").split(",").filter(Boolean),
+          );
+          const newComments = comments.filter(
+            (c) => c.createdAt > session.createdAt && !sentIds.has(c.id),
+          );
+          if (newComments.length > 0) {
+            return "changes_requested";
+          }
+        }
+      } catch {
+        // Non-fatal — will retry next poll
+      }
+    }
+
     // 3. Auto-detect PR by branch if metadata.pr is missing.
     //    This is critical for agents without auto-hook systems (Codex, Aider,
     //    OpenCode) that can't reliably write pr=<url> to metadata on their own.
@@ -520,75 +544,143 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       case "send-comments-to-agent": {
         try {
           const session = await sessionManager.get(sessionId);
-          if (!session?.pr) {
+          if (!session) {
             return { reactionType: reactionKey, success: false, action, escalated: false };
           }
 
           const project = config.projects[projectId];
-          const scm = project?.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
-          if (!scm) {
-            return { reactionType: reactionKey, success: false, action, escalated: false };
-          }
 
-          const comments = await scm.getPendingComments(session.pr);
-          console.log(
-            `[lifecycle] ${sessionId}: getPendingComments returned ${comments.length} comment(s)` +
-              (comments.length > 0
-                ? ` — types: ${comments.map((c) => `${c.commentType}:@${c.author}`).join(", ")}`
-                : ""),
-          );
-          if (comments.length === 0) {
-            // No unresolved comments — nothing to send
-            return { reactionType: reactionKey, success: true, action, escalated: false };
-          }
+          // --- PR comments (post-PR flow via SCM) ---
+          if (session.pr) {
+            const scm = project?.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
+            if (!scm) {
+              return { reactionType: reactionKey, success: false, action, escalated: false };
+            }
 
-          // React with 👀 on each comment to signal we're on it
-          const pr = session.pr;
-          if (scm.addReaction && pr) {
-            const addReaction = scm.addReaction.bind(scm);
-            await Promise.all(
-              comments.map((c) =>
-                addReaction(c.id, pr, "eyes", c.commentType).catch(() => {
-                  // Non-fatal — don't block on reaction failures
-                }),
-              ),
+            const comments = await scm.getPendingComments(session.pr);
+            console.log(
+              `[lifecycle] ${sessionId}: getPendingComments returned ${comments.length} comment(s)` +
+                (comments.length > 0
+                  ? ` — types: ${comments.map((c) => `${c.commentType}:@${c.author}`).join(", ")}`
+                  : ""),
             );
+            if (comments.length === 0) {
+              return { reactionType: reactionKey, success: true, action, escalated: false };
+            }
+
+            // React with 👀 on each comment to signal we're on it
+            const pr = session.pr;
+            if (scm.addReaction && pr) {
+              const addReaction = scm.addReaction.bind(scm);
+              await Promise.all(
+                comments.map((c) =>
+                  addReaction(c.id, pr, "eyes", c.commentType).catch(() => {
+                    // Non-fatal — don't block on reaction failures
+                  }),
+                ),
+              );
+            }
+
+            const notifyEvent = createEvent("reaction.triggered", {
+              sessionId,
+              projectId,
+              message: `Picking up ${comments.length} review comment${comments.length !== 1 ? "s" : ""} on ${session.id} (PR #${session.pr.number}) — sending to agent`,
+            });
+            await notifyHuman(notifyEvent, "info");
+
+            const commentLines = comments.map((c, i) => {
+              const location = c.path
+                ? `File: ${c.path}${c.line ? `:${c.line}` : ""}`
+                : "General";
+              return `### Comment ${i + 1} (by @${c.author})\n${location}\n${c.body}\nURL: ${c.url}`;
+            });
+
+            const message = [
+              `There are ${comments.length} unresolved review comment${comments.length !== 1 ? "s" : ""} on your PR. Please address each one:`,
+              "",
+              ...commentLines,
+              "",
+              "For each comment:",
+              "- If the feedback is valid, fix the code and push.",
+              "- If the feedback is not applicable or incorrect, reply to the comment explaining why and resolve it.",
+              "- After addressing all comments, push your changes.",
+            ].join("\n");
+
+            await sessionManager.send(sessionId, message);
+
+            return {
+              reactionType: reactionKey,
+              success: true,
+              action: "send-comments-to-agent",
+              message: `Sent ${comments.length} review comments to agent`,
+              escalated: false,
+            };
           }
 
-          // Notify human that comments are being addressed
-          const notifyEvent = createEvent("reaction.triggered", {
-            sessionId,
-            projectId,
-            message: `Picking up ${comments.length} review comment${comments.length !== 1 ? "s" : ""} on ${session.id} (PR #${session.pr.number}) — sending to agent`,
-          });
-          await notifyHuman(notifyEvent, "info");
+          // --- Tracker comments (pre-PR flow, e.g. QA feedback on Linear) ---
+          if (session.issueId && project?.tracker) {
+            const tracker = registry.get<Tracker>("tracker", project.tracker.plugin);
+            if (!tracker?.getComments) {
+              return { reactionType: reactionKey, success: false, action, escalated: false };
+            }
 
-          // Build a structured message with all unresolved comments
-          const commentLines = comments.map((c, i) => {
-            const location = c.path ? `File: ${c.path}${c.line ? `:${c.line}` : ""}` : "General";
-            return `### Comment ${i + 1} (by @${c.author})\n${location}\n${c.body}\nURL: ${c.url}`;
-          });
+            const allComments = await tracker.getComments(session.issueId, project);
+            const sentIds = new Set(
+              (session.metadata["trackerCommentsSent"] ?? "").split(",").filter(Boolean),
+            );
+            const newComments = allComments.filter(
+              (c) => c.createdAt > session.createdAt && !sentIds.has(c.id),
+            );
 
-          const message = [
-            `There are ${comments.length} unresolved review comment${comments.length !== 1 ? "s" : ""} on your PR. Please address each one:`,
-            "",
-            ...commentLines,
-            "",
-            "For each comment:",
-            "- If the feedback is valid, fix the code and push.",
-            "- If the feedback is not applicable or incorrect, reply to the comment explaining why and resolve it.",
-            "- After addressing all comments, push your changes.",
-          ].join("\n");
+            console.log(
+              `[lifecycle] ${sessionId}: tracker comments — total=${allComments.length}, new=${newComments.length}`,
+            );
 
-          await sessionManager.send(sessionId, message);
+            if (newComments.length === 0) {
+              return { reactionType: reactionKey, success: true, action, escalated: false };
+            }
 
-          return {
-            reactionType: reactionKey,
-            success: true,
-            action: "send-comments-to-agent",
-            message: `Sent ${comments.length} review comments to agent`,
-            escalated: false,
-          };
+            const notifyEvent = createEvent("reaction.triggered", {
+              sessionId,
+              projectId,
+              message: `Picking up ${newComments.length} tracker comment${newComments.length !== 1 ? "s" : ""} on ${session.id} [${session.issueId}] — sending to agent`,
+            });
+            await notifyHuman(notifyEvent, "info");
+
+            const commentLines = newComments.map((c, i) => {
+              const timestamp = c.createdAt.toISOString().split("T")[0];
+              return `### Comment ${i + 1} (by @${c.author}, ${timestamp})\n${c.body}\nURL: ${c.url}`;
+            });
+
+            const message = [
+              `There ${newComments.length === 1 ? "is" : "are"} ${newComments.length} new comment${newComments.length !== 1 ? "s" : ""} on the issue tracker. Please address the feedback:`,
+              "",
+              ...commentLines,
+              "",
+              "For each comment:",
+              "- If the feedback is valid (e.g., a bug report from QA), fix the code and push.",
+              "- After addressing all comments, push your changes.",
+            ].join("\n");
+
+            await sessionManager.send(sessionId, message);
+
+            // Track sent comment IDs in metadata to avoid re-sending
+            const updatedSentIds = [...sentIds, ...newComments.map((c) => c.id)].join(",");
+            const sessionsDir = getSessionsDir(config.configPath, project.path);
+            updateMetadata(sessionsDir, session.id, {
+              trackerCommentsSent: updatedSentIds,
+            });
+
+            return {
+              reactionType: reactionKey,
+              success: true,
+              action: "send-comments-to-agent",
+              message: `Sent ${newComments.length} tracker comments to agent`,
+              escalated: false,
+            };
+          }
+
+          return { reactionType: reactionKey, success: false, action, escalated: false };
         } catch {
           return {
             reactionType: reactionKey,

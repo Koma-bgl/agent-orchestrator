@@ -17,6 +17,7 @@ import type {
   IssueUpdate,
   CreateIssueInput,
   ProjectConfig,
+  TrackerComment,
 } from "@composio/ao-core";
 import type { Composio } from "@composio/core";
 
@@ -367,12 +368,67 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
         lines.push("## Description", "", issue.description);
       }
 
+      // Include tracker comments (e.g., QA feedback) so the agent has full context
+      try {
+        const comments = await this.getComments!(identifier, project);
+        if (comments.length > 0) {
+          lines.push("", "## Comments", "");
+          for (const c of comments) {
+            const timestamp = c.createdAt.toISOString().split("T")[0];
+            lines.push(`### @${c.author} (${timestamp})`, "", c.body, "");
+          }
+        }
+      } catch {
+        // Non-fatal — proceed without comments if fetch fails
+      }
+
       lines.push(
         "",
         "Please implement the changes described in this ticket. When done, commit and push your changes.",
       );
 
       return lines.join("\n");
+    },
+
+    async getComments(identifier: string, _project: ProjectConfig): Promise<TrackerComment[]> {
+      const data = await query<{
+        issue: {
+          comments: {
+            nodes: Array<{
+              id: string;
+              body: string;
+              user: { displayName: string; name: string } | null;
+              createdAt: string;
+              url: string;
+            }>;
+          };
+        };
+      }>(
+        `query($id: String!) {
+          issue(id: $id) {
+            comments {
+              nodes {
+                id
+                body
+                user { displayName name }
+                createdAt
+                url
+              }
+            }
+          }
+        }`,
+        { id: identifier },
+      );
+
+      return data.issue.comments.nodes
+        .map((c) => ({
+          id: c.id,
+          author: c.user?.displayName ?? c.user?.name ?? "Unknown",
+          body: c.body,
+          createdAt: new Date(c.createdAt),
+          url: c.url,
+        }))
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     },
 
     async listIssues(filters: IssueFilters, project: ProjectConfig): Promise<Issue[]> {
