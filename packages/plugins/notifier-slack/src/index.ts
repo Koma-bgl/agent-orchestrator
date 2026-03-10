@@ -130,57 +130,111 @@ async function postToWebhook(webhookUrl: string, payload: Record<string, unknown
   }
 }
 
+/**
+ * Post a message using the Slack Web API (chat.postMessage).
+ * Requires a Bot Token with `chat:write` scope.
+ */
+async function postToSlackApi(
+  token: string,
+  channel: string,
+  text: string,
+  blocks?: unknown[],
+): Promise<string | null> {
+  const payload: Record<string, unknown> = { channel, text };
+  if (blocks) payload.blocks = blocks;
+
+  const response = await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Slack API failed (${response.status}): ${body}`);
+  }
+
+  const result = (await response.json()) as { ok: boolean; error?: string; ts?: string };
+  if (!result.ok) {
+    throw new Error(`Slack API error: ${result.error}`);
+  }
+
+  return result.ts ?? null;
+}
+
 export function create(config?: Record<string, unknown>): Notifier {
-  const webhookUrl = config?.webhookUrl as string | undefined;
+  const webhookUrl = (config?.webhookUrl ?? config?.webhook) as string | undefined;
   const defaultChannel = config?.channel as string | undefined;
   const username = (config?.username as string) ?? "Agent Orchestrator";
 
-  if (!webhookUrl) {
-    console.warn("[notifier-slack] No webhookUrl configured — notifications will be no-ops");
-  } else {
+  // Support Bot Token from config or env var (SLACK_BOT_TOKEN)
+  const botToken = (config?.botToken as string | undefined) ?? process.env.SLACK_BOT_TOKEN;
+
+  // Determine transport: prefer Bot Token API if available, fall back to webhook
+  const useApi = Boolean(botToken && defaultChannel);
+
+  if (!webhookUrl && !botToken) {
+    console.warn("[notifier-slack] No webhookUrl or SLACK_BOT_TOKEN configured — notifications will be no-ops");
+  } else if (webhookUrl) {
     validateUrl(webhookUrl, "notifier-slack");
+  }
+
+  if (botToken && !defaultChannel) {
+    console.warn("[notifier-slack] SLACK_BOT_TOKEN set but no channel configured — Bot API requires a channel");
+  }
+
+  /** Send a message using the best available transport */
+  async function send(
+    text: string,
+    channel: string | undefined,
+    blocks?: unknown[],
+  ): Promise<string | null> {
+    const targetChannel = channel ?? defaultChannel;
+
+    // Prefer Bot Token API when available
+    if (botToken && targetChannel) {
+      return postToSlackApi(botToken, targetChannel, text, blocks);
+    }
+
+    // Fall back to webhook
+    if (webhookUrl) {
+      const payload: Record<string, unknown> = { username, text };
+      if (targetChannel) payload.channel = targetChannel;
+      if (blocks) payload.blocks = blocks;
+      await postToWebhook(webhookUrl, payload);
+      return null;
+    }
+
+    return null;
   }
 
   return {
     name: "slack",
 
     async notify(event: OrchestratorEvent): Promise<void> {
-      if (!webhookUrl) return;
+      if (!webhookUrl && !useApi) return;
 
-      const payload: Record<string, unknown> = {
-        username,
-        blocks: buildBlocks(event),
-      };
-      if (defaultChannel) payload.channel = defaultChannel;
-
-      await postToWebhook(webhookUrl, payload);
+      const blocks = buildBlocks(event);
+      const fallbackText = `${PRIORITY_EMOJI[event.priority]} ${event.type} — ${event.sessionId}: ${event.message}`;
+      await send(fallbackText, undefined, blocks);
     },
 
     async notifyWithActions(event: OrchestratorEvent, actions: NotifyAction[]): Promise<void> {
-      if (!webhookUrl) return;
+      if (!webhookUrl && !useApi) return;
 
-      const payload: Record<string, unknown> = {
-        username,
-        blocks: buildBlocks(event, actions),
-      };
-      if (defaultChannel) payload.channel = defaultChannel;
-
-      await postToWebhook(webhookUrl, payload);
+      const blocks = buildBlocks(event, actions);
+      const fallbackText = `${PRIORITY_EMOJI[event.priority]} ${event.type} — ${event.sessionId}: ${event.message}`;
+      await send(fallbackText, undefined, blocks);
     },
 
     async post(message: string, context?: NotifyContext): Promise<string | null> {
-      if (!webhookUrl) return null;
+      if (!webhookUrl && !useApi) return null;
 
       const channel = context?.channel ?? defaultChannel;
-      const payload: Record<string, unknown> = {
-        username,
-        text: message,
-      };
-      if (channel) payload.channel = channel;
-
-      await postToWebhook(webhookUrl, payload);
-      // Incoming webhooks don't return a message ID
-      return null;
+      return send(message, channel);
     },
   };
 }

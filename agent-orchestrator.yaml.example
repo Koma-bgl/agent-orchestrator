@@ -84,7 +84,11 @@ projects:
 # notifiers:
 #   slack:
 #     plugin: slack
+#     # Option 1: Incoming Webhook URL (simple, no scopes needed)
 #     webhook: ${SLACK_WEBHOOK_URL}
+#     # Option 2: Bot Token API (requires chat:write scope)
+#     # Set SLACK_BOT_TOKEN env var or specify here:
+#     # botToken: ${SLACK_BOT_TOKEN}
 #     channel: "#agent-updates"
 
 # Notification routing by priority

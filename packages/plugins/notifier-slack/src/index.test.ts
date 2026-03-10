@@ -43,10 +43,10 @@ describe("notifier-slack", () => {
       expect(notifier.name).toBe("slack");
     });
 
-    it("warns when no webhookUrl configured", () => {
+    it("warns when no webhookUrl or bot token configured", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       create();
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("No webhookUrl configured"));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("No webhookUrl or SLACK_BOT_TOKEN configured"));
     });
 
     it("throws on invalid URL scheme", () => {

@@ -895,6 +895,29 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     }
   }
 
+  /** Post a simple PR message ("{PR URL} - {PR title}") to all notifiers that support post(). */
+  async function postPrCreated(session: Session): Promise<void> {
+    if (!session.pr?.url) return;
+
+    const message = `${session.pr.url} - ${session.pr.title ?? session.id}`;
+    const notifierNames = config.notificationRouting["info"] ?? config.defaults.notifiers;
+
+    for (const name of notifierNames) {
+      const notifier = registry.get<Notifier>("notifier", name);
+      if (notifier?.post) {
+        try {
+          await notifier.post(message, {
+            sessionId: session.id,
+            projectId: session.projectId,
+            prUrl: session.pr.url,
+          });
+        } catch {
+          // Notifier post failed — not critical
+        }
+      }
+    }
+  }
+
   /**
    * Sync issue tracker status when session transitions to key states.
    *
@@ -1028,6 +1051,11 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             });
             await notifyHuman(event, priority);
           }
+        }
+
+        // Post simple "{PR URL} - {PR title}" message when a PR is created
+        if (eventType === "pr.created") {
+          await postPrCreated(session);
         }
 
         // NOTE: Visual verification is now handled by the agent via `ao verify`
