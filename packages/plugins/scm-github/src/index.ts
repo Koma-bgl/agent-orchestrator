@@ -318,7 +318,9 @@ async function fetchReviewThreadComments(pr: PRInfo): Promise<ReviewComment[]> {
   }
 }
 
-/** Fetch general PR conversation comments (issue comments, not inline review). */
+/** Fetch general PR conversation comments (issue comments, not inline review).
+ *  Filters out comments that already have an 👀 reaction (meaning we've already
+ *  picked them up and sent to the agent). */
 async function fetchIssueComments(pr: PRInfo): Promise<ReviewComment[]> {
   try {
     const raw = await gh([
@@ -332,6 +334,7 @@ async function fetchIssueComments(pr: PRInfo): Promise<ReviewComment[]> {
       body: string;
       created_at: string;
       html_url: string;
+      reactions?: Record<string, number>;
     }> = JSON.parse(raw);
 
     const filtered = comments.filter((c) => {
@@ -342,6 +345,8 @@ async function fetchIssueComments(pr: PRInfo): Promise<ReviewComment[]> {
       if (author.endsWith("[bot]")) return false;
       // Skip comments posted by the AI agent (uses user's account, not a bot)
       if (isAgentComment(c.body)) return false;
+      // Skip comments we've already picked up (marked with 👀 reaction)
+      if (c.reactions?.eyes && c.reactions.eyes > 0) return false;
       return true;
     });
 
