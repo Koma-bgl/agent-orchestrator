@@ -39,7 +39,8 @@ projects:
     # Issue tracker (defaults to github issues)
     # tracker:
     #   plugin: linear
-    #   teamId: "your-team-id"
+    #   teamId: "your-team-id"              # single team
+    #   teamId: ["team-id-1", "team-id-2"]  # multiple teams
 
     # Files to symlink into workspaces
     # symlinks: [.env, .claude]

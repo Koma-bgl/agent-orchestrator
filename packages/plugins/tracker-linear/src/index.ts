@@ -233,6 +233,25 @@ interface LinearIssueNode {
 }
 
 // ---------------------------------------------------------------------------
+// Team ID helpers
+// ---------------------------------------------------------------------------
+
+/** Normalize teamId config value (string or string[]) to an array. */
+function resolveTeamIds(project: ProjectConfig): string[] {
+  const raw = project.tracker?.["teamId"];
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map(String);
+  return [String(raw)];
+}
+
+/** Build a GraphQL team filter clause for one or many team IDs. */
+function teamFilter(teamIds: string[]): Record<string, unknown> | undefined {
+  if (teamIds.length === 0) return undefined;
+  if (teamIds.length === 1) return { id: { eq: teamIds[0] } };
+  return { id: { in: teamIds } };
+}
+
+// ---------------------------------------------------------------------------
 // State mapping
 // ---------------------------------------------------------------------------
 
@@ -440,14 +459,15 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
         // Resolve status name to workflow state ID(s) first, then filter by ID.
         // We look up matching states by name because the Linear IssueFilter
         // reliably supports state.id but state.name may not be available.
-        const teamIdForLookup = project.tracker?.["teamId"];
-        const teamFilter = teamIdForLookup
-          ? `, filter: { team: { id: { eq: "${String(teamIdForLookup)}" } } }`
-          : "";
+        const teamIdsForLookup = resolveTeamIds(project);
+        const tfLookup = teamFilter(teamIdsForLookup);
         const statesData = await query<{
           workflowStates: { nodes: Array<{ id: string; name: string; type: string }> };
         }>(
-          `query { workflowStates(first: 100${teamFilter}) { nodes { id name type } } }`,
+          tfLookup
+            ? `query($filter: WorkflowStateFilter) { workflowStates(first: 100, filter: $filter) { nodes { id name type } } }`
+            : `query { workflowStates(first: 100) { nodes { id name type } } }`,
+          tfLookup ? { filter: { team: tfLookup } } : undefined,
         );
         const targetName = filters.statusName.toLowerCase();
         const matchingIds = statesData.workflowStates.nodes
@@ -475,9 +495,10 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
       }
 
       // Add team filter if available from project config
-      const teamId = project.tracker?.["teamId"];
-      if (teamId) {
-        filter["team"] = { id: { eq: teamId } };
+      const teamIds = resolveTeamIds(project);
+      const tf = teamFilter(teamIds);
+      if (tf) {
+        filter["team"] = tf;
       }
 
       variables["filter"] = Object.keys(filter).length > 0 ? filter : undefined;
@@ -675,10 +696,12 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
     },
 
     async createIssue(input: CreateIssueInput, project: ProjectConfig): Promise<Issue> {
-      const teamId = project.tracker?.["teamId"];
-      if (!teamId) {
+      const teamIds = resolveTeamIds(project);
+      if (teamIds.length === 0) {
         throw new Error("Linear tracker requires 'teamId' in project tracker config");
       }
+      // Use the first team ID for issue creation
+      const teamId = teamIds[0];
 
       const variables: Record<string, unknown> = {
         title: input.title,
