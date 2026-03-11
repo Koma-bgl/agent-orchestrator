@@ -1086,15 +1086,38 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             reactionConfig?.action === "send-comments-to-agent" ||
             reactionConfig?.action === "auto-merge")
         ) {
-          console.log(
-            `[lifecycle] Session ${session.id} still in "${newStatus}" — retrying "${reactionKey}" reaction`,
-          );
-          await executeReaction(
-            session.id,
-            session.projectId,
-            reactionKey,
-            reactionConfig as ReactionConfig,
-          );
+          // Check if this reaction was already escalated — don't keep retrying
+          const trackerKey = `${session.id}:${reactionKey}`;
+          const existingTracker = reactionTrackers.get(trackerKey);
+          const rc = reactionConfig as ReactionConfig;
+          const maxRetries = rc.retries ?? Infinity;
+          let alreadyEscalated = existingTracker && existingTracker.attempts > maxRetries;
+          if (!alreadyEscalated && existingTracker && typeof rc.escalateAfter === "string") {
+            const durationMs = parseDuration(rc.escalateAfter);
+            if (durationMs > 0 && Date.now() - existingTracker.firstTriggered.getTime() > durationMs) {
+              alreadyEscalated = true;
+            }
+          }
+          if (!alreadyEscalated && existingTracker && typeof rc.escalateAfter === "number") {
+            alreadyEscalated = existingTracker.attempts > rc.escalateAfter;
+          }
+
+          if (!alreadyEscalated) {
+            console.log(
+              `[lifecycle] Session ${session.id} still in "${newStatus}" — retrying "${reactionKey}" reaction`,
+            );
+            const result = await executeReaction(
+              session.id,
+              session.projectId,
+              reactionKey,
+              reactionConfig as ReactionConfig,
+            );
+            if (result.escalated) {
+              console.log(
+                `[lifecycle] Session ${session.id} reaction "${reactionKey}" escalated — stopping retries`,
+              );
+            }
+          }
         }
       }
 
