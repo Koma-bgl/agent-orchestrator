@@ -918,8 +918,11 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       if (notifier) {
         try {
           await notifier.notify(eventWithPriority);
-        } catch {
-          // Notifier failed — not much we can do
+        } catch (err: unknown) {
+          console.error(
+            `[lifecycle] notifier "${name}" failed for ${event.type}:`,
+            err instanceof Error ? err.message : String(err),
+          );
         }
       }
     }
@@ -941,8 +944,11 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             projectId: session.projectId,
             prUrl: session.pr.url,
           });
-        } catch {
-          // Notifier post failed — not critical
+        } catch (err: unknown) {
+          console.error(
+            `[lifecycle] notifier "${name}" post failed for ${session.id}:`,
+            err instanceof Error ? err.message : String(err),
+          );
         }
       }
     }
