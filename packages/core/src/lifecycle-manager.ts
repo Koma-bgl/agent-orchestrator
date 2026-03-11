@@ -611,16 +611,30 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             // Resolve the review threads now that we've sent them to the agent.
             // This prevents the same comments from being picked up again on the
             // next poll cycle and avoids the "1 unresolved comment" stale state.
-            if (scm.resolveThread && pr) {
+            const resolvable = comments.filter(
+              (c) => c.threadId && c.commentType === "review_comment",
+            );
+            const unresolvable = comments.filter(
+              (c) => !c.threadId || c.commentType !== "review_comment",
+            );
+            if (unresolvable.length > 0) {
+              console.log(
+                `[lifecycle] ${sessionId}: ${unresolvable.length} comment(s) cannot be auto-resolved (issue_comment or missing threadId): ${unresolvable.map((c) => `@${c.author}:${c.commentType}`).join(", ")}`,
+              );
+            }
+            if (scm.resolveThread && pr && resolvable.length > 0) {
               const resolveThread = scm.resolveThread.bind(scm);
+              console.log(
+                `[lifecycle] ${sessionId}: resolving ${resolvable.length} review thread(s)`,
+              );
               await Promise.all(
-                comments
-                  .filter((c) => c.threadId && c.commentType === "review_comment")
-                  .map((c) =>
-                    resolveThread(c.threadId!, pr).catch(() => {
-                      // Non-fatal — thread may already be resolved or lack permissions
-                    }),
-                  ),
+                resolvable.map((c) =>
+                  resolveThread(c.threadId!, pr).catch((err: unknown) => {
+                    console.error(
+                      `[lifecycle] ${sessionId}: failed to resolve thread ${c.threadId}: ${err instanceof Error ? err.message : String(err)}`,
+                    );
+                  }),
+                ),
               );
             }
 
