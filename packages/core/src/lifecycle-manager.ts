@@ -608,6 +608,22 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
             await sessionManager.send(sessionId, message);
 
+            // Resolve the review threads now that we've sent them to the agent.
+            // This prevents the same comments from being picked up again on the
+            // next poll cycle and avoids the "1 unresolved comment" stale state.
+            if (scm.resolveThread && pr) {
+              const resolveThread = scm.resolveThread.bind(scm);
+              await Promise.all(
+                comments
+                  .filter((c) => c.threadId && c.commentType === "review_comment")
+                  .map((c) =>
+                    resolveThread(c.threadId!).catch(() => {
+                      // Non-fatal — thread may already be resolved or lack permissions
+                    }),
+                  ),
+              );
+            }
+
             return {
               reactionType: reactionKey,
               success: true,

@@ -239,6 +239,7 @@ async function fetchReviewThreadComments(pr: PRInfo): Promise<ReviewComment[]> {
           pullRequest(number: $number) {
             reviewThreads(first: 100) {
               nodes {
+                id
                 isResolved
                 comments(first: 1) {
                   nodes {
@@ -264,6 +265,7 @@ async function fetchReviewThreadComments(pr: PRInfo): Promise<ReviewComment[]> {
           pullRequest: {
             reviewThreads: {
               nodes: Array<{
+                id: string;
                 isResolved: boolean;
                 comments: {
                   nodes: Array<{
@@ -300,6 +302,7 @@ async function fetchReviewThreadComments(pr: PRInfo): Promise<ReviewComment[]> {
         const c = t.comments.nodes[0];
         return {
           id: c.id,
+          threadId: t.id,
           author: c.author?.login ?? "unknown",
           body: c.body,
           path: c.path || undefined,
@@ -823,6 +826,21 @@ function createGitHubSCM(): SCM {
           : `repos/${repoFlag(pr)}/pulls/comments/${commentId}/reactions`;
 
       await gh(["api", "--method", "POST", "-f", `content=${reaction}`, endpoint]);
+    },
+
+    async resolveThread(threadId: string): Promise<void> {
+      await gh([
+        "api",
+        "graphql",
+        "-f",
+        `threadId=${threadId}`,
+        "-f",
+        `query=mutation($threadId: ID!) {
+          resolveReviewThread(input: { threadId: $threadId }) {
+            thread { isResolved }
+          }
+        }`,
+      ]);
     },
 
     async getMergeability(pr: PRInfo): Promise<MergeReadiness> {
