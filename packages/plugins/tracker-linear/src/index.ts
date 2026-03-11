@@ -461,6 +461,10 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
         // reliably supports state.id but state.name may not be available.
         const teamIdsForLookup = resolveTeamIds(project);
         const tfLookup = teamFilter(teamIdsForLookup);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[tracker-linear] listIssues: resolving statusName="${filters.statusName}" with teamIds=${JSON.stringify(teamIdsForLookup)}, teamFilter=${JSON.stringify(tfLookup)}`,
+        );
         const statesData = await query<{
           workflowStates: { nodes: Array<{ id: string; name: string; type: string }> };
         }>(
@@ -470,13 +474,18 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
           tfLookup ? { filter: { team: tfLookup } } : undefined,
         );
         const targetName = filters.statusName.toLowerCase();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[tracker-linear] listIssues: found ${statesData.workflowStates.nodes.length} workflow states, looking for "${targetName}": ${statesData.workflowStates.nodes.map((s) => `${s.name}(${s.type})`).join(", ")}`,
+        );
         const matchingIds = statesData.workflowStates.nodes
           .filter((s) => s.name.toLowerCase() === targetName)
           .map((s) => s.id);
         if (matchingIds.length > 0) {
           filter["state"] = { id: { in: matchingIds } };
         } else {
-          // No matching state found — return empty results
+          // eslint-disable-next-line no-console
+          console.log(`[tracker-linear] listIssues: no matching state found for "${targetName}", returning empty`);
           return [];
         }
       } else if (filters.state === "closed") {
@@ -504,6 +513,11 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
       variables["filter"] = Object.keys(filter).length > 0 ? filter : undefined;
       variables["first"] = filters.limit ?? 30;
 
+      // eslint-disable-next-line no-console
+      console.log(
+        `[tracker-linear] listIssues: querying with filter=${JSON.stringify(variables["filter"])}`,
+      );
+
       const data = await query<{
         issues: { nodes: LinearIssueNode[] };
       }>(
@@ -515,6 +529,11 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
           }
         }`,
         variables,
+      );
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[tracker-linear] listIssues: returned ${data.issues.nodes.length} issue(s)`,
       );
 
       return data.issues.nodes.map((node) => ({
