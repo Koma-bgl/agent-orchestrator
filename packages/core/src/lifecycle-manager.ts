@@ -617,7 +617,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
                 comments
                   .filter((c) => c.threadId && c.commentType === "review_comment")
                   .map((c) =>
-                    resolveThread(c.threadId!).catch(() => {
+                    resolveThread(c.threadId!, pr).catch(() => {
                       // Non-fatal — thread may already be resolved or lack permissions
                     }),
                   ),

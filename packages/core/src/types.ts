@@ -585,8 +585,9 @@ export interface SCM {
     commentType: "issue_comment" | "review_comment",
   ): Promise<void>;
 
-  /** Resolve a review thread by its GraphQL node ID */
-  resolveThread?(threadId: string): Promise<void>;
+  /** Resolve a review thread by its GraphQL node ID.
+   *  Accepts PR info so implementations can invalidate cached comment data. */
+  resolveThread?(threadId: string, pr: PRInfo): Promise<void>;
 
   /** Get list of files changed in a PR */
   getChangedFiles?(pr: PRInfo): Promise<string[]>;

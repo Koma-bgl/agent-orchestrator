@@ -828,7 +828,7 @@ function createGitHubSCM(): SCM {
       await gh(["api", "--method", "POST", "-f", `content=${reaction}`, endpoint]);
     },
 
-    async resolveThread(threadId: string): Promise<void> {
+    async resolveThread(threadId: string, pr: PRInfo): Promise<void> {
       await gh([
         "api",
         "graphql",
@@ -841,6 +841,8 @@ function createGitHubSCM(): SCM {
           }
         }`,
       ]);
+      // Invalidate cached pending comments so the next poll sees resolved state
+      cache.invalidatePrefix(cacheKey(pr, "getPendingComments"));
     },
 
     async getMergeability(pr: PRInfo): Promise<MergeReadiness> {
