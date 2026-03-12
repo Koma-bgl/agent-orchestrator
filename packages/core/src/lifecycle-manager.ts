@@ -913,9 +913,11 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   async function notifyHuman(event: OrchestratorEvent, priority: EventPriority): Promise<void> {
     const eventWithPriority = { ...event, priority };
     const notifierNames = config.notificationRouting[priority] ?? config.defaults.notifiers;
+    console.log(`[lifecycle] notifyHuman: priority=${priority}, notifiers=${JSON.stringify(notifierNames)}`);
 
     for (const name of notifierNames) {
       const notifier = registry.get<Notifier>("notifier", name);
+      console.log(`[lifecycle] notifyHuman: notifier "${name}" resolved=${!!notifier}`);
       if (notifier) {
         try {
           await notifier.notify(eventWithPriority);
@@ -931,10 +933,14 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
   /** Post a simple PR message ("{PR URL} - {PR title}") to all notifiers that support post(). */
   async function postPrCreated(session: Session): Promise<void> {
-    if (!session.pr?.url) return;
+    if (!session.pr?.url) {
+      console.log(`[lifecycle] postPrCreated: skipped — no PR URL for ${session.id}`);
+      return;
+    }
 
     const message = `${session.pr.url} - ${session.pr.title ?? session.id}`;
     const notifierNames = config.notificationRouting["info"] ?? config.defaults.notifiers;
+    console.log(`[lifecycle] postPrCreated: message="${message}", notifiers=${JSON.stringify(notifierNames)}`);
 
     for (const name of notifierNames) {
       const notifier = registry.get<Notifier>("notifier", name);
@@ -1045,9 +1051,11 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
       // Handle transition: notify humans and/or trigger reactions
       const eventType = statusToEventType(oldStatus, newStatus);
+      console.log(`[lifecycle] transition ${session.id}: ${oldStatus} → ${newStatus} (event=${eventType})`);
       if (eventType) {
         let reactionHandledNotify = false;
         const reactionKey = eventToReactionKey(eventType);
+        console.log(`[lifecycle] reactionKey=${reactionKey}`);
 
         if (reactionKey) {
           // Merge project-specific overrides with global defaults
@@ -1079,6 +1087,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         // For significant transitions not already notified by a reaction, notify humans
         if (!reactionHandledNotify) {
           const priority = inferPriority(eventType);
+          console.log(`[lifecycle] ${session.id}: reactionHandledNotify=false, priority=${priority}`);
           if (priority !== "info") {
             const event = createEvent(eventType, {
               sessionId: session.id,
@@ -1086,12 +1095,18 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
               message: buildTransitionMessage(session.id, oldStatus, newStatus, session),
               data: buildEventData(oldStatus, newStatus, session),
             });
+            console.log(`[lifecycle] ${session.id}: calling notifyHuman for ${eventType}`);
             await notifyHuman(event, priority);
+          } else {
+            console.log(`[lifecycle] ${session.id}: skipped notifyHuman (priority=info)`);
           }
+        } else {
+          console.log(`[lifecycle] ${session.id}: skipped notifyHuman (reaction handled)`);
         }
 
         // Post simple "{PR URL} - {PR title}" message when a PR is created
         if (eventType === "pr.created") {
+          console.log(`[lifecycle] ${session.id}: calling postPrCreated, pr=${session.pr?.url}`);
           await postPrCreated(session);
         }
 
