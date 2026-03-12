@@ -892,8 +892,8 @@ export interface OrchestratorConfig {
   /** Notification channel configs */
   notifiers: Record<string, NotifierConfig>;
 
-  /** Notification routing by priority */
-  notificationRouting: Record<EventPriority, string[]>;
+  /** Notification routing by event type or priority (event type takes precedence) */
+  notificationRouting: Record<string, string[]>;
 
   /** Default reaction configs */
   reactions: Record<string, ReactionConfig>;
