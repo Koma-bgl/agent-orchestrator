@@ -374,9 +374,11 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     // 3. Auto-detect PR by branch if metadata.pr is missing.
     //    This is critical for agents without auto-hook systems (Codex, Aider,
     //    OpenCode) that can't reliably write pr=<url> to metadata on their own.
+    console.log(`[lifecycle] ${session.id}: step3 pr=${session.pr?.url ?? "none"}, branch=${session.branch ?? "none"}, scm=${!!scm}`);
     if (!session.pr && scm && session.branch) {
       try {
         const detectedPR = await scm.detectPR(session, project);
+        console.log(`[lifecycle] ${session.id}: detectPR result=${detectedPR?.url ?? "none"}`);
         if (detectedPR) {
           session.pr = detectedPR;
           // Persist PR URL so subsequent polls don't need to re-query.
@@ -436,7 +438,8 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         if (reviewDecision === "pending") return "review_pending";
 
         return "pr_open";
-      } catch {
+      } catch (err: unknown) {
+        console.error(`[lifecycle] ${session.id}: SCM PR check failed:`, err instanceof Error ? err.message : String(err));
         // SCM check failed — keep current status
       }
     }
@@ -445,7 +448,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     if (agentWaitingInput) return "needs_input";
 
     // 6. If agent exited and PR check didn't provide a better status, it's killed
-    if (agentExited) return "killed";
+    if (agentExited) {
+      console.log(`[lifecycle] ${session.id}: agent exited → killed (pr=${session.pr?.url ?? "none"}, branch=${session.branch ?? "none"})`);
+      return "killed";
+    }
 
     // 7. Default: if agent is active, it's working
     if (
