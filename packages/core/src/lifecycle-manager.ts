@@ -374,6 +374,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     // 3. Auto-detect PR by branch if metadata.pr is missing.
     //    This is critical for agents without auto-hook systems (Codex, Aider,
     //    OpenCode) that can't reliably write pr=<url> to metadata on their own.
+    let scmCheckFailed = false;
     console.log(`[lifecycle] ${session.id}: step3 pr=${session.pr?.url ?? "none"}, branch=${session.branch ?? "none"}, scm=${!!scm}`);
     if (!session.pr && scm && session.branch) {
       try {
@@ -387,8 +388,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           const sessionsDir = getSessionsDir(config.configPath, project.path);
           updateMetadata(sessionsDir, session.id, { pr: detectedPR.url });
         }
-      } catch {
-        // SCM detection failed — will retry next poll
+      } catch (err: unknown) {
+        scmCheckFailed = true;
+        console.warn(`[lifecycle] ${session.id}: detectPR failed, will retry:`, err instanceof Error ? err.message : String(err));
       }
     }
 
@@ -439,6 +441,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
         return "pr_open";
       } catch (err: unknown) {
+        scmCheckFailed = true;
         console.error(`[lifecycle] ${session.id}: SCM PR check failed:`, err instanceof Error ? err.message : String(err));
         // SCM check failed — keep current status
       }
@@ -447,8 +450,36 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     // 5. Agent is waiting for input and no PR-level issue was found
     if (agentWaitingInput) return "needs_input";
 
-    // 6. If agent exited and PR check didn't provide a better status, it's killed
+    // 6. Agent exited — but don't rush to "killed".
+    //    The agent may have created a PR that we haven't detected yet (race
+    //    condition, GitHub lag, rate limit). Retry PR detection for a few
+    //    poll cycles before giving up.
     if (agentExited) {
+      if (scmCheckFailed) {
+        console.warn(`[lifecycle] ${session.id}: agent exited but SCM unreachable — preserving "${session.status}" to retry`);
+        return session.status;
+      }
+
+      // If there's a branch but no PR, the agent may have pushed just before
+      // exiting. Give PR detection a grace period before declaring killed.
+      if (session.branch && !session.pr) {
+        const exitedAt = session.metadata["agentExitedAt"];
+        const now = Date.now();
+        if (!exitedAt) {
+          // First time we notice the agent exited — record timestamp, keep current status
+          const sessionsDir = getSessionsDir(config.configPath, project.path);
+          updateMetadata(sessionsDir, session.id, { agentExitedAt: String(now) });
+          console.log(`[lifecycle] ${session.id}: agent exited with branch but no PR — starting grace period`);
+          return session.status;
+        }
+        const elapsed = now - Number(exitedAt);
+        const gracePeriod = 3 * 60_000; // 3 minutes
+        if (elapsed < gracePeriod) {
+          console.log(`[lifecycle] ${session.id}: agent exited ${Math.round(elapsed / 1000)}s ago — waiting for PR detection (${Math.round(gracePeriod / 1000)}s grace)`);
+          return session.status;
+        }
+      }
+
       console.log(`[lifecycle] ${session.id}: agent exited → killed (pr=${session.pr?.url ?? "none"}, branch=${session.branch ?? "none"})`);
       return "killed";
     }
