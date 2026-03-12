@@ -70,7 +70,8 @@ function inferPriority(type: EventType): EventPriority {
     type.includes("approved") ||
     type.includes("ready") ||
     type.includes("merged") ||
-    type.includes("completed")
+    type.includes("completed") ||
+    type === "pr.created"
   ) {
     return "action";
   }
