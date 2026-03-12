@@ -63,22 +63,16 @@ function inferPriority(type: EventType): EventPriority {
   if (type.includes("stuck") || type.includes("needs_input") || type.includes("errored")) {
     return "urgent";
   }
-  if (type.startsWith("summary.")) {
-    return "info";
-  }
-  if (
-    type.includes("approved") ||
-    type.includes("ready") ||
-    type.includes("merged") ||
-    type.includes("completed") ||
-    type === "pr.created"
-  ) {
-    return "action";
-  }
   if (type.includes("fail") || type.includes("changes_requested") || type.includes("conflicts")) {
     return "warning";
   }
-  return "info";
+  // Suppress noise — agent started working or summary events
+  if (type === "session.working" || type.startsWith("summary.")) {
+    return "info";
+  }
+  // Everything else is actionable: pr.created, review.pending, review.approved,
+  // merge.ready, merge.completed, session.killed, etc.
+  return "action";
 }
 
 /** Create an OrchestratorEvent with defaults filled in. */
