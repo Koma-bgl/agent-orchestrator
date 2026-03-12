@@ -943,8 +943,12 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   /** Send a notification to all configured notifiers. */
   async function notifyHuman(event: OrchestratorEvent, priority: EventPriority): Promise<void> {
     const eventWithPriority = { ...event, priority };
-    const notifierNames = config.notificationRouting[priority] ?? config.defaults.notifiers;
-    console.log(`[lifecycle] notifyHuman: priority=${priority}, notifiers=${JSON.stringify(notifierNames)}`);
+    // Resolve notifiers: event type first (e.g. "pr.created"), then priority fallback
+    const notifierNames =
+      config.notificationRouting[event.type] ??
+      config.notificationRouting[priority] ??
+      config.defaults.notifiers;
+    console.log(`[lifecycle] notifyHuman: type=${event.type}, priority=${priority}, notifiers=${JSON.stringify(notifierNames)}`);
 
     for (const name of notifierNames) {
       const notifier = registry.get<Notifier>("notifier", name);
