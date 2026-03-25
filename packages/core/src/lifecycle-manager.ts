@@ -330,13 +330,16 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           }
         }
       } catch {
-        // On probe failure, preserve current stuck/needs_input state rather
-        // than letting the fallback at the bottom coerce them to "working"
+        // On probe failure, note that we should preserve the current state
+        // if no PR-level state is found later. But do NOT return early —
+        // the SCM check (step 4) must still run so merged/closed PRs,
+        // CI failures, and review comments are detected even when the
+        // agent probe is broken.
         if (
           session.status === SESSION_STATUS.STUCK ||
           session.status === SESSION_STATUS.NEEDS_INPUT
         ) {
-          return session.status;
+          agentWaitingInput = true;
         }
       }
     }
