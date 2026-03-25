@@ -4,8 +4,9 @@
  * Uses the `gh` CLI for all GitHub API interactions.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
+import { existsSync } from "node:fs";
 import {
   CI_STATUS,
   type PluginModule,
@@ -26,6 +27,35 @@ import {
 import { TTLCache } from "./cache.js";
 
 const execFileAsync = promisify(execFile);
+
+// ---------------------------------------------------------------------------
+// Resolve `gh` binary path — needed when the process PATH doesn't include
+// homebrew or other non-standard bin directories (e.g. SSH sessions, launchd).
+// ---------------------------------------------------------------------------
+
+function resolveGhPath(): string {
+  // 1. Try `which gh` using current PATH
+  try {
+    return execFileSync("which", ["gh"], { timeout: 5_000 }).toString().trim();
+  } catch {
+    // `which` failed — PATH doesn't contain gh
+  }
+
+  // 2. Check common locations
+  const candidates = [
+    "/opt/homebrew/bin/gh", // macOS ARM homebrew
+    "/usr/local/bin/gh", // macOS Intel homebrew / Linux manual
+    "/usr/bin/gh", // Linux package manager
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+
+  // 3. Fall back to bare "gh" and let execFile fail with a clear error
+  return "gh";
+}
+
+const GH_BIN = resolveGhPath();
 
 // ---------------------------------------------------------------------------
 // Rate-limit-aware retry
@@ -155,7 +185,7 @@ async function ghInner(args: string[]): Promise<string> {
     }
 
     try {
-      const { stdout } = await execFileAsync("gh", args, {
+      const { stdout } = await execFileAsync(GH_BIN, args, {
         maxBuffer: 10 * 1024 * 1024,
         timeout: 60_000,
       });

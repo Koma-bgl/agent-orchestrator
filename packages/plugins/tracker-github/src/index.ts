@@ -4,8 +4,9 @@
  * Uses the `gh` CLI for all GitHub API interactions.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
+import { existsSync } from "node:fs";
 import type {
   PluginModule,
   Tracker,
@@ -17,6 +18,30 @@ import type {
 } from "@composio/ao-core";
 
 const execFileAsync = promisify(execFile);
+
+// ---------------------------------------------------------------------------
+// Resolve `gh` binary path — needed when the process PATH doesn't include
+// homebrew or other non-standard bin directories (e.g. SSH sessions, launchd).
+// ---------------------------------------------------------------------------
+
+function resolveGhPath(): string {
+  try {
+    return execFileSync("which", ["gh"], { timeout: 5_000 }).toString().trim();
+  } catch {
+    // `which` failed — PATH doesn't contain gh
+  }
+  const candidates = [
+    "/opt/homebrew/bin/gh",
+    "/usr/local/bin/gh",
+    "/usr/bin/gh",
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return "gh";
+}
+
+const GH_BIN = resolveGhPath();
 
 // ---------------------------------------------------------------------------
 // Rate-limit-aware retry
@@ -98,7 +123,7 @@ async function ghInner(args: string[]): Promise<string> {
     }
 
     try {
-      const { stdout } = await execFileAsync("gh", args, {
+      const { stdout } = await execFileAsync(GH_BIN, args, {
         maxBuffer: 10 * 1024 * 1024,
         timeout: 60_000,
       });

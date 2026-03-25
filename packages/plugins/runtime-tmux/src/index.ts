@@ -46,9 +46,16 @@ export function create(): Runtime {
       assertValidSessionId(config.sessionId);
       const sessionName = config.sessionId;
 
-      // Build environment flags: -e KEY=VALUE for each env var
+      // Build environment flags: -e KEY=VALUE for each env var.
+      // Always forward PATH from the parent process so spawned sessions can
+      // find CLI tools like `gh`, `git`, etc. — especially important when
+      // the tmux server was started from a non-login context (SSH, launchd).
       const envArgs: string[] = [];
-      for (const [key, value] of Object.entries(config.environment ?? {})) {
+      const env = config.environment ?? {};
+      if (!env["PATH"] && process.env["PATH"]) {
+        envArgs.push("-e", `PATH=${process.env["PATH"]}`);
+      }
+      for (const [key, value] of Object.entries(env)) {
         envArgs.push("-e", `${key}=${value}`);
       }
 
