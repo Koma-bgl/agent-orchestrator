@@ -194,10 +194,13 @@ Running one AI agent in a terminal is easy. Running 30 across different issues, 
 
 ## Prerequisites
 
-- Node.js 20+
-- Git 2.25+
-- tmux (for default runtime)
-- `gh` CLI (for GitHub integration)
+- **Node.js 20+** and **pnpm** (via `corepack enable`)
+- **Git 2.25+**
+- **tmux** (for default runtime — or set `runtime: process` to skip)
+- **Claude Code CLI** (default agent) — `npm install -g @anthropic-ai/claude-code && claude login`
+- **`gh` CLI** (for GitHub integration) — install and run `gh auth login`
+- **`LINEAR_API_KEY`** env var (if using Linear as issue tracker) — get from https://linear.app/settings/api
+- **gitleaks** (pre-commit secret scanning) — `brew install gitleaks`
 
 ## Development
 

@@ -11,6 +11,7 @@ import { registerDashboard } from "./commands/dashboard.js";
 import { registerOpen } from "./commands/open.js";
 import { registerStart, registerStop } from "./commands/start.js";
 import { registerVerify } from "./commands/verify.js";
+import { registerClean } from "./commands/clean.js";
 
 const program = new Command();
 
@@ -31,5 +32,6 @@ registerReviewCheck(program);
 registerDashboard(program);
 registerOpen(program);
 registerVerify(program);
+registerClean(program);
 
 program.parse();
