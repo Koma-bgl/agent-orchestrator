@@ -10,7 +10,9 @@
  * Reference: scripts/claude-session-status, scripts/claude-review-check
  */
 
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
 import {
   SESSION_STATUS,
   PR_STATE,
@@ -38,6 +40,8 @@ import {
 import { updateMetadata, readMetadataRaw } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";
 import { createQueuePoller } from "./queue-poller.js";
+
+const execFileAsync = promisify(execFile);
 
 /** Parse a duration string like "10m", "30s", "1h", "1d" to milliseconds. */
 function parseDuration(str: string): number {
@@ -365,6 +369,29 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         }
       } catch {
         // Non-fatal — will retry next poll
+      }
+    }
+
+    // 2.8 Branch sync: always read the live branch from the worktree.
+    //     The metadata hook captures the first `git checkout -b`, but agents
+    //     may create a second branch (e.g. with a longer descriptive name)
+    //     that becomes the PR head. Without the correct branch, detectPR fails.
+    if (session.workspacePath) {
+      try {
+        const { stdout } = await execFileAsync("git", ["branch", "--show-current"], {
+          cwd: session.workspacePath,
+          timeout: 5_000,
+        });
+        const liveBranch = stdout.trim();
+        if (liveBranch && liveBranch !== project.defaultBranch && liveBranch !== session.branch) {
+          const oldBranch = session.branch;
+          session.branch = liveBranch;
+          const sessionsDir = getSessionsDir(config.configPath, project.path);
+          updateMetadata(sessionsDir, session.id, { branch: liveBranch });
+          console.log(`[lifecycle] ${session.id}: branch updated from worktree: ${oldBranch ?? "none"} → ${liveBranch}`);
+        }
+      } catch {
+        // Worktree may be gone — non-fatal
       }
     }
 

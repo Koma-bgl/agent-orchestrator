@@ -1,6 +1,6 @@
 {
   "name": "agent-orchestrator",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": true,
   "description": "Orchestrate parallel AI coding agents across any runtime, any repo, any issue tracker",
   "license": "MIT",
@@ -26,7 +26,7 @@
     "prepare": "husky",
     "postinstall": "node scripts/rebuild-node-pty.js",
     "gitnexus:index": "[ -z \"$CI\" ] && npx -y gitnexus analyze || true",
-    "upgrade": "lsof -ti :${PORT:-3000} | xargs kill -9 2>/dev/null; pnpm build && pnpm dev"
+    "upgrade": "lsof -ti :${PORT:-8000} | xargs kill -9 2>/dev/null; pnpm build && pnpm dev"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",

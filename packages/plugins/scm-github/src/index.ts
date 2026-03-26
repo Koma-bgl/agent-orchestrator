@@ -466,7 +466,10 @@ function createGitHubSCM(): SCM {
           baseBranch: pr.baseRefName,
           isDraft: pr.isDraft,
         };
-      } catch {
+      } catch (err) {
+        console.warn(
+          `[scm-github] detectPR failed for branch "${session.branch}" on ${project.repo}: ${(err as Error).message}`,
+        );
         return null;
       }
     },
