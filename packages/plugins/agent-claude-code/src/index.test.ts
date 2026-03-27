@@ -516,14 +516,16 @@ describe("getSessionInfo", () => {
       expect(result?.cost?.estimatedCostUsd).toBeCloseTo(0.009 + 0.012, 6);
     });
 
-    it("includes cache tokens in input count", async () => {
+    it("separates cache tokens from raw input count", async () => {
       const jsonl = [
         '{"type":"user","message":{"content":"hi"}}',
         '{"type":"assistant","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}',
       ].join("\n");
       mockJsonlFiles(jsonl);
       const result = await agent.getSessionInfo(makeSession());
-      expect(result?.cost?.inputTokens).toBe(800);
+      expect(result?.cost?.inputTokens).toBe(100);
+      expect(result?.cost?.cacheReadTokens).toBe(500);
+      expect(result?.cost?.cacheCreationTokens).toBe(200);
       expect(result?.cost?.outputTokens).toBe(50);
     });
 

@@ -137,6 +137,50 @@ export interface DashboardStats {
   needsReview: number;
 }
 
+/** Per-session metric for analytics breakdown table */
+export interface SessionMetric {
+  id: string;
+  status: string;
+  issueId: string | null;
+  summary: string | null;
+  createdAt: string;
+  mergedAt: string | null;
+  cycleTimeMs: number | null;
+  costUsd: number | null;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** Aggregate analytics data computed from all sessions */
+export interface AnalyticsData {
+  // Effectiveness
+  totalSessions: number;
+  completedSessions: number;
+  killedSessions: number;
+  completionRate: number;
+
+  // Speed (milliseconds)
+  avgSpawnToPR: number | null;
+  avgPRToMerge: number | null;
+  avgEndToEnd: number | null;
+
+  // Cost
+  totalCostUsd: number;
+  avgCostPerMergedPR: number | null;
+  avgCostPerKilledSession: number | null;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  cacheHitRatio: number;
+
+  // Human intervention
+  sessionsNeedingInput: number;
+  escalationRate: number;
+  totalRestores: number;
+
+  // Per-session breakdown
+  sessions: SessionMetric[];
+}
+
 /** SSE snapshot event from /api/events */
 export interface SSESnapshotEvent {
   type: "snapshot";

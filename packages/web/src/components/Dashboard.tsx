@@ -6,6 +6,7 @@ import {
   type DashboardSession,
   type DashboardStats,
   type AttentionLevel,
+  type AnalyticsData,
   getAttentionLevel,
   isPRRateLimited,
 } from "@/lib/types";
@@ -113,6 +114,17 @@ export function Dashboard({ sessions, stats: _stats, orchestratorId, projectName
   const [progressMap, setProgressMap] = useState<Record<string, string | null>>({});
   useAutoRefresh(sessions, setProgressMap);
   const [rateLimitDismissed, setRateLimitDismissed] = useState(false);
+  const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+
+  // Fetch analytics on first expand
+  useEffect(() => {
+    if (!analyticsOpen || analytics) return;
+    fetch("/api/analytics")
+      .then((r) => r.json())
+      .then((data: AnalyticsData) => setAnalytics(data))
+      .catch(() => {/* ignore */});
+  }, [analyticsOpen, analytics]);
   const grouped = useMemo(() => {
     const zones: Record<AttentionLevel, DashboardSession[]> = {
       merge: [],
@@ -285,6 +297,103 @@ export function Dashboard({ sessions, stats: _stats, orchestratorId, projectName
           onRestore={handleRestore}
         />
       )}
+
+      {/* Analytics — collapsible */}
+      <div className="mt-6 border-t border-[var(--color-border-subtle)] pt-4">
+        <button
+          onClick={() => setAnalyticsOpen(!analyticsOpen)}
+          className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.10em] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+        >
+          <svg
+            className={`h-3 w-3 transition-transform ${analyticsOpen ? "rotate-90" : ""}`}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            viewBox="0 0 24 24"
+          >
+            <path d="M9 5l7 7-7 7" />
+          </svg>
+          Analytics
+        </button>
+        {analyticsOpen && analytics && <AnalyticsSummary data={analytics} />}
+        {analyticsOpen && !analytics && (
+          <div className="mt-3 text-[13px] text-[var(--color-text-muted)]">Loading…</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  const hours = Math.floor(ms / 3_600_000);
+  const mins = Math.round((ms % 3_600_000) / 60_000);
+  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+  return String(n);
+}
+
+function AnalyticsSummary({ data }: { data: AnalyticsData }) {
+  return (
+    <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+      {/* Effectiveness */}
+      <div className="rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-4">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
+          Completion Rate
+        </div>
+        <div className="mt-1 text-[24px] font-bold text-[var(--color-text-primary)]">
+          {(data.completionRate * 100).toFixed(0)}%
+        </div>
+        <div className="mt-1 text-[12px] text-[var(--color-text-secondary)]">
+          {data.completedSessions} merged · {data.killedSessions} killed · {data.totalSessions} total
+        </div>
+      </div>
+
+      {/* Speed */}
+      <div className="rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-4">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
+          Avg Cycle Time
+        </div>
+        <div className="mt-1 text-[24px] font-bold text-[var(--color-text-primary)]">
+          {data.avgEndToEnd ? formatDuration(data.avgEndToEnd) : "—"}
+        </div>
+        <div className="mt-1 text-[12px] text-[var(--color-text-secondary)]">
+          spawn → merge
+        </div>
+      </div>
+
+      {/* Cost */}
+      <div className="rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-4">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
+          Total Cost
+        </div>
+        <div className="mt-1 text-[24px] font-bold text-[var(--color-text-primary)]">
+          ${data.totalCostUsd.toFixed(2)}
+        </div>
+        <div className="mt-1 text-[12px] text-[var(--color-text-secondary)]">
+          {data.avgCostPerMergedPR !== null ? `$${data.avgCostPerMergedPR.toFixed(2)}/merged PR` : "—"}
+          {" · "}
+          {formatTokens(data.totalInputTokens)} in · {formatTokens(data.totalOutputTokens)} out
+        </div>
+      </div>
+
+      {/* Cache & Intervention */}
+      <div className="rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-4">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
+          Efficiency
+        </div>
+        <div className="mt-1 text-[24px] font-bold text-[var(--color-text-primary)]">
+          {(data.cacheHitRatio * 100).toFixed(0)}% cache
+        </div>
+        <div className="mt-1 text-[12px] text-[var(--color-text-secondary)]">
+          {data.totalRestores} restores · {data.sessionsNeedingInput} needed input
+        </div>
+      </div>
     </div>
   );
 }
