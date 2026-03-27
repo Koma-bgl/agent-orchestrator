@@ -170,11 +170,19 @@ export interface AnalyticsData {
 
   // Cost
   totalCostUsd: number;
+  avgCostPerTask: number | null;
   avgCostPerMergedPR: number | null;
   avgCostPerKilledSession: number | null;
   totalInputTokens: number;
   totalOutputTokens: number;
   cacheHitRatio: number;
+
+  // Trends (recent half vs older half, positive = going up)
+  trends: {
+    completionRate: number | null;
+    avgWorkingTime: number | null;
+    avgCostPerTask: number | null;
+  };
 
   // Human intervention
   sessionsNeedingInput: number;

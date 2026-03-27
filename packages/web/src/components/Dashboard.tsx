@@ -338,6 +338,20 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
+/** Trend arrow: green ▲ for positive, red ▼ for negative, with % change */
+function TrendBadge({ value, invertColor }: { value: number | null; invertColor?: boolean }) {
+  if (value === null || Math.abs(value) < 0.01) return null;
+  const pct = Math.abs(value * 100).toFixed(0);
+  // For cost/time: going down is good (green). For completion: going up is good.
+  const isPositiveChange = value > 0;
+  const isGood = invertColor ? !isPositiveChange : isPositiveChange;
+  return (
+    <span className={`ml-1.5 text-[11px] font-medium ${isGood ? "text-green-400" : "text-red-400"}`}>
+      {isPositiveChange ? "▲" : "▼"} {pct}%
+    </span>
+  );
+}
+
 function AnalyticsSummary({ data }: { data: AnalyticsData }) {
   return (
     <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -346,8 +360,9 @@ function AnalyticsSummary({ data }: { data: AnalyticsData }) {
         <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
           Completion Rate
         </div>
-        <div className="mt-1 text-[24px] font-bold text-[var(--color-text-primary)]">
+        <div className="mt-1 flex items-baseline text-[24px] font-bold text-[var(--color-text-primary)]">
           {(data.completionRate * 100).toFixed(0)}%
+          <TrendBadge value={data.trends.completionRate} />
         </div>
         <div className="mt-1 text-[12px] text-[var(--color-text-secondary)]">
           {data.completedSessions} merged · {data.killedSessions} killed · {data.totalSessions} total
@@ -359,8 +374,9 @@ function AnalyticsSummary({ data }: { data: AnalyticsData }) {
         <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
           Speed
         </div>
-        <div className="mt-1 text-[24px] font-bold text-[var(--color-text-primary)]">
+        <div className="mt-1 flex items-baseline text-[24px] font-bold text-[var(--color-text-primary)]">
           {data.avgWorkingTime ? formatDuration(data.avgWorkingTime) : "—"}
+          <TrendBadge value={data.trends.avgWorkingTime} invertColor />
         </div>
         <div className="mt-1 text-[12px] text-[var(--color-text-secondary)]">
           avg working time
@@ -371,13 +387,14 @@ function AnalyticsSummary({ data }: { data: AnalyticsData }) {
       {/* Cost */}
       <div className="rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-4">
         <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
-          Total Cost
+          Avg Cost / Task
         </div>
-        <div className="mt-1 text-[24px] font-bold text-[var(--color-text-primary)]">
-          ${data.totalCostUsd.toFixed(2)}
+        <div className="mt-1 flex items-baseline text-[24px] font-bold text-[var(--color-text-primary)]">
+          {data.avgCostPerTask !== null ? `$${data.avgCostPerTask.toFixed(2)}` : "—"}
+          <TrendBadge value={data.trends.avgCostPerTask} invertColor />
         </div>
         <div className="mt-1 text-[12px] text-[var(--color-text-secondary)]">
-          {data.avgCostPerMergedPR !== null ? `$${data.avgCostPerMergedPR.toFixed(2)}/merged PR` : "—"}
+          ${data.totalCostUsd.toFixed(2)} total
           {" · "}
           {formatTokens(data.totalInputTokens)} in · {formatTokens(data.totalOutputTokens)} out
         </div>
