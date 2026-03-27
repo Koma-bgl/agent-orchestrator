@@ -181,7 +181,7 @@ export function Dashboard({ sessions, stats: _stats, orchestratorId, projectName
       {/* Header */}
       <div className="mb-8 flex items-center justify-between border-b border-[var(--color-border-subtle)] pb-6">
         <div className="flex items-center gap-6">
-          <h1 className="text-[17px] font-semibold tracking-[-0.02em] text-[var(--color-text-primary)]">
+          <h1 className="text-[22px] font-bold tracking-[-0.02em] text-[var(--color-text-primary)]">
             Orchestrator
             {version && (
               <span className="ml-2 text-[11px] font-normal text-[var(--color-text-muted)]">
@@ -241,12 +241,12 @@ export function Dashboard({ sessions, stats: _stats, orchestratorId, projectName
       {/* Hero area: working agents with large cards */}
       {grouped.working.length > 0 && (
         <div className="mb-8">
-          <div className="mb-3 flex items-center gap-2">
-            <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-status-working)]" />
-            <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+          <div className="mb-4 flex items-center gap-2.5">
+            <div className="h-2 w-2 shrink-0 rounded-full bg-[var(--color-status-working)]" />
+            <span className="text-[13px] font-semibold uppercase tracking-[0.10em] text-[var(--color-text-secondary)]">
               Working
             </span>
-            <span className="text-[10px] tabular-nums text-[var(--color-text-muted)]">
+            <span className="text-[13px] tabular-nums text-[var(--color-text-muted)]">
               {grouped.working.length}
             </span>
           </div>
@@ -303,7 +303,7 @@ function StatusLine({ grouped }: { grouped: Record<AttentionLevel, DashboardSess
   }
 
   return (
-    <span className="text-[13px] text-[var(--color-text-muted)]">
+    <span className="text-[15px] text-[var(--color-text-secondary)]">
       {parts.join(" · ")}
     </span>
   );
