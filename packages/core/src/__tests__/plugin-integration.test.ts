@@ -72,6 +72,27 @@ function mockGh(result: unknown): void {
   ghMock.mockResolvedValueOnce({ stdout: JSON.stringify(result) });
 }
 
+/**
+ * Set up argument-based gh mock that dispatches responses by inspecting CLI args.
+ * Use for tests where multiple gh calls happen in parallel (Promise.all)
+ * and sequential mockResolvedValueOnce ordering is unreliable.
+ *
+ * The `routes` map keys are substrings matched against the joined args string.
+ * Example: { "state": { state: "OPEN" }, "statusCheckRollup": [...] }
+ */
+function mockGhRouted(routes: Record<string, unknown>): void {
+  ghMock.mockImplementation((...args: unknown[]) => {
+    const argsStr = JSON.stringify(args);
+    for (const [pattern, result] of Object.entries(routes)) {
+      if (argsStr.includes(pattern)) {
+        return Promise.resolve({ stdout: JSON.stringify(result) });
+      }
+    }
+    // Fallback: return empty object to avoid crashes
+    return Promise.resolve({ stdout: "{}" });
+  });
+}
+
 const pr: PRInfo = {
   number: 42,
   url: "https://github.com/acme/app/pull/42",
@@ -325,8 +346,9 @@ describe("plugin integration", () => {
 
       expect(result.killed).toContain("app-1");
       // Verify the gh CLI was called with the right args
+      // GH_BIN resolves to full path (e.g. /opt/homebrew/bin/gh), so match with stringContaining
       expect(ghMock).toHaveBeenCalledWith(
-        "gh",
+        expect.stringContaining("gh"),
         expect.arrayContaining(["issue", "view", "99", "--repo", "acme/app"]),
         expect.any(Object),
       );
@@ -380,7 +402,7 @@ describe("plugin integration", () => {
       expect(result.killed).toContain("app-1");
       // Verify gh CLI was called for PR state check
       expect(ghMock).toHaveBeenCalledWith(
-        "gh",
+        expect.stringContaining("gh"),
         expect.arrayContaining(["pr", "view", "42"]),
         expect.any(Object),
       );
@@ -437,7 +459,6 @@ describe("plugin integration", () => {
     it("check() detects ci_failed via scm-github getCISummary()", async () => {
       seedSession({ status: "pr_open", pr });
 
-      // Mock the sessionManager.list() to return our session
       const mockSM: SessionManager = {
         ...sm,
         list: vi.fn().mockResolvedValue([makeSession({ status: "pr_open", pr })]),
@@ -453,11 +474,16 @@ describe("plugin integration", () => {
         sessionManager: mockSM,
       });
 
-      // gh calls for determineStatus:
-      // 1. getPRState → open
-      mockGh({ state: "OPEN" });
-      // 2. getCISummary → failing (pr checks returns array of checks with correct field names)
-      mockGh([{ name: "lint", state: "FAILURE", link: "", startedAt: "", completedAt: "" }]);
+      // Use routed mock: determineStatus calls getPRState, then in parallel:
+      // getCISummary (via getCIChecks), getMergeability, getPendingComments, getReviewDecision
+      mockGhRouted({
+        '"state"': { state: "OPEN" },
+        "checks": [{ name: "lint", state: "FAILURE", link: "", startedAt: "", completedAt: "" }],
+        "reviewDecision": { reviewDecision: "" },
+        "mergeable": { mergeable: "MERGEABLE", reviewDecision: "", mergeStateStatus: "CLEAN", isDraft: false },
+        "reviews": { nodes: [] },
+        "comments": [],
+      });
 
       await lm.check("app-1");
 
@@ -483,8 +509,10 @@ describe("plugin integration", () => {
         sessionManager: mockSM,
       });
 
-      // getPRState → merged
-      mockGh({ state: "MERGED" });
+      // getPRState → merged (short-circuits before parallel calls)
+      mockGhRouted({
+        '"state"': { state: "MERGED" },
+      });
 
       await lm.check("app-1");
 
@@ -510,12 +538,15 @@ describe("plugin integration", () => {
         sessionManager: mockSM,
       });
 
-      // 1. getPRState → open
-      mockGh({ state: "OPEN" });
-      // 2. getCISummary → passing (using correct field names: state and link)
-      mockGh([{ name: "lint", state: "SUCCESS", link: "", startedAt: "", completedAt: "" }]);
-      // 3. getReviewDecision (gh pr view with reviewDecision)
-      mockGh({ reviewDecision: "CHANGES_REQUESTED" });
+      // All parallel calls need responses
+      mockGhRouted({
+        '"state"': { state: "OPEN" },
+        "checks": [{ name: "lint", state: "SUCCESS", link: "", startedAt: "", completedAt: "" }],
+        "reviewDecision": { reviewDecision: "CHANGES_REQUESTED" },
+        "mergeable": { mergeable: "MERGEABLE", reviewDecision: "CHANGES_REQUESTED", mergeStateStatus: "CLEAN", isDraft: false },
+        "reviews": { nodes: [] },
+        "comments": [],
+      });
 
       await lm.check("app-1");
 

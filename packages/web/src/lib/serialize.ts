@@ -59,6 +59,13 @@ export function sessionToDashboard(session: Session): DashboardSession {
       ? (session.agentInfo?.summaryIsFallback ?? false)
       : false,
     progressText: session.agentInfo?.progressText ?? null,
+    cost: session.agentInfo?.cost
+      ? {
+          inputTokens: session.agentInfo.cost.inputTokens,
+          outputTokens: session.agentInfo.cost.outputTokens,
+          estimatedCostUsd: session.agentInfo.cost.estimatedCostUsd,
+        }
+      : null,
     createdAt: session.createdAt.toISOString(),
     lastActivityAt: session.lastActivityAt.toISOString(),
     pr: session.pr ? basicPRToDashboard(session.pr) : null,
@@ -296,6 +303,13 @@ export async function enrichSessionAgentSummary(
     }
     if (info?.progressText) {
       dashboard.progressText = info.progressText;
+    }
+    if (info?.cost) {
+      dashboard.cost = {
+        inputTokens: info.cost.inputTokens,
+        outputTokens: info.cost.outputTokens,
+        estimatedCostUsd: info.cost.estimatedCostUsd,
+      };
     }
   } catch {
     // Can't read agent session info — keep summary/progressText null

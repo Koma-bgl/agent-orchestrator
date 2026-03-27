@@ -206,7 +206,11 @@ describe("check (single session)", () => {
   it("detects killed state when runtime is dead", async () => {
     vi.mocked(mockRuntime.isAlive).mockResolvedValue(false);
 
-    const session = makeSession({ status: "working" });
+    const expiredExit = String(Date.now() - 4 * 60_000);
+    const session = makeSession({
+      status: "working",
+      metadata: { agentExitedAt: expiredExit },
+    });
     vi.mocked(mockSessionManager.get).mockResolvedValue(session);
 
     writeMetadata(sessionsDir, "app-1", {
@@ -214,6 +218,7 @@ describe("check (single session)", () => {
       branch: "main",
       status: "working",
       project: "my-app",
+      agentExitedAt: expiredExit,
     });
 
     const lm = createLifecycleManager({
@@ -231,7 +236,11 @@ describe("check (single session)", () => {
     vi.mocked(mockAgent.detectActivity).mockReturnValue("idle");
     vi.mocked(mockAgent.isProcessRunning).mockResolvedValue(false);
 
-    const session = makeSession({ status: "working" });
+    const expiredExit = String(Date.now() - 4 * 60_000);
+    const session = makeSession({
+      status: "working",
+      metadata: { agentExitedAt: expiredExit },
+    });
     vi.mocked(mockSessionManager.get).mockResolvedValue(session);
 
     writeMetadata(sessionsDir, "app-1", {
@@ -239,6 +248,7 @@ describe("check (single session)", () => {
       branch: "main",
       status: "working",
       project: "my-app",
+      agentExitedAt: expiredExit,
     });
 
     const lm = createLifecycleManager({
@@ -258,7 +268,11 @@ describe("check (single session)", () => {
     vi.mocked(mockAgent.detectActivity).mockReturnValue("active");
     vi.mocked(mockAgent.isProcessRunning).mockResolvedValue(false);
 
-    const session = makeSession({ status: "working" });
+    const expiredExit = String(Date.now() - 4 * 60_000);
+    const session = makeSession({
+      status: "working",
+      metadata: { agentExitedAt: expiredExit },
+    });
     vi.mocked(mockSessionManager.get).mockResolvedValue(session);
 
     writeMetadata(sessionsDir, "app-1", {
@@ -266,6 +280,7 @@ describe("check (single session)", () => {
       branch: "main",
       status: "working",
       project: "my-app",
+      agentExitedAt: expiredExit,
     });
 
     const lm = createLifecycleManager({
@@ -512,7 +527,7 @@ describe("check (single session)", () => {
       getCISummary: vi.fn().mockResolvedValue("passing"),
       getReviews: vi.fn(),
       getReviewDecision: vi.fn().mockResolvedValue("approved"),
-      getPendingComments: vi.fn(),
+      getPendingComments: vi.fn().mockResolvedValue([]),
       getAutomatedComments: vi.fn(),
       getMergeability: vi.fn().mockResolvedValue({
         mergeable: true,

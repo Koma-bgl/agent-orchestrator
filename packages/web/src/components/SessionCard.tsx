@@ -16,6 +16,13 @@ import { PRStatus } from "./PRStatus";
 import { CICheckList } from "./CIBadge";
 import { ActivityDot } from "./ActivityDot";
 
+/** Format token count: 1234567 → "1.2M", 56789 → "57K", 999 → "999" */
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return String(tokens);
+}
+
 interface SessionCardProps {
   session: DashboardSession;
   progressText?: string | null;
@@ -269,6 +276,18 @@ export function SessionCard({ session, progressText, onSend, onKill, onMerge, on
 
           {!pr && (
             <p className="text-[12px] text-[var(--color-text-tertiary)]">No PR associated with this session.</p>
+          )}
+
+          {session.cost && (
+            <DetailSection label="Token Usage">
+              <p className="font-[var(--font-mono)] text-[12px] text-[var(--color-text-secondary)]">
+                <span title="Input tokens">{formatTokenCount(session.cost.inputTokens)} in</span>
+                {" · "}
+                <span title="Output tokens">{formatTokenCount(session.cost.outputTokens)} out</span>
+                {" · "}
+                <span className="text-[var(--color-text-primary)]" title="Estimated cost">~${session.cost.estimatedCostUsd.toFixed(2)}</span>
+              </p>
+            </DetailSection>
           )}
 
           <div className="mt-3 flex gap-2 border-t border-[var(--color-border-subtle)] pt-3">

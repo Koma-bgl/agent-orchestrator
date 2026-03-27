@@ -332,6 +332,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     //    ci_failed take priority — the merge-conflicts reaction will restore
     //    the agent and handle any stuck prompt automatically.
     let agentWaitingInput = false;
+    let preserveCurrentStatus = false; // Set when probe fails for stuck/needs_input sessions
 
     if (!agentExited && agent && session.runtimeHandle) {
       try {
@@ -365,11 +366,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         // the SCM check (step 4) must still run so merged/closed PRs,
         // CI failures, and review comments are detected even when the
         // agent probe is broken.
-        if (
-          session.status === SESSION_STATUS.STUCK ||
-          session.status === SESSION_STATUS.NEEDS_INPUT
-        ) {
+        if (session.status === SESSION_STATUS.NEEDS_INPUT) {
           agentWaitingInput = true;
+        } else if (session.status === SESSION_STATUS.STUCK) {
+          preserveCurrentStatus = true;
         }
       }
     }
@@ -499,6 +499,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
     // 5. Agent is waiting for input and no PR-level issue was found
     if (agentWaitingInput) return "needs_input";
+
+    // 5.5 Probe failure on stuck/needs_input — preserve current status
+    if (preserveCurrentStatus) return session.status;
 
     // 6. Agent exited — but don't rush to "killed".
     //    The agent may have created a PR that we haven't detected yet (race
