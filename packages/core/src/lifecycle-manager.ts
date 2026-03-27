@@ -43,6 +43,29 @@ import { createQueuePoller } from "./queue-poller.js";
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Adaptive poll intervals per session status (milliseconds).
+ * Hot states (agent actively working, CI running) poll at the base interval.
+ * Cold states (waiting on humans, idle) poll less frequently to reduce API calls.
+ */
+const STATUS_POLL_INTERVAL: Partial<Record<SessionStatus, number>> = {
+  // Hot — poll every cycle (use base interval, typically 30s)
+  working: 0,
+  spawning: 0,
+  ci_failed: 0,
+
+  // Warm — poll every 2 minutes
+  pr_open: 120_000,
+  review_pending: 120_000,
+  merge_conflicts: 120_000,
+
+  // Cold — poll every 5 minutes
+  needs_input: 300_000,
+  changes_requested: 300_000,
+  approved: 300_000,
+  mergeable: 300_000,
+};
+
 /** Parse a duration string like "10m", "30s", "1h", "1d" to milliseconds. */
 function parseDuration(str: string): number {
   const match = str.match(/^(\d+)(s|m|h|d)$/);
@@ -268,6 +291,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   // When one PR merges, all other PRs in the project become behind and need updating.
   // Processing them one at a time avoids cascading rebase storms.
   const projectMergeLocks = new Map<string, boolean>();
+  // Per-session last-polled timestamp for adaptive throttling.
+  // Sessions in low-activity states are polled less frequently to reduce API calls.
+  const lastPolledAt = new Map<SessionId, number>();
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let polling = false; // re-entrancy guard
   let allCompleteEmitted = false; // guard against repeated all_complete
@@ -1070,6 +1096,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
   /** Poll a single session and handle state transitions. */
   async function checkSession(session: Session): Promise<void> {
+    // Record poll timestamp for adaptive throttling
+    lastPolledAt.set(session.id, Date.now());
+
     // Use tracked state if available; otherwise use the persisted metadata status
     // (not session.status, which list() may have already overwritten for dead runtimes).
     // This ensures transitions are detected after a lifecycle manager restart.
@@ -1332,10 +1361,22 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       // Include sessions that are active OR whose status changed from what we last saw
       // (e.g., list() detected a dead runtime and marked it "killed" — we need to
       // process that transition even though the new status is terminal)
+      const now = Date.now();
       const sessionsToCheck = sessions.filter((s) => {
-        if (s.status !== "merged" && s.status !== "killed") return true;
-        const tracked = states.get(s.id);
-        return tracked !== undefined && tracked !== s.status;
+        if (s.status === "merged" || s.status === "killed") {
+          const tracked = states.get(s.id);
+          return tracked !== undefined && tracked !== s.status;
+        }
+
+        // Adaptive throttle: skip sessions polled recently if their status
+        // has a longer poll interval (reduces GitHub API pressure).
+        const throttleMs = STATUS_POLL_INTERVAL[s.status] ?? 0;
+        if (throttleMs > 0) {
+          const last = lastPolledAt.get(s.id);
+          if (last && now - last < throttleMs) return false;
+        }
+
+        return true;
       });
 
       // Poll all sessions concurrently
@@ -1350,6 +1391,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       for (const trackedId of states.keys()) {
         if (!currentSessionIds.has(trackedId)) {
           states.delete(trackedId);
+          lastPolledAt.delete(trackedId);
         }
       }
       for (const trackerKey of reactionTrackers.keys()) {

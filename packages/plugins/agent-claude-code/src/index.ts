@@ -233,11 +233,25 @@ async function findLatestSessionFile(projectDir: string): Promise<string | null>
   return withStats[0]?.path ?? null;
 }
 
+/** A content block inside a Claude message (text or tool_use) */
+interface ContentBlock {
+  type: string;
+  text?: string;
+  name?: string;
+  id?: string;
+  input?: Record<string, unknown>;
+}
+
 interface JsonlLine {
   type?: string;
+  subtype?: string;
   summary?: string;
-  message?: { content?: string; role?: string };
-  // Tool use fields (for progress extraction)
+  message?: {
+    content?: string | ContentBlock[];
+    role?: string;
+    stop_reason?: string;
+  };
+  // Tool use fields (for progress extraction — legacy flat format)
   tool?: string;
   name?: string;
   input?: Record<string, unknown>;
@@ -400,6 +414,10 @@ function extractProgressText(lines: JsonlLine[]): string | null {
     const line = lines[i];
     if (!line?.type) continue;
 
+    // Skip metadata entries (turn_duration, etc.)
+    if (line.type === "system") continue;
+
+    // Legacy flat tool_use format
     if (line.type === "tool_use") {
       const toolName = line.tool ?? line.name ?? "tool";
       return formatToolProgress(toolName, line.input);
@@ -410,13 +428,38 @@ function extractProgressText(lines: JsonlLine[]): string | null {
       continue;
     }
 
+    if (line.type === "user") {
+      // User messages with tool_result content — look further back for the tool_use
+      continue;
+    }
+
     if (line.type === "assistant") {
-      // Agent is thinking / composing a response
+      // Check for tool_use blocks nested inside assistant message content.
+      // Claude Code v2.x format: { type: "assistant", message: { content: [{type: "tool_use", name: "Bash", input: {...}}] } }
+      const content = line.message?.content;
+      if (Array.isArray(content)) {
+        // Find the last tool_use block in the content array
+        for (let j = content.length - 1; j >= 0; j--) {
+          const block = content[j];
+          if (block && typeof block === "object" && block.type === "tool_use" && block.name) {
+            return formatToolProgress(block.name, block.input);
+          }
+        }
+        // Has content blocks but no tool_use — check for text (final response)
+        const hasText = content.some(
+          (b) => b && typeof b === "object" && b.type === "text" && b.text,
+        );
+        if (hasText && line.message?.stop_reason !== "tool_use") {
+          // Agent finished its turn with a text response
+          return null;
+        }
+      }
+      // No nested tool calls and no text — agent is thinking
       return "Thinking…";
     }
 
     if (line.type === "progress") {
-      // Direct progress message from Claude Code
+      // Direct progress message from Claude Code (hooks, etc.)
       const msg =
         typeof line.message?.content === "string" ? line.message.content : null;
       return msg ? truncateProgress(msg) : "Working…";
