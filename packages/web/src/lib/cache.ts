@@ -105,10 +105,47 @@ export interface PREnrichmentData {
   }>;
 }
 
-/** Global PR enrichment cache (60s TTL) */
+/** Global PR enrichment cache (5 min TTL) */
 export const prCache = new TTLCache<PREnrichmentData>();
 
 /** Generate cache key for a PR: `owner/repo#123` */
 export function prCacheKey(owner: string, repo: string, number: number): string {
   return `${owner}/${repo}#${number}`;
+}
+
+// ---------------------------------------------------------------------------
+// Disk-backed PR cache — persists last-known-good data across restarts
+// and rate-limit windows. Fresh API data always overwrites.
+// ---------------------------------------------------------------------------
+
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+const PR_CACHE_DIR = join(homedir(), ".agent-orchestrator", ".pr-cache");
+
+function prDiskPath(key: string): string {
+  // key is "owner/repo#123" — sanitize for filesystem
+  const safe = key.replace(/[/\\#]/g, "_");
+  return join(PR_CACHE_DIR, `${safe}.json`);
+}
+
+/** Save PR enrichment data to disk (fire-and-forget, never throws). */
+export function savePRToDisk(key: string, data: PREnrichmentData): void {
+  try {
+    mkdirSync(PR_CACHE_DIR, { recursive: true });
+    writeFileSync(prDiskPath(key), JSON.stringify(data), "utf-8");
+  } catch {
+    // Non-fatal — disk cache is best-effort
+  }
+}
+
+/** Load PR enrichment data from disk. Returns null if not found or corrupted. */
+export function loadPRFromDisk(key: string): PREnrichmentData | null {
+  try {
+    const raw = readFileSync(prDiskPath(key), "utf-8");
+    return JSON.parse(raw) as PREnrichmentData;
+  } catch {
+    return null;
+  }
 }

@@ -16,7 +16,7 @@ import type {
   PluginRegistry,
 } from "@composio/ao-core";
 import type { DashboardSession, DashboardPR, DashboardStats } from "./types.js";
-import { TTLCache, prCache, prCacheKey, type PREnrichmentData } from "./cache";
+import { TTLCache, prCache, prCacheKey, savePRToDisk, loadPRFromDisk, type PREnrichmentData } from "./cache";
 
 /** Cache for issue titles (5 min TTL — issue titles rarely change) */
 const issueTitleCache = new TTLCache<string>(300_000);
@@ -122,8 +122,8 @@ export async function enrichSessionPR(
 
   const cacheKey = prCacheKey(pr.owner, pr.repo, pr.number);
 
-  // Check cache first
-  const cached = prCache.get(cacheKey);
+  // Check in-memory cache first, then disk cache as fallback
+  const cached = prCache.get(cacheKey) ?? loadPRFromDisk(cacheKey);
   if (cached && dashboard.pr) {
     dashboard.pr.state = cached.state;
     dashboard.pr.title = cached.title;
@@ -135,6 +135,10 @@ export async function enrichSessionPR(
     dashboard.pr.mergeability = cached.mergeability;
     dashboard.pr.unresolvedThreads = cached.unresolvedThreads;
     dashboard.pr.unresolvedComments = cached.unresolvedComments;
+    // If loaded from disk, warm the in-memory cache
+    if (!prCache.get(cacheKey)) {
+      prCache.set(cacheKey, cached);
+    }
     return true;
   }
 
@@ -244,6 +248,7 @@ export async function enrichSessionPR(
       unresolvedComments: dashboard.pr.unresolvedComments,
     };
     prCache.set(cacheKey, rateLimitedData, 5 * 60_000); // 5 min — retry sooner once rate limit clears
+    savePRToDisk(cacheKey, rateLimitedData);
     return true;
   }
 
@@ -260,6 +265,7 @@ export async function enrichSessionPR(
     unresolvedComments: dashboard.pr.unresolvedComments,
   };
   prCache.set(cacheKey, cacheData);
+  savePRToDisk(cacheKey, cacheData);
   return true;
 }
 
