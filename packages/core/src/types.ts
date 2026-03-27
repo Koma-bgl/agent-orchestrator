@@ -1218,6 +1218,7 @@ export interface SessionMetadata {
   createdAt?: string;
   runtimeHandle?: string;
   restoredAt?: string;
+  agentExitedAt?: string; // Timestamp (ms) when agent exit was first detected — grace period start
   mergedAt?: string; // ISO timestamp when PR was merged
   worktreeCleanedAt?: string; // ISO timestamp when worktree was cleaned up
   dashboardPort?: number;

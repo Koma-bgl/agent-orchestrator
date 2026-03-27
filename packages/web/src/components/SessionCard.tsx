@@ -153,6 +153,15 @@ export function SessionCard({ session, progressText, onSend, onKill, onMerge, on
         {pr && <PRStatus pr={pr} />}
       </div>
 
+      {/* Token usage */}
+      {session.cost && (
+        <div className="flex items-center gap-1.5 px-4 pb-2.5">
+          <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-text-muted)]">
+            {formatTokenCount(session.cost.inputTokens)} in · {formatTokenCount(session.cost.outputTokens)} out · ~${session.cost.estimatedCostUsd.toFixed(2)}
+          </span>
+        </div>
+      )}
+
       {/* Rate limited indicator */}
       {rateLimited && pr?.state === "open" && (
         <div className="px-4 pb-3">

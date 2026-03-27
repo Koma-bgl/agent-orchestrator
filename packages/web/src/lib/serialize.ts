@@ -370,9 +370,9 @@ export async function enrichSessionsMetadata(
     enrichSessionIssue(dashboardSessions[i], tracker, project);
   });
 
-  // Enrich agent summaries (reads agent's JSONL — local I/O, not an API call)
+  // Enrich agent info: summaries, progress text, and cost (reads agent's JSONL — local I/O, not an API call)
+  // Always run even if summary exists — cost and progressText need updating each poll
   const summaryPromises = coreSessions.map((core, i) => {
-    if (dashboardSessions[i].summary) return Promise.resolve();
     const agentName = projects[i]?.agent ?? config.defaults.agent;
     if (!agentName) return Promise.resolve();
     const agent = registry.get<Agent>("agent", agentName);
