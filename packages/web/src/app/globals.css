@@ -23,9 +23,9 @@
 
   /* ── Text ─────────────────────────────────────────────────────────── */
   --color-text-primary:   #e6edf3;
-  --color-text-secondary: #7d8590;
-  --color-text-tertiary:  #484f58;
-  --color-text-muted:     #484f58;
+  --color-text-secondary: #a8b1bb;
+  --color-text-tertiary:  #7d8590;
+  --color-text-muted:     #7d8590;
   --color-text-inverse:   #0d1117;
 
   /* ── Interactive accent ──────────────────────────────────────────── */
@@ -155,9 +155,9 @@ a:hover {
   box-shadow:
     0 1px 3px rgba(0,0,0,0.6),
     inset 0 1px 0 rgba(255,255,255,0.05);
-  --color-text-secondary: #8b949e;
-  --color-text-muted:     #656d76;
-  --color-text-tertiary:  #656d76;
+  --color-text-secondary: #a8b1bb;
+  --color-text-muted:     #8b949e;
+  --color-text-tertiary:  #8b949e;
 }
 
 /* ── Session cards ────────────────────────────────────────────────────── */
@@ -170,11 +170,10 @@ a:hover {
     inset 0 1px 0 rgba(255,255,255,0.07);
   transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
 
-  /* Bump dim text colors inside the card — the elevated surface is darker
-     than the transparent bg these values were calibrated for */
-  --color-text-secondary: #8b949e;
-  --color-text-muted:     #656d76;
-  --color-text-tertiary:  #656d76;
+  /* Brighten text on dark card surfaces for readability */
+  --color-text-secondary: #a8b1bb;
+  --color-text-muted:     #8b949e;
+  --color-text-tertiary:  #8b949e;
 }
 
 .session-card:hover {
