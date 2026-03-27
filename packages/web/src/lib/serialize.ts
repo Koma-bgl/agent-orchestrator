@@ -62,6 +62,8 @@ export function sessionToDashboard(session: Session): DashboardSession {
     cost: session.agentInfo?.cost
       ? {
           inputTokens: session.agentInfo.cost.inputTokens,
+          cacheReadTokens: session.agentInfo.cost.cacheReadTokens,
+          cacheCreationTokens: session.agentInfo.cost.cacheCreationTokens,
           outputTokens: session.agentInfo.cost.outputTokens,
           estimatedCostUsd: session.agentInfo.cost.estimatedCostUsd,
         }
@@ -307,6 +309,8 @@ export async function enrichSessionAgentSummary(
     if (info?.cost) {
       dashboard.cost = {
         inputTokens: info.cost.inputTokens,
+        cacheReadTokens: info.cost.cacheReadTokens,
+        cacheCreationTokens: info.cost.cacheCreationTokens,
         outputTokens: info.cost.outputTokens,
         estimatedCostUsd: info.cost.estimatedCostUsd,
       };

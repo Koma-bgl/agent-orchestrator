@@ -71,7 +71,13 @@ export interface DashboardSession {
   /** Human-readable description of what the agent is currently doing */
   progressText: string | null;
   /** Token usage and estimated cost */
-  cost: { inputTokens: number; outputTokens: number; estimatedCostUsd: number } | null;
+  cost: {
+    inputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+    outputTokens: number;
+    estimatedCostUsd: number;
+  } | null;
   createdAt: string;
   lastActivityAt: string;
   pr: DashboardPR | null;

@@ -375,6 +375,10 @@ export interface AgentSessionInfo {
 
 export interface CostEstimate {
   inputTokens: number;
+  /** Tokens served from prompt cache (90% cheaper than regular input) */
+  cacheReadTokens: number;
+  /** Tokens written to prompt cache (25% more expensive than regular input) */
+  cacheCreationTokens: number;
   outputTokens: number;
   estimatedCostUsd: number;
 }

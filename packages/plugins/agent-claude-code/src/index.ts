@@ -249,6 +249,7 @@ interface JsonlLine {
   message?: {
     content?: string | ContentBlock[];
     role?: string;
+    model?: string;
     stop_reason?: string;
     usage?: {
       input_tokens?: number;
@@ -365,8 +366,11 @@ function extractSummary(
 /** Aggregate cost estimate from JSONL usage events */
 function extractCost(lines: JsonlLine[]): CostEstimate | undefined {
   let inputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   let outputTokens = 0;
   let totalCost = 0;
+  let model = "";
 
   for (const line of lines) {
     // Handle direct cost fields — prefer costUSD; only use estimatedCostUsd
@@ -376,6 +380,12 @@ function extractCost(lines: JsonlLine[]): CostEstimate | undefined {
     } else if (typeof line.estimatedCostUsd === "number") {
       totalCost += line.estimatedCostUsd;
     }
+
+    // Capture model name for pricing
+    if (!model && line.message?.model) {
+      model = line.message.model;
+    }
+
     // Handle token counts — prefer the structured `usage` object when present;
     // only fall back to flat `inputTokens`/`outputTokens` fields to avoid
     // double-counting if a line contains both.
@@ -383,8 +393,8 @@ function extractCost(lines: JsonlLine[]): CostEstimate | undefined {
     const usage = line.usage ?? line.message?.usage;
     if (usage) {
       inputTokens += usage.input_tokens ?? 0;
-      inputTokens += usage.cache_read_input_tokens ?? 0;
-      inputTokens += usage.cache_creation_input_tokens ?? 0;
+      cacheReadTokens += usage.cache_read_input_tokens ?? 0;
+      cacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
       outputTokens += usage.output_tokens ?? 0;
     } else {
       if (typeof line.inputTokens === "number") {
@@ -396,19 +406,30 @@ function extractCost(lines: JsonlLine[]): CostEstimate | undefined {
     }
   }
 
-  if (inputTokens === 0 && outputTokens === 0 && totalCost === 0) {
+  const totalInput = inputTokens + cacheReadTokens + cacheCreationTokens;
+  if (totalInput === 0 && outputTokens === 0 && totalCost === 0) {
     return undefined;
   }
 
-  // Rough estimate when no direct cost data — uses Sonnet 4.5 pricing as a
-  // baseline. Will be inaccurate for other models (Opus, Haiku) but provides
-  // a useful order-of-magnitude signal. TODO: make pricing configurable or
-  // infer from model field in JSONL.
-  if (totalCost === 0 && (inputTokens > 0 || outputTokens > 0)) {
-    totalCost = (inputTokens / 1_000_000) * 3.0 + (outputTokens / 1_000_000) * 15.0;
+  // Estimate cost using model-aware pricing when no direct cost data.
+  // Cache reads are 90% cheaper, cache writes are 25% more expensive.
+  if (totalCost === 0 && (totalInput > 0 || outputTokens > 0)) {
+    const isOpus = model.includes("opus");
+    const isHaiku = model.includes("haiku");
+    // Pricing per 1M tokens: [input, cache_read, cache_write, output]
+    const pricing = isOpus
+      ? { input: 15, cacheRead: 1.5, cacheWrite: 18.75, output: 75 }
+      : isHaiku
+        ? { input: 0.8, cacheRead: 0.08, cacheWrite: 1, output: 4 }
+        : { input: 3, cacheRead: 0.3, cacheWrite: 3.75, output: 15 }; // Sonnet default
+    totalCost =
+      (inputTokens / 1_000_000) * pricing.input +
+      (cacheReadTokens / 1_000_000) * pricing.cacheRead +
+      (cacheCreationTokens / 1_000_000) * pricing.cacheWrite +
+      (outputTokens / 1_000_000) * pricing.output;
   }
 
-  return { inputTokens, outputTokens, estimatedCostUsd: totalCost };
+  return { inputTokens, cacheReadTokens, cacheCreationTokens, outputTokens, estimatedCostUsd: totalCost };
 }
 
 /**

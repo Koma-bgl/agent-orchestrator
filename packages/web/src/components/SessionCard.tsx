@@ -156,8 +156,8 @@ export function SessionCard({ session, progressText, onSend, onKill, onMerge, on
       {/* Token usage */}
       {session.cost && (
         <div className="flex items-center gap-1.5 px-4 pb-2.5">
-          <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-text-muted)]">
-            {formatTokenCount(session.cost.inputTokens)} in · {formatTokenCount(session.cost.outputTokens)} out · ~${session.cost.estimatedCostUsd.toFixed(2)}
+          <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-text-muted)]" title={`Input: ${formatTokenCount(session.cost.inputTokens)} · Cache read: ${formatTokenCount(session.cost.cacheReadTokens)} · Cache write: ${formatTokenCount(session.cost.cacheCreationTokens)} · Output: ${formatTokenCount(session.cost.outputTokens)}`}>
+            {formatTokenCount(session.cost.cacheReadTokens + session.cost.inputTokens)} cached · {formatTokenCount(session.cost.outputTokens)} out · <span className="text-[var(--color-text-primary)]">~${session.cost.estimatedCostUsd.toFixed(2)}</span>
           </span>
         </div>
       )}
