@@ -357,13 +357,14 @@ function AnalyticsSummary({ data }: { data: AnalyticsData }) {
       {/* Speed */}
       <div className="rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-4">
         <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
-          Avg Cycle Time
+          Speed
         </div>
         <div className="mt-1 text-[24px] font-bold text-[var(--color-text-primary)]">
-          {data.avgEndToEnd ? formatDuration(data.avgEndToEnd) : "—"}
+          {data.avgWorkingTime ? formatDuration(data.avgWorkingTime) : "—"}
         </div>
         <div className="mt-1 text-[12px] text-[var(--color-text-secondary)]">
-          spawn → merge
+          avg working time
+          {data.avgEndToEnd ? ` · ${formatDuration(data.avgEndToEnd)} end-to-end` : ""}
         </div>
       </div>
 

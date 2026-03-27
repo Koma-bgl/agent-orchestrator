@@ -45,6 +45,16 @@ export async function GET() {
           ? new Date(mergedAt).getTime() - new Date(createdAt).getTime()
           : null;
 
+      // Working time: spawn → agent exit (or merge if no exit recorded)
+      const agentExitedAt = ds.metadata["agentExitedAt"] ?? null;
+      const endTime = agentExitedAt ?? mergedAt;
+      const workingTimeMs =
+        endTime && createdAt
+          ? (typeof endTime === "string" && /^\d+$/.test(endTime)
+              ? parseInt(endTime, 10)
+              : new Date(endTime).getTime()) - new Date(createdAt).getTime()
+          : null;
+
       return {
         id: ds.id,
         status: ds.status,
@@ -53,6 +63,7 @@ export async function GET() {
         createdAt: ds.createdAt,
         mergedAt,
         cycleTimeMs,
+        workingTimeMs: workingTimeMs && workingTimeMs > 0 ? workingTimeMs : null,
         costUsd: ds.cost?.estimatedCostUsd ?? null,
         inputTokens: ds.cost
           ? ds.cost.inputTokens + ds.cost.cacheReadTokens + ds.cost.cacheCreationTokens
@@ -79,6 +90,15 @@ export async function GET() {
     const avgEndToEnd =
       cycleTimes.length > 0
         ? cycleTimes.reduce((a, b) => a + b, 0) / cycleTimes.length
+        : null;
+
+    // Working time — across all decided sessions (merged + killed)
+    const workingTimes = sessionMetrics
+      .map((s) => s.workingTimeMs)
+      .filter((t): t is number => t !== null && t > 0);
+    const avgWorkingTime =
+      workingTimes.length > 0
+        ? workingTimes.reduce((a, b) => a + b, 0) / workingTimes.length
         : null;
 
     // Cost
@@ -128,6 +148,7 @@ export async function GET() {
       avgSpawnToPR: null, // TODO: requires event log timestamps
       avgPRToMerge: null, // TODO: requires PR creation timestamp
       avgEndToEnd,
+      avgWorkingTime,
       totalCostUsd,
       avgCostPerMergedPR,
       avgCostPerKilledSession,
