@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { DashboardSession, AttentionLevel } from "@/lib/types";
 import { getSessionTitle } from "@/lib/format";
 import { SessionCard } from "./SessionCard";
+import { CIBadge } from "./CIBadge";
 
 interface AttentionZoneProps {
   level: AttentionLevel;
@@ -192,7 +193,7 @@ interface ActionBarProps {
 
 export function ActionBar({ grouped, onMerge, onRestore }: ActionBarProps) {
   return (
-    <div className="mb-6 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-subtle)]">
+    <div className="mb-8 overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-subtle)]">
       {ACTION_LEVELS.map((level) => {
         const sessions = grouped[level];
         if (sessions.length === 0) return null;
@@ -202,65 +203,79 @@ export function ActionBar({ grouped, onMerge, onRestore }: ActionBarProps) {
             {sessions.map((s, i) => (
               <div
                 key={s.id}
-                className="flex items-center gap-3 border-l-[3px] px-4 py-2.5"
+                className="border-l-4 px-5 py-4"
                 style={{
                   borderLeftColor: cfg.color,
                   borderBottom: i < sessions.length - 1 ? "1px solid var(--color-border-subtle)" : undefined,
                 }}
               >
-                {/* Dot */}
-                <div
-                  className="h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ background: cfg.color }}
-                />
-                {/* Session ID */}
-                <span className="shrink-0 font-[var(--font-mono)] text-[10px] text-[var(--color-text-muted)]">
-                  {s.id}
-                </span>
-                {/* Title */}
-                <a
-                  href={`/sessions/${encodeURIComponent(s.id)}`}
-                  className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--color-text-primary)] hover:underline"
-                >
-                  {getSessionTitle(s)}
-                </a>
-                {/* PR link */}
-                {s.pr && (
+                {/* Top row: dot + ID + title + action */}
+                <div className="flex items-center gap-3">
+                  <div
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ background: cfg.color }}
+                  />
+                  <span className="shrink-0 font-[var(--font-mono)] text-[13px] text-[var(--color-text-muted)]">
+                    {s.id}
+                  </span>
                   <a
-                    href={s.pr.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="shrink-0 text-[11px] text-[var(--color-accent)] hover:underline"
+                    href={`/sessions/${encodeURIComponent(s.id)}`}
+                    className="min-w-0 flex-1 truncate text-[15px] font-medium text-[var(--color-text-primary)] hover:underline"
                   >
-                    #{s.pr.number}
+                    {getSessionTitle(s)}
                   </a>
-                )}
-                {/* Inline action */}
-                {level === "merge" && s.pr?.mergeability.mergeable && s.pr.state === "open" && (
-                  <button
-                    onClick={() => { if (s.pr) onMerge?.(s.pr.number); }}
-                    className="shrink-0 rounded-[5px] bg-[var(--color-status-ready)] px-2.5 py-1 text-[11px] font-semibold text-[var(--color-text-inverse)] transition-[filter] hover:brightness-110"
-                  >
-                    Merge
-                  </button>
-                )}
-                {level === "respond" && (
-                  <button
-                    onClick={() => onRestore?.(s.id)}
-                    className="shrink-0 rounded-[5px] border border-[rgba(88,166,255,0.35)] px-2.5 py-1 text-[11px] text-[var(--color-accent)] transition-colors hover:bg-[rgba(88,166,255,0.1)]"
-                  >
-                    restore
-                  </button>
-                )}
-                {level === "review" && (
-                  <span className="shrink-0 text-[10px] text-[var(--color-accent-orange)]">
-                    needs review
-                  </span>
-                )}
-                {level === "pending" && (
-                  <span className="shrink-0 text-[10px] text-[var(--color-text-muted)]">
-                    waiting
-                  </span>
+                  {/* Inline action */}
+                  {level === "merge" && s.pr?.mergeability.mergeable && s.pr.state === "open" && (
+                    <button
+                      onClick={() => { if (s.pr) onMerge?.(s.pr.number); }}
+                      className="shrink-0 rounded-md bg-[var(--color-status-ready)] px-3.5 py-1.5 text-[13px] font-semibold text-[var(--color-text-inverse)] transition-[filter] hover:brightness-110"
+                    >
+                      Merge
+                    </button>
+                  )}
+                  {level === "respond" && (
+                    <button
+                      onClick={() => onRestore?.(s.id)}
+                      className="shrink-0 rounded-md border border-[rgba(88,166,255,0.35)] px-3 py-1.5 text-[13px] text-[var(--color-accent)] transition-colors hover:bg-[rgba(88,166,255,0.1)]"
+                    >
+                      restore
+                    </button>
+                  )}
+                </div>
+                {/* Bottom row: PR status details */}
+                {s.pr && (
+                  <div className="mt-2 flex flex-wrap items-center gap-3 pl-5 text-[13px]">
+                    <a
+                      href={s.pr.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-semibold text-[var(--color-accent)] hover:underline"
+                    >
+                      #{s.pr.number}
+                    </a>
+                    <span className="text-[var(--color-text-muted)]">
+                      <span className="text-[var(--color-status-ready)]">+{s.pr.additions}</span>
+                      {" "}
+                      <span className="text-[var(--color-status-error)]">-{s.pr.deletions}</span>
+                    </span>
+                    <CIBadge status={s.pr.ciStatus} checks={s.pr.ciChecks} compact />
+                    <span className={
+                      s.pr.reviewDecision === "approved"
+                        ? "text-[var(--color-status-ready)]"
+                        : s.pr.reviewDecision === "changes_requested"
+                          ? "text-[var(--color-accent-orange)]"
+                          : "text-[var(--color-text-muted)]"
+                    }>
+                      {s.pr.reviewDecision === "approved" ? "approved" :
+                       s.pr.reviewDecision === "changes_requested" ? "changes requested" :
+                       s.pr.reviewDecision === "pending" ? "review pending" : "no review"}
+                    </span>
+                    {s.pr.unresolvedThreads > 0 && (
+                      <span className="text-[var(--color-accent-orange)]">
+                        {s.pr.unresolvedThreads} unresolved
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
             ))}
