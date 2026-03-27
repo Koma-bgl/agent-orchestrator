@@ -250,6 +250,12 @@ interface JsonlLine {
     content?: string | ContentBlock[];
     role?: string;
     stop_reason?: string;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
   };
   // Tool use fields (for progress extraction — legacy flat format)
   tool?: string;
@@ -373,11 +379,13 @@ function extractCost(lines: JsonlLine[]): CostEstimate | undefined {
     // Handle token counts — prefer the structured `usage` object when present;
     // only fall back to flat `inputTokens`/`outputTokens` fields to avoid
     // double-counting if a line contains both.
-    if (line.usage) {
-      inputTokens += line.usage.input_tokens ?? 0;
-      inputTokens += line.usage.cache_read_input_tokens ?? 0;
-      inputTokens += line.usage.cache_creation_input_tokens ?? 0;
-      outputTokens += line.usage.output_tokens ?? 0;
+    // Claude Code v2.x nests usage inside message.usage, not at the top level.
+    const usage = line.usage ?? line.message?.usage;
+    if (usage) {
+      inputTokens += usage.input_tokens ?? 0;
+      inputTokens += usage.cache_read_input_tokens ?? 0;
+      inputTokens += usage.cache_creation_input_tokens ?? 0;
+      outputTokens += usage.output_tokens ?? 0;
     } else {
       if (typeof line.inputTokens === "number") {
         inputTokens += line.inputTokens;
