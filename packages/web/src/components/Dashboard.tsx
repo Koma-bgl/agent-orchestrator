@@ -5,14 +5,12 @@ import { useRouter } from "next/navigation";
 import {
   type DashboardSession,
   type DashboardStats,
-  type DashboardPR,
   type AttentionLevel,
   getAttentionLevel,
   isPRRateLimited,
 } from "@/lib/types";
-import { CI_STATUS } from "@composio/ao-core/types";
-import { AttentionZone } from "./AttentionZone";
-import { PRTableRow } from "./PRStatus";
+import { AttentionZone, ActionBar } from "./AttentionZone";
+import { SessionCard } from "./SessionCard";
 import { DynamicFavicon } from "./DynamicFavicon";
 
 interface DashboardProps {
@@ -30,8 +28,6 @@ interface SSESessionSnapshot {
   attentionLevel: string;
   progressText?: string | null;
 }
-
-const KANBAN_LEVELS = ["working", "pending", "review", "respond", "merge"] as const;
 
 /**
  * Connect to the /api/events SSE stream.
@@ -113,7 +109,7 @@ function useAutoRefresh(
   }, [handleSnapshot]);
 }
 
-export function Dashboard({ sessions, stats, orchestratorId, projectName, version }: DashboardProps) {
+export function Dashboard({ sessions, stats: _stats, orchestratorId, projectName, version }: DashboardProps) {
   const [progressMap, setProgressMap] = useState<Record<string, string | null>>({});
   useAutoRefresh(sessions, setProgressMap);
   const [rateLimitDismissed, setRateLimitDismissed] = useState(false);
@@ -130,18 +126,6 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName, versio
       zones[getAttentionLevel(session)].push(session);
     }
     return zones;
-  }, [sessions]);
-
-  const terminalStatuses = new Set(["merged", "killed", "cleanup", "done", "terminated"]);
-  const openPRs = useMemo(() => {
-    return sessions
-      .filter(
-        (s): s is DashboardSession & { pr: DashboardPR } =>
-          s.pr?.state === "open" && !terminalStatuses.has(s.status),
-      )
-      .map((s) => s.pr)
-      .sort((a, b) => mergeScore(a) - mergeScore(b));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessions]);
 
   const handleSend = async (sessionId: string, message: string) => {
@@ -182,11 +166,13 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName, versio
     }
   };
 
-  const hasKanbanSessions = KANBAN_LEVELS.some((l) => grouped[l].length > 0);
-
   const anyRateLimited = useMemo(
     () => sessions.some((s) => s.pr && isPRRateLimited(s.pr)),
     [sessions],
+  );
+
+  const hasActions = ["merge", "respond", "review", "pending"].some(
+    (l) => grouped[l as AttentionLevel].length > 0,
   );
 
   return (
@@ -203,7 +189,7 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName, versio
               </span>
             )}
           </h1>
-          <StatusLine stats={stats} />
+          <StatusLine grouped={grouped} />
         </div>
         {orchestratorId && (
           <a
@@ -242,134 +228,83 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName, versio
         </div>
       )}
 
-      {/* Kanban columns for active zones */}
-      {hasKanbanSessions && (
-        <div className="mb-8 flex gap-4 overflow-x-auto pb-2">
-          {KANBAN_LEVELS.map((level) =>
-            grouped[level].length > 0 ? (
-              <div key={level} className="min-w-[200px] flex-1">
-                <AttentionZone
-                  level={level}
-                  sessions={grouped[level]}
-                  variant="column"
-                  progressMap={progressMap}
-                  onSend={handleSend}
-                  onKill={handleKill}
-                  onMerge={handleMerge}
-                  onRestore={handleRestore}
-                />
-              </div>
-            ) : null,
-          )}
-        </div>
+      {/* Action bar: merge + respond + review + pending as compact strip */}
+      {hasActions && (
+        <ActionBar
+          grouped={grouped}
+          progressMap={progressMap}
+          onMerge={handleMerge}
+          onRestore={handleRestore}
+        />
       )}
 
-      {/* Done — full-width grid below Kanban */}
-      {grouped.done.length > 0 && (
+      {/* Hero area: working agents with large cards */}
+      {grouped.working.length > 0 && (
         <div className="mb-8">
-          <AttentionZone
-            level="done"
-            sessions={grouped.done}
-            variant="grid"
-            progressMap={progressMap}
-            onSend={handleSend}
-            onKill={handleKill}
-            onMerge={handleMerge}
-            onRestore={handleRestore}
-          />
-        </div>
-      )}
-
-      {/* PR Table */}
-      {openPRs.length > 0 && (
-        <div className="mx-auto max-w-[900px]">
-          <h2 className="mb-3 px-1 text-[10px] font-bold uppercase tracking-[0.10em] text-[var(--color-text-tertiary)]">
-            Pull Requests
-          </h2>
-          <div className="overflow-hidden rounded-[6px] border border-[var(--color-border-default)]">
-            <table className="w-full border-collapse">
-              <thead>
-                <tr className="border-b border-[var(--color-border-muted)]">
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                    PR
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                    Title
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                    Size
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                    CI
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                    Review
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                    Unresolved
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {openPRs.map((pr) => (
-                  <PRTableRow key={pr.number} pr={pr} />
-                ))}
-              </tbody>
-            </table>
+          <div className="mb-3 flex items-center gap-2">
+            <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-status-working)]" />
+            <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              Working
+            </span>
+            <span className="text-[10px] tabular-nums text-[var(--color-text-muted)]">
+              {grouped.working.length}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            {grouped.working.map((session) => (
+              <SessionCard
+                key={session.id}
+                session={session}
+                variant="hero"
+                progressText={progressMap[session.id] ?? session.progressText}
+                onSend={handleSend}
+                onKill={handleKill}
+              />
+            ))}
           </div>
         </div>
       )}
+
+      {/* Empty state when nothing is active */}
+      {grouped.working.length === 0 && !hasActions && grouped.done.length === 0 && (
+        <div className="flex items-center justify-center py-20 text-[13px] text-[var(--color-text-muted)]">
+          No active sessions
+        </div>
+      )}
+
+      {/* Done — collapsed by default */}
+      {grouped.done.length > 0 && (
+        <AttentionZone
+          level="done"
+          sessions={grouped.done}
+          variant="grid"
+          progressMap={progressMap}
+          onSend={handleSend}
+          onKill={handleKill}
+          onMerge={handleMerge}
+          onRestore={handleRestore}
+        />
+      )}
     </div>
   );
 }
 
-function StatusLine({ stats }: { stats: DashboardStats }) {
-  if (stats.totalSessions === 0) {
+function StatusLine({ grouped }: { grouped: Record<AttentionLevel, DashboardSession[]> }) {
+  const parts: string[] = [];
+  if (grouped.working.length > 0) parts.push(`${grouped.working.length} working`);
+  if (grouped.merge.length > 0) parts.push(`${grouped.merge.length} ready to merge`);
+  if (grouped.respond.length > 0) parts.push(`${grouped.respond.length} need response`);
+  if (grouped.review.length > 0) parts.push(`${grouped.review.length} need review`);
+  if (grouped.pending.length > 0) parts.push(`${grouped.pending.length} pending`);
+  if (grouped.done.length > 0) parts.push(`${grouped.done.length} done`);
+
+  if (parts.length === 0) {
     return <span className="text-[13px] text-[var(--color-text-muted)]">no sessions</span>;
   }
 
-  const parts: Array<{ value: number; label: string; color?: string }> = [
-    { value: stats.totalSessions, label: "sessions" },
-    ...(stats.workingSessions > 0
-      ? [{ value: stats.workingSessions, label: "active", color: "var(--color-status-working)" }]
-      : []),
-    ...(stats.openPRs > 0 ? [{ value: stats.openPRs, label: "PRs" }] : []),
-    ...(stats.needsReview > 0
-      ? [{ value: stats.needsReview, label: "need review", color: "var(--color-status-attention)" }]
-      : []),
-  ];
-
   return (
-    <div className="flex items-baseline gap-0.5">
-      {parts.map((p, i) => (
-        <span key={p.label} className="flex items-baseline">
-          {i > 0 && (
-            <span className="mx-3 text-[11px] text-[var(--color-border-strong)]">·</span>
-          )}
-          <span
-            className="text-[20px] font-bold tabular-nums tracking-tight"
-            style={{ color: p.color ?? "var(--color-text-primary)" }}
-          >
-            {p.value}
-          </span>
-          <span className="ml-1.5 text-[11px] text-[var(--color-text-muted)]">
-            {p.label}
-          </span>
-        </span>
-      ))}
-    </div>
+    <span className="text-[13px] text-[var(--color-text-muted)]">
+      {parts.join(" · ")}
+    </span>
   );
-}
-
-function mergeScore(
-  pr: Pick<DashboardPR, "ciStatus" | "reviewDecision" | "mergeability" | "unresolvedThreads">,
-): number {
-  let score = 0;
-  if (!pr.mergeability.noConflicts) score += 40;
-  if (pr.ciStatus === CI_STATUS.FAILING) score += 30;
-  else if (pr.ciStatus === CI_STATUS.PENDING) score += 5;
-  if (pr.reviewDecision === "changes_requested") score += 20;
-  else if (pr.reviewDecision !== "approved") score += 10;
-  score += pr.unresolvedThreads * 5;
-  return score;
 }

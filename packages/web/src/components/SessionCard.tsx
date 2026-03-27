@@ -25,11 +25,29 @@ function formatTokenCount(tokens: number): string {
 
 interface SessionCardProps {
   session: DashboardSession;
+  variant?: "default" | "hero";
   progressText?: string | null;
   onSend?: (sessionId: string, message: string) => void;
   onKill?: (sessionId: string) => void;
   onMerge?: (prNumber: number) => void;
   onRestore?: (sessionId: string) => void;
+}
+
+/** Compute elapsed time string from a date */
+function useElapsedTime(createdAt: string): string {
+  const [elapsed, setElapsed] = useState("");
+  useEffect(() => {
+    const update = () => {
+      const ms = Date.now() - new Date(createdAt).getTime();
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      setElapsed(h > 0 ? `${h}h ${m}m` : `${m}m`);
+    };
+    update();
+    const id = setInterval(update, 60_000);
+    return () => clearInterval(id);
+  }, [createdAt]);
+  return elapsed;
 }
 
 const borderColorByLevel: Record<AttentionLevel, string> = {
@@ -41,12 +59,13 @@ const borderColorByLevel: Record<AttentionLevel, string> = {
   done:    "border-l-[var(--color-border-default)]",
 };
 
-export function SessionCard({ session, progressText, onSend, onKill, onMerge, onRestore }: SessionCardProps) {
+export function SessionCard({ session, variant = "default", progressText, onSend, onKill, onMerge, onRestore }: SessionCardProps) {
   const [_expanded] = useState(false);
   const [sendingAction, setSendingAction] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const level = getAttentionLevel(session);
   const pr = session.pr;
+  const elapsed = useElapsedTime(session.createdAt);
 
   useEffect(() => {
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
@@ -69,6 +88,91 @@ export function SessionCard({ session, progressText, onSend, onKill, onMerge, on
 
   const title = getSessionTitle(session);
 
+  // ── Hero variant: large card for working sessions ──────────────────
+  if (variant === "hero") {
+    return (
+      <div
+        className="session-card cursor-pointer rounded-lg border border-l-4 border-[var(--color-border-default)] border-l-[var(--color-status-working)] p-5 hover:border-[var(--color-border-strong)]"
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest("a, button, textarea")) return;
+          window.location.href = `/sessions/${encodeURIComponent(session.id)}`;
+        }}
+      >
+        {/* Header: dot + ID + elapsed + terminal link */}
+        <div className="mb-3 flex items-center gap-2.5">
+          <ActivityDot activity={session.activity} />
+          <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-text-muted)]">
+            {session.id}
+          </span>
+          <div className="flex-1" />
+          <span className="font-[var(--font-mono)] text-[11px] tabular-nums text-[var(--color-text-muted)]">
+            {elapsed}
+          </span>
+          <a
+            href={`/sessions/${encodeURIComponent(session.id)}`}
+            className="rounded border border-[var(--color-border-default)] px-2 py-0.5 text-[10px] text-[var(--color-text-muted)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text-secondary)]"
+          >
+            terminal
+          </a>
+        </div>
+
+        {/* Title — larger */}
+        <h3 className="mb-2 text-[15px] font-semibold leading-snug text-[var(--color-text-primary)]">
+          {title}
+        </h3>
+
+        {/* Progress text — full width */}
+        {progressText && session.activity === "active" && (
+          <div className="mb-3 flex items-center gap-2">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-status-working)]" />
+            <span className="font-[var(--font-mono)] text-[11px] text-[var(--color-text-secondary)]">
+              {progressText}
+            </span>
+          </div>
+        )}
+
+        {/* Branch + PR */}
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          {session.branch && (
+            <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-text-muted)]">
+              {session.branch}
+            </span>
+          )}
+          {pr && (
+            <>
+              <span className="text-[9px] text-[var(--color-border-strong)]">&middot;</span>
+              <PRStatus pr={pr} />
+            </>
+          )}
+        </div>
+
+        {/* Cost row */}
+        {session.cost && (
+          <div className="flex items-center gap-3 font-[var(--font-mono)] text-[11px] text-[var(--color-text-muted)]">
+            <span>{formatTokenCount(session.cost.cacheReadTokens + session.cost.inputTokens)} cached</span>
+            <span className="text-[var(--color-border-strong)]">&middot;</span>
+            <span>{formatTokenCount(session.cost.outputTokens)} out</span>
+            <span className="text-[var(--color-border-strong)]">&middot;</span>
+            <span className="text-[var(--color-text-secondary)]">~${session.cost.estimatedCostUsd.toFixed(2)}</span>
+          </div>
+        )}
+
+        {/* Action buttons */}
+        <div className="mt-3 flex gap-2 border-t border-[var(--color-border-subtle)] pt-3">
+          {!isTerminal && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onKill?.(session.id); }}
+              className="rounded border border-[rgba(239,68,68,0.35)] px-2.5 py-1 text-[11px] text-[var(--color-status-error)] transition-colors hover:bg-[rgba(239,68,68,0.1)]"
+            >
+              terminate
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Default variant ────────────────────────────────────────────────
   return (
     <div
       className={cn(

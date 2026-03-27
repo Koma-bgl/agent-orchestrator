@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { DashboardSession, AttentionLevel } from "@/lib/types";
+import { getSessionTitle } from "@/lib/format";
 import { SessionCard } from "./SessionCard";
 
 interface AttentionZoneProps {
@@ -172,6 +173,100 @@ export function AttentionZone({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ActionBar — compact notification strip for merge/respond/review/pending
+// ---------------------------------------------------------------------------
+
+const ACTION_LEVELS = ["merge", "respond", "review", "pending"] as const;
+
+interface ActionBarProps {
+  grouped: Record<AttentionLevel, DashboardSession[]>;
+  progressMap?: Record<string, string | null>;
+  onMerge?: (prNumber: number) => void;
+  onRestore?: (sessionId: string) => void;
+}
+
+export function ActionBar({ grouped, onMerge, onRestore }: ActionBarProps) {
+  return (
+    <div className="mb-6 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-subtle)]">
+      {ACTION_LEVELS.map((level) => {
+        const sessions = grouped[level];
+        if (sessions.length === 0) return null;
+        const cfg = zoneConfig[level];
+        return (
+          <div key={level}>
+            {sessions.map((s, i) => (
+              <div
+                key={s.id}
+                className="flex items-center gap-3 border-l-[3px] px-4 py-2.5"
+                style={{
+                  borderLeftColor: cfg.color,
+                  borderBottom: i < sessions.length - 1 ? "1px solid var(--color-border-subtle)" : undefined,
+                }}
+              >
+                {/* Dot */}
+                <div
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ background: cfg.color }}
+                />
+                {/* Session ID */}
+                <span className="shrink-0 font-[var(--font-mono)] text-[10px] text-[var(--color-text-muted)]">
+                  {s.id}
+                </span>
+                {/* Title */}
+                <a
+                  href={`/sessions/${encodeURIComponent(s.id)}`}
+                  className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--color-text-primary)] hover:underline"
+                >
+                  {getSessionTitle(s)}
+                </a>
+                {/* PR link */}
+                {s.pr && (
+                  <a
+                    href={s.pr.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 text-[11px] text-[var(--color-accent)] hover:underline"
+                  >
+                    #{s.pr.number}
+                  </a>
+                )}
+                {/* Inline action */}
+                {level === "merge" && s.pr?.mergeability.mergeable && s.pr.state === "open" && (
+                  <button
+                    onClick={() => { if (s.pr) onMerge?.(s.pr.number); }}
+                    className="shrink-0 rounded-[5px] bg-[var(--color-status-ready)] px-2.5 py-1 text-[11px] font-semibold text-[var(--color-text-inverse)] transition-[filter] hover:brightness-110"
+                  >
+                    Merge
+                  </button>
+                )}
+                {level === "respond" && (
+                  <button
+                    onClick={() => onRestore?.(s.id)}
+                    className="shrink-0 rounded-[5px] border border-[rgba(88,166,255,0.35)] px-2.5 py-1 text-[11px] text-[var(--color-accent)] transition-colors hover:bg-[rgba(88,166,255,0.1)]"
+                  >
+                    restore
+                  </button>
+                )}
+                {level === "review" && (
+                  <span className="shrink-0 text-[10px] text-[var(--color-accent-orange)]">
+                    needs review
+                  </span>
+                )}
+                {level === "pending" && (
+                  <span className="shrink-0 text-[10px] text-[var(--color-text-muted)]">
+                    waiting
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })}
     </div>
   );
 }
