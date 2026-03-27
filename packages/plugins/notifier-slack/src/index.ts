@@ -23,13 +23,32 @@ const PRIORITY_EMOJI: Record<EventPriority, string> = {
   info: ":information_source:",
 };
 
+/** Human-readable event type labels for Slack headers */
+const EVENT_LABEL: Record<string, string> = {
+  "session.working": "Agent Working",
+  "pr.created": "PR Created",
+  "ci.failing": "CI Failing",
+  "review.pending": "Review Needed",
+  "review.changes_requested": "Changes Requested",
+  "review.approved": "Approved",
+  "merge.ready": "Ready to Merge",
+  "merge.conflicts": "Merge Conflicts",
+  "merge.completed": "Merged",
+  "session.needs_input": "Needs Input",
+  "session.stuck": "Agent Stuck",
+  "session.errored": "Agent Error",
+  "session.killed": "Session Killed",
+  "summary.all_complete": "All Complete",
+};
+
 function buildBlocks(event: OrchestratorEvent, actions?: NotifyAction[]): unknown[] {
+  const label = EVENT_LABEL[event.type] ?? event.type;
   const blocks: unknown[] = [
     {
       type: "header",
       text: {
         type: "plain_text",
-        text: `${PRIORITY_EMOJI[event.priority]} ${event.type} — ${event.sessionId}`,
+        text: `${PRIORITY_EMOJI[event.priority]} ${label} — ${event.sessionId}`,
         emoji: true,
       },
     },
@@ -170,6 +189,9 @@ export function create(config?: Record<string, unknown>): Notifier {
   const defaultChannel = config?.channel as string | undefined;
   const username = (config?.username as string) ?? "Agent Orchestrator";
 
+  // Per-event-type channel routing: { "pr.created": "#pr-feed", "ci.failing": "#ci-alerts" }
+  const channelRouting = (config?.channelRouting ?? {}) as Record<string, string>;
+
   // Support Bot Token from config or env var (SLACK_BOT_TOKEN)
   const botToken = (config?.botToken as string | undefined) ?? process.env.SLACK_BOT_TOKEN;
 
@@ -218,22 +240,30 @@ export function create(config?: Record<string, unknown>): Notifier {
       if (!webhookUrl && !useApi) return;
 
       const blocks = buildBlocks(event);
-      const fallbackText = `${PRIORITY_EMOJI[event.priority]} ${event.type} — ${event.sessionId}: ${event.message}`;
-      await send(fallbackText, undefined, blocks);
+      const label = EVENT_LABEL[event.type] ?? event.type;
+      const fallbackText = `${PRIORITY_EMOJI[event.priority]} ${label} — ${event.sessionId}: ${event.message}`;
+      const channel = channelRouting[event.type];
+      await send(fallbackText, channel, blocks);
     },
 
     async notifyWithActions(event: OrchestratorEvent, actions: NotifyAction[]): Promise<void> {
       if (!webhookUrl && !useApi) return;
 
       const blocks = buildBlocks(event, actions);
-      const fallbackText = `${PRIORITY_EMOJI[event.priority]} ${event.type} — ${event.sessionId}: ${event.message}`;
-      await send(fallbackText, undefined, blocks);
+      const label = EVENT_LABEL[event.type] ?? event.type;
+      const fallbackText = `${PRIORITY_EMOJI[event.priority]} ${label} — ${event.sessionId}: ${event.message}`;
+      const channel = channelRouting[event.type];
+      await send(fallbackText, channel, blocks);
     },
 
     async post(message: string, context?: NotifyContext): Promise<string | null> {
       if (!webhookUrl && !useApi) return null;
 
-      const channel = context?.channel ?? defaultChannel;
+      // Resolve channel: explicit context.channel > channelRouting by eventType > default
+      const channel =
+        context?.channel ??
+        (context?.eventType ? channelRouting[context.eventType] : undefined) ??
+        defaultChannel;
       return send(message, channel);
     },
   };

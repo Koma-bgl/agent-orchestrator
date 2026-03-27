@@ -1029,8 +1029,11 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       return;
     }
 
-    const message = `${session.pr.url} - ${session.pr.title ?? session.id}`;
-    const notifierNames = config.notificationRouting["info"] ?? config.defaults.notifiers;
+    const message = `${session.pr.url} ${session.pr.title ?? session.id}`;
+    const notifierNames =
+      config.notificationRouting["pr.created"] ??
+      config.notificationRouting["info"] ??
+      config.defaults.notifiers;
     console.log(`[lifecycle] postPrCreated: message="${message}", notifiers=${JSON.stringify(notifierNames)}`);
 
     for (const name of notifierNames) {
@@ -1041,6 +1044,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             sessionId: session.id,
             projectId: session.projectId,
             prUrl: session.pr.url,
+            eventType: "pr.created",
           });
         } catch (err: unknown) {
           console.error(
@@ -1198,9 +1202,13 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           console.log(`[lifecycle] ${session.id}: skipped notifyHuman (reaction handled)`);
         }
 
-        // Post simple "{PR URL} - {PR title}" message when a PR is created
-        if (eventType === "pr.created") {
-          console.log(`[lifecycle] ${session.id}: calling postPrCreated, pr=${session.pr?.url}`);
+        // Post simple "{PR URL} {PR title}" message when a PR is first detected.
+        // determineStatus may skip pr_open entirely (e.g. working → review_pending)
+        // so we fire postPrCreated whenever transitioning from a pre-PR state to
+        // any PR-related state and a PR URL exists.
+        const PRE_PR_STATES = new Set(["spawning", "working", "needs_input", "stuck", "errored"]);
+        if (session.pr?.url && PRE_PR_STATES.has(oldStatus)) {
+          console.log(`[lifecycle] ${session.id}: calling postPrCreated (${oldStatus} → ${newStatus}), pr=${session.pr.url}`);
           await postPrCreated(session);
         }
 

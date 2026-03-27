@@ -719,6 +719,8 @@ export interface NotifyContext {
   projectId?: string;
   prUrl?: string;
   channel?: string;
+  /** Event type hint so plugins can apply their own routing (e.g. channelRouting). */
+  eventType?: string;
 }
 
 // =============================================================================
