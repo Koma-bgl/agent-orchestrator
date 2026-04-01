@@ -273,7 +273,7 @@ async function fetchReviewThreadComments(pr: PRInfo): Promise<ReviewComment[]> {
                 isResolved
                 comments(first: 1) {
                   nodes {
-                    id
+                    databaseId
                     author { login }
                     body
                     path
@@ -299,7 +299,7 @@ async function fetchReviewThreadComments(pr: PRInfo): Promise<ReviewComment[]> {
                 isResolved: boolean;
                 comments: {
                   nodes: Array<{
-                    id: string;
+                    databaseId: number;
                     author: { login: string } | null;
                     body: string;
                     path: string | null;
@@ -331,7 +331,7 @@ async function fetchReviewThreadComments(pr: PRInfo): Promise<ReviewComment[]> {
       .map((t) => {
         const c = t.comments.nodes[0];
         return {
-          id: c.id,
+          id: String(c.databaseId),
           threadId: t.id,
           author: c.author?.login ?? "unknown",
           body: c.body,
