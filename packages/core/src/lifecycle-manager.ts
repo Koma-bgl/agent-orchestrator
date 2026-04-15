@@ -608,15 +608,99 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
     switch (action) {
       case "send-to-agent": {
-        if (reactionConfig.message) {
+        let message = reactionConfig.message;
+
+        // Auto-build message for ci-failed when no static message is configured:
+        // fetch actual CI failure logs (annotations + step output) so the agent
+        // can read the errors and fix the code instead of blindly re-running CI.
+        if (!message && reactionKey === "ci-failed") {
           try {
-            await sessionManager.send(sessionId, reactionConfig.message);
+            const session = await sessionManager.get(sessionId);
+            if (!session?.pr) break;
+
+            const project = config.projects[projectId];
+            const scm = project?.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
+            if (!scm) break;
+
+            // Try getCILogs first (detailed), fall back to getCIChecks (names only)
+            if (scm.getCILogs) {
+              const failureLogs = await scm.getCILogs(session.pr);
+
+              if (failureLogs.length === 0) {
+                // CI may have recovered between poll cycles
+                return { reactionType: reactionKey, success: true, action, escalated: false };
+              }
+
+              const sections = failureLogs.map((f) => {
+                const parts: string[] = [`## ${f.name}`];
+
+                if (f.annotations.length > 0) {
+                  parts.push("");
+                  parts.push("**Errors:**");
+                  for (const ann of f.annotations) {
+                    const loc = ann.path
+                      ? `${ann.path}${ann.line ? `:${ann.line}` : ""}`
+                      : "";
+                    parts.push(loc ? `- ${loc} — ${ann.message}` : `- ${ann.message}`);
+                  }
+                }
+
+                if (f.log) {
+                  parts.push("");
+                  parts.push("**Log output:**");
+                  parts.push("```");
+                  parts.push(f.log);
+                  parts.push("```");
+                }
+
+                if (f.annotations.length === 0 && !f.log) {
+                  parts.push("(no details available — check failed but no logs were captured)");
+                }
+
+                return parts.join("\n");
+              });
+
+              message = [
+                `CI is failing on your PR (#${session.pr.number}). ${failureLogs.length} check${failureLogs.length !== 1 ? "s" : ""} failed.`,
+                "Read the errors below carefully, fix the code, and push.",
+                "",
+                ...sections,
+              ].join("\n");
+            } else {
+              // Fallback: no getCILogs — just report check names
+              const checks = await scm.getCIChecks(session.pr);
+              const failed = checks.filter((c) => c.status === "failed");
+
+              if (failed.length === 0) {
+                return { reactionType: reactionKey, success: true, action, escalated: false };
+              }
+
+              message = [
+                `CI is failing on your PR (#${session.pr.number}). ${failed.length} check${failed.length !== 1 ? "s" : ""} failed:`,
+                "",
+                ...failed.map((c) => `- ${c.name}`),
+                "",
+                "Run the failing checks locally to see the errors, fix them, and push.",
+              ].join("\n");
+            }
+          } catch (err: unknown) {
+            console.error(
+              `[lifecycle] ${sessionId}: failed to build ci-failed message:`,
+              err instanceof Error ? err.message : String(err),
+            );
+            // Fall through — message remains undefined, we break below
+          }
+        }
+
+        if (message) {
+          try {
+            await sessionManager.send(sessionId, message);
 
             return {
               reactionType: reactionKey,
               success: true,
               action: "send-to-agent",
-              message: reactionConfig.message,
+              message,
               escalated: false,
             };
           } catch {

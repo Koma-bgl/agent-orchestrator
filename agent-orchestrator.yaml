@@ -26,3 +26,30 @@ projects:
       - "pnpm install"
     agentConfig:
       permissions: skip
+
+    # Reaction handlers — auto-handle routine issues, escalate when needed
+    reactions:
+      ci-failed:
+        auto: true
+        action: send-to-agent
+        retries: 2
+        escalateAfter: 2
+
+      changes-requested:
+        auto: true
+        action: send-comments-to-agent
+        escalateAfter: 30m
+
+      approved-and-green:
+        auto: true
+        action: auto-merge
+
+      approved-behind:
+        auto: true
+        action: auto-merge
+        escalateAfter: 15m
+
+      agent-stuck:
+        threshold: 10m
+        action: notify
+        priority: urgent

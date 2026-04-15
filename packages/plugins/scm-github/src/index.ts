@@ -17,6 +17,7 @@ import {
   type PRState,
   type MergeMethod,
   type CICheck,
+  type CIFailureLog,
   type CIStatus,
   type Review,
   type ReviewDecision,
@@ -659,6 +660,139 @@ function createGitHubSCM(): SCM {
         },
         CACHE_TTL.getCISummary,
       );
+    },
+
+    async getCILogs(pr: PRInfo): Promise<CIFailureLog[]> {
+      const checks = await this.getCIChecks(pr);
+      const failed = checks.filter((c) => c.status === "failed");
+      if (failed.length === 0) return [];
+
+      const repo = repoFlag(pr);
+
+      // Fetch annotations + log for each failed check in parallel
+      const results = await Promise.all(
+        failed.map(async (check): Promise<CIFailureLog> => {
+          const entry: CIFailureLog = {
+            name: check.name,
+            url: check.url,
+            annotations: [],
+          };
+
+          // 1. Try to get check run annotations via GitHub API.
+          //    Annotations contain structured error messages (file, line, message)
+          //    which are the most useful for lint/type/test errors.
+          try {
+            // Find the check run ID for this check name using the PR's head SHA
+            const prRaw = await gh([
+              "pr",
+              "view",
+              String(pr.number),
+              "--repo",
+              repo,
+              "--json",
+              "headRefOid",
+            ]);
+            const { headRefOid } = JSON.parse(prRaw) as { headRefOid: string };
+
+            const runsRaw = await gh([
+              "api",
+              `repos/${repo}/commits/${headRefOid}/check-runs`,
+              "--jq",
+              `.check_runs[] | select(.name == "${check.name}") | .id`,
+            ]);
+            const runId = runsRaw.trim().split("\n")[0];
+
+            if (runId) {
+              const annotationsRaw = await gh([
+                "api",
+                `repos/${repo}/check-runs/${runId}/annotations`,
+                "--jq",
+                ".[] | {path: .path, line: .start_line, message: .message}",
+              ]);
+
+              if (annotationsRaw.trim()) {
+                // Each line is a JSON object from --jq
+                for (const line of annotationsRaw.trim().split("\n")) {
+                  try {
+                    const ann = JSON.parse(line) as {
+                      path?: string;
+                      line?: number;
+                      message: string;
+                    };
+                    entry.annotations.push(ann);
+                  } catch {
+                    // Skip malformed lines
+                  }
+                }
+              }
+            }
+          } catch {
+            // Annotations not available — not fatal, we'll try logs below
+          }
+
+          // 2. Try to get the failed step log via `gh run view --log-failed`.
+          //    This gives the raw CI output (e.g. npm test failure output).
+          //    Only works for GitHub Actions (not third-party checks).
+          if (entry.annotations.length === 0) {
+            try {
+              // Find the workflow run ID for this check
+              const runsRaw = await gh([
+                "run",
+                "list",
+                "--repo",
+                repo,
+                "--branch",
+                pr.branch,
+                "--limit",
+                "5",
+                "--json",
+                "databaseId,name,status,conclusion",
+              ]);
+              const runs = JSON.parse(runsRaw) as Array<{
+                databaseId: number;
+                name: string;
+                status: string;
+                conclusion: string;
+              }>;
+
+              // Find the run that matches this check (by name) and is failed
+              const matchedRun = runs.find(
+                (r) =>
+                  r.name === check.name &&
+                  (r.conclusion === "failure" || r.conclusion === "timed_out"),
+              );
+
+              if (matchedRun) {
+                const logRaw = await gh([
+                  "run",
+                  "view",
+                  String(matchedRun.databaseId),
+                  "--repo",
+                  repo,
+                  "--log-failed",
+                ]);
+
+                if (logRaw.trim()) {
+                  // Truncate to last 80 lines to avoid overwhelming the agent
+                  const lines = logRaw.trim().split("\n");
+                  const truncated =
+                    lines.length > 80
+                      ? `... (${lines.length - 80} lines truncated)\n` +
+                        lines.slice(-80).join("\n")
+                      : lines.join("\n");
+                  entry.log = truncated;
+                }
+              }
+            } catch {
+              // Log fetch failed — not fatal
+            }
+          }
+
+          return entry;
+        }),
+      );
+
+      return results;
     },
 
     async getReviews(pr: PRInfo): Promise<Review[]> {
