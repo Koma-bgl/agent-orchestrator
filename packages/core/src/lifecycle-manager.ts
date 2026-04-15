@@ -1367,14 +1367,27 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   }
 
   /**
-   * Clean up worktrees for merged sessions after the configured grace period.
+   * Statuses eligible for worktree cleanup.
+   * - "merged": PR was merged — use configured delayAfterMerge grace period.
+   * - "killed"/"done"/"terminated": session ended without merge — clean up
+   *   immediately (no PR to reference, worktree is just wasting disk space).
+   */
+  const WORKTREE_CLEANUP_STATUSES = new Set([
+    "merged",
+    "killed",
+    "done",
+    "terminated",
+  ]);
+
+  /**
+   * Clean up worktrees for terminal sessions after the configured grace period.
    * Only destroys the worktree — metadata is preserved so sessions remain in the dashboard.
    */
-  async function cleanupMergedWorktrees(sessions: Session[]): Promise<void> {
+  async function cleanupStaleWorktrees(sessions: Session[]): Promise<void> {
     const now = Date.now();
 
     for (const session of sessions) {
-      if (session.status !== "merged") continue;
+      if (!WORKTREE_CLEANUP_STATUSES.has(session.status)) continue;
 
       const project = config.projects[session.projectId];
       if (!project) continue;
@@ -1394,26 +1407,30 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       const worktreePath = raw["worktree"];
       if (!worktreePath || worktreePath === project.path) continue;
 
-      // Check if grace period has elapsed
-      // Backfill mergedAt for sessions merged before this feature was deployed
-      let mergedAt = raw["mergedAt"];
-      if (!mergedAt) {
-        mergedAt = new Date().toISOString();
-        updateMetadata(sessionsDir, session.id, { mergedAt });
-        continue; // Start grace period from now — will be cleaned on a future poll
+      // For merged sessions, respect the configured grace period.
+      // For killed/done/terminated sessions, clean up immediately — there's no
+      // PR to reference and the worktree is just wasting disk space.
+      if (session.status === "merged") {
+        // Backfill mergedAt for sessions merged before this feature was deployed
+        let mergedAt = raw["mergedAt"];
+        if (!mergedAt) {
+          mergedAt = new Date().toISOString();
+          updateMetadata(sessionsDir, session.id, { mergedAt });
+          continue; // Start grace period from now — will be cleaned on a future poll
+        }
+
+        const mergedTime = new Date(mergedAt).getTime();
+        if (Number.isNaN(mergedTime)) continue;
+
+        const delay =
+          typeof cleanupConfig.delayAfterMerge === "number"
+            ? cleanupConfig.delayAfterMerge
+            : parseDuration(cleanupConfig.delayAfterMerge);
+
+        if (now - mergedTime < delay) continue;
       }
 
-      const mergedTime = new Date(mergedAt).getTime();
-      if (Number.isNaN(mergedTime)) continue;
-
-      const delay =
-        typeof cleanupConfig.delayAfterMerge === "number"
-          ? cleanupConfig.delayAfterMerge
-          : parseDuration(cleanupConfig.delayAfterMerge);
-
-      if (now - mergedTime < delay) continue;
-
-      // Grace period elapsed — destroy the worktree
+      // Destroy the worktree
       const workspaceName = project.workspace ?? config.defaults.workspace;
       const workspacePlugin = registry.get<Workspace>("workspace", workspaceName);
       if (!workspacePlugin) continue;
@@ -1425,7 +1442,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           worktree: "",
         });
         console.log(
-          `[lifecycle] Cleaned up worktree for merged session ${session.id} (merged ${mergedAt})`,
+          `[lifecycle] Cleaned up worktree for ${session.status} session ${session.id}`,
         );
       } catch {
         // Non-fatal — will retry on next poll
@@ -1477,8 +1494,8 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       // Poll all sessions concurrently
       await Promise.allSettled(sessionsToCheck.map((s) => checkSession(s)));
 
-      // Delayed worktree cleanup for merged sessions
-      await cleanupMergedWorktrees(sessions);
+      // Delayed worktree cleanup for terminal sessions (merged, killed, done, terminated)
+      await cleanupStaleWorktrees(sessions);
 
       // Prune stale entries from states and reactionTrackers for sessions
       // that no longer appear in the session list (e.g., after kill/cleanup)
