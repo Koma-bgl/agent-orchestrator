@@ -25,7 +25,7 @@
     "release": "pnpm -r --filter '!@composio/ao-web' build && changeset publish",
     "prepare": "husky",
     "postinstall": "node scripts/rebuild-node-pty.js",
-    "gitnexus:index": "[ -z \"$CI\" ] && npx -y gitnexus analyze --skip-agents-md || true",
+    "gitnexus:index": "[ -z \"$CI\" ] && npx -y gitnexus@1.6.1 analyze --skip-agents-md || true",
     "upgrade": "lsof -ti :${PORT:-8000} | xargs kill -9 2>/dev/null; pnpm build && pnpm dev"
   },
   "devDependencies": {
