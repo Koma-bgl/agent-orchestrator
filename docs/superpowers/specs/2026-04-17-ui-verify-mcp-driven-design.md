@@ -34,7 +34,7 @@ We want **adaptive, behavior-driven verification** using a real browser controll
 
 Triggered asynchronously as a **reaction** in the existing lifecycle state machine. When a PR opens for an eligible ticket, the orchestrator acquires a shared verify worktree, starts a dev server on a fixed port, spawns a Claude sub-agent session with MCP browser tools, waits for completion, posts results, releases resources. Serial by construction — only one verification active at a time.
 
-Seven components:
+Eight components:
 
 1. **Verify-eligibility check** (in `packages/core/src/lifecycle-manager.ts`) — on `pr_open`, read the ticket's labels via `Tracker.getIssue()`. If the configured trigger label is present → enqueue a verify reaction. Re-checked each poll cycle so the label can be added mid-flight.
 
@@ -46,7 +46,11 @@ Seven components:
 
 5. **Verify reaction handler** (extension to `lifecycle-manager`) — acquires the verify worktree, spawns the verifier agent session with context (PR title, body, diff, route hints, optional `## Verification` section from PR body), waits for completion, posts result, releases worktree.
 
-6. **Result reporter** (new: `packages/plugins/scm-github/src/verify-reporter.ts`) — posts a new PR comment per run (screenshots + console observations + network observations + summary), updates a single delimited status block in the PR body (`<!-- ao-verify-status -->✅ Verified by ao at 12:34<!-- /ao-verify-status -->`).
+6. **Result reporter** (new: `packages/plugins/scm-github/src/verify-reporter.ts`) — posts a new PR comment per run (screenshots + console observations + network observations + summary), updates a single delimited status block in the PR body (`<!-- ao-verify-status -->✅ Verified by ao at 12:34<!-- /ao-verify-status -->`). **Every verifier-posted comment starts with the HTML marker `<!-- ao-verify:result -->`** so the review-comment ingestion pipeline (see component 8) can exclude it from the agent-facing review stream.
+
+8. **Review-comment ingestion filter** (extension to `packages/plugins/scm-github/src/`) — the existing pipeline that fetches PR comments and forwards reviewer input to the implementing agent gains a single-line filter: **any comment whose body contains `<!-- ao-verify:` is skipped**. Prevents the verifier's own output from being re-ingested as review feedback, which would cause feedback loops or noise the implementing agent reacts to. The filter is applied at the earliest point in the ingestion pipeline so downstream stages never see verifier comments.
+
+   **Failure notifications bypass GitHub entirely.** When verification fails, the verify reaction handler (component 5) does **not** post an @mention comment to the PR. Instead, it dispatches a notification directly to the implementing agent's session via the orchestrator's internal session API — same channel used today for CI-failure reactions (per CLAUDE.md's two-tier reaction model). The implementing agent sees the failure as an in-session message, not as a GitHub round-trip that could be re-ingested. The single verifier-posted PR comment remains the rich status artifact; it carries the marker and is not treated as reviewer input.
 
 7. **Auto-merge gate** (extension to `lifecycle-manager`) — before auto-merging, consult `session.verifyStatus`. States: `not-required | pending | passed | failed`. Only `passed` and `not-required` clear the gate. **Persistence**: `verifyStatus` lives in the flat session metadata file (same file that already tracks `prUrl`, `branch`, etc., per CLAUDE.md's "stateless orchestrator, flat metadata files" principle). Transitions also emit events to the JSONL log (`verify.started`, `verify.passed`, `verify.failed`, `verify.skipped`) for observability, but metadata is authoritative for gating decisions.
 
@@ -73,8 +77,9 @@ tracker issue (labeled ui-verify)
   → lifecycle-manager updates session.verifyStatus
   → kill dev server, release worktree lock
   → if verdict == pass → clear auto-merge gate
-  → if verdict == fail and attempts < maxRetries → post reply tagging implementing agent ("verify failed, see <link>. Fix and push.")
+  → if verdict == fail and attempts < maxRetries → dispatch in-session message to implementing agent via orchestrator API (NOT a PR comment), containing failure summary + link to rich PR comment
   → if verdict == fail and attempts == maxRetries → escalate to human via notifier (Tier 2)
+  (Note: the single verifier-posted PR comment carries the `<!-- ao-verify:result -->` marker and is filtered out of review-comment ingestion, so it cannot re-enter the agent's inbox as reviewer feedback.)
 ```
 
 ### Re-Verify Triggers
@@ -199,7 +204,8 @@ interface VerifierResult {
 - **Unit**
   - `VerifyWorktreeManager` — mock `execFile`, verify checkout + lockfile hash + install sequencing.
   - Eligibility check — mock `Tracker.getIssue`, assert enqueue behavior for labeled/unlabeled/label-added-later tickets.
-  - `verify-reporter` — mock Octokit, verify comment creation + PR body delimited-block replacement.
+  - `verify-reporter` — mock Octokit, verify comment creation + PR body delimited-block replacement. Assert every posted comment body starts with `<!-- ao-verify:result -->`.
+  - Review-comment ingestion filter — feed a mix of user comments and verifier-marked comments through the ingestion pipeline, assert verifier-marked comments are excluded from the agent-facing review stream (regression guard against feedback loops).
   - `verify-login` helper — mock Playwright page, verify credentials never appear in stdout/stderr.
 - **Integration**
   - Test project in the repo (a tiny web app) with a real tracker issue; full loop from PR open → verify session → comment posted.
