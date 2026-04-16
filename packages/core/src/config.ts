@@ -98,6 +98,41 @@ const VerifyConfigSchema = z.object({
   filePatterns: z.array(z.string()).optional(),
 });
 
+/** Resolve ${ENV_VAR} placeholders in a string. */
+function resolveEnvVars(value: string): string {
+  return value.replace(/\$\{([^}]+)\}/g, (_match, envKey: string) => {
+    return process.env[envKey] ?? "";
+  });
+}
+
+const VerifyAccountSchema = z.object({
+  email: z.string().min(1).transform(resolveEnvVars),
+  password: z.string().min(1).transform(resolveEnvVars),
+});
+
+const McpVerifyReadyProbeSchema = z.object({
+  url: z.string().url(),
+  timeoutSec: z.number().int().positive().default(60),
+});
+
+export const McpVerifyConfigSchema = z.object({
+  enabled: z.boolean(),
+  triggerLabel: z.string().default("ui-verify"),
+  baseUrl: z.string().url(),
+  verifyWorktreeDir: z.string().min(1),
+  startCommand: z.string().min(1),
+  readyProbe: McpVerifyReadyProbeSchema,
+  accounts: z
+    .record(z.string(), VerifyAccountSchema)
+    .refine((accs) => Object.keys(accs).length > 0, {
+      message: "at least one account is required",
+    }),
+  loginSelectors: LoginSelectorsSchema.optional(),
+  maxRetries: z.number().int().min(0).default(2),
+  timeoutSec: z.number().int().positive().default(300),
+  uiVerifierPersona: z.string().default("ui-verifier"),
+});
+
 const QueuePollerConfigSchema = z.object({
   enabled: z.boolean().default(false),
   interval: z.union([z.string(), z.number()]).default("30s"),
@@ -147,6 +182,7 @@ const ProjectConfigSchema = z.object({
   agentRulesFile: z.string().optional(),
   orchestratorRules: z.string().optional(),
   verify: VerifyConfigSchema.optional(),
+  mcpVerify: McpVerifyConfigSchema.optional(),
   queuePoller: QueuePollerConfigSchema.optional(),
   worktreeCleanup: WorktreeCleanupConfigSchema.optional(),
 });
