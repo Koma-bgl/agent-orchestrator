@@ -494,20 +494,22 @@ export function createVerifyWorktreeManager(deps: Deps): VerifyWorktreeManager {
         : resolve(deps.config.verifyWorktreeDir);
       const path = resolve(wtRoot, projectId);
 
-      // Ensure worktree exists; if not, create it.
-      // (First-time setup: git worktree add <path> <branch>)
-      // For subsequent calls, cd and switch branch.
-      try {
-        await execFileAsync("git", ["-C", path, "fetch", "origin"], { timeout: 60_000 });
-        await execFileAsync("git", ["-C", path, "checkout", branch], { timeout: 30_000 });
-      } catch (err) {
-        // If the worktree doesn't exist yet, create it
+      // Ensure worktree exists; create it if first-time setup.
+      // CHECK existence explicitly — don't swallow legitimate fetch errors.
+      const worktrees = (
+        await execFileAsync("git", ["-C", deps.projectPath, "worktree", "list", "--porcelain"], { timeout: 10_000 })
+      ).stdout;
+      const worktreeExists = worktrees.split("\n").some((line) => line === `worktree ${path}`);
+      if (!worktreeExists) {
         await execFileAsync(
           "git",
           ["-C", deps.projectPath, "worktree", "add", path, branch],
           { timeout: 60_000 },
         );
       }
+      // Fetch + checkout — errors here are real (network, bad branch name) and should propagate.
+      await execFileAsync("git", ["-C", path, "fetch", "origin"], { timeout: 60_000 });
+      await execFileAsync("git", ["-C", path, "checkout", branch], { timeout: 30_000 });
 
       return {
         path,
@@ -616,8 +618,14 @@ Use `spawn` (not `execFile`) for the dev server so we can kill it later. Poll th
 import { spawn } from "node:child_process";
 // ...
 // Inside acquire:
-const [cmd, ...args] = deps.config.startCommand.split(" ");
-const server = spawn(cmd, args, { cwd: path, stdio: ["ignore", "pipe", "pipe"] });
+// Use shell:true so `startCommand` can include env vars or quoted args
+// (e.g. "PORT=3100 pnpm dev"). Config is user-controlled, not agent input,
+// so shell invocation is acceptable here.
+const server = spawn(deps.config.startCommand, {
+  cwd: path,
+  stdio: ["ignore", "pipe", "pipe"],
+  shell: true,
+});
 
 // Poll readyProbe
 const start = Date.now();
@@ -795,20 +803,27 @@ git commit -m "feat(persona): add ui-verifier persona"
 
 Scope: this wires the tool list the verifier agent exposes. Implementation of `ao_verify_login` itself lands in Phase 4 (Task 4.1). For now, the tool list just references the CLI subcommand we'll build next.
 
-- [ ] **Step 1: Extend the plugin to write an MCP config into the workspace**
+- [ ] **Step 1: Extend the plugin to write an MCP config into the VERIFY worktree**
 
-The existing `agent-claude-code` plugin configures MCP servers via the `.mcp.json` file in the workspace. Extend the verifier variant to write an additional entry for the MCP browser tool (Claude-in-Chrome per §11 recommendation) and for the `ao_verify_login` shim.
+The existing `agent-claude-code` plugin configures MCP servers via the `.mcp.json` file in the workspace. Extend the verifier variant to write an additional entry for the MCP browser tool and for the `ao_verify_login` shim.
+
+**Important:** Write `.mcp.json` to the verify worktree path (the `VerifyWorktreeHandle.path` from Phase 2), **not** the implementing session's workspace. Sessions that use `claude-code` (not verifier) must not have their MCP config overwritten. The verifier session's `ctx.workspacePath` should already be the verify worktree by the time this runs (the reaction handler passes `handle.path` as the session's workspace in Task 5.4).
 
 ```typescript
 // Inside create():
 async setup(ctx) {
   await base.setup?.(ctx);
+  // ctx.workspacePath is the verify worktree (handle.path), passed by the reaction handler
   const mcpConfigPath = resolve(ctx.workspacePath, ".mcp.json");
   const mcpConfig = {
     mcpServers: {
       "browser": {
+        // TODO(before impl): confirm the actual MCP browser package name.
+        // Candidates: Playwright-MCP (deterministic) or Claude-in-Chrome (richer events).
+        // Spec §11 recommends Claude-in-Chrome for v1. Verify the published npm name
+        // or binary path before committing this line.
         command: "npx",
-        args: ["-y", "@anthropic/claude-in-chrome"],  // or the user's chosen browser MCP
+        args: ["-y", "<mcp-browser-package-name>"],
       },
       "ao-verify-login": {
         command: "ao",
@@ -1185,10 +1200,21 @@ case "verify-ui": {
     });
     await verifierSession.wait();
 
-    // Read the result JSON
+    // Read the result JSON — guarded. Missing file or parse errors → treat as fail.
     const resultPath = resolve(handle.path, ".ao-verify-result.json");
-    const raw = JSON.parse(readFileSync(resultPath, "utf8"));
-    const result = VerifierResultSchema.parse(raw);  // Zod-validate
+    let result: VerifierResult;
+    try {
+      const raw = JSON.parse(readFileSync(resultPath, "utf8"));
+      result = VerifierResultSchema.parse(raw);  // Zod-validate
+    } catch (err) {
+      logger.warn(`verify-ui: could not read/parse result at ${resultPath}: ${err}`);
+      result = {
+        verdict: "fail",
+        summary: `Verifier exited without a valid result file. Error: ${err instanceof Error ? err.message : String(err)}`,
+        screenshots: [],
+        observations: { consoleErrors: [], networkFailures: [], stepsTaken: [] },
+      };
+    }
 
     session.verifyStatus = result.verdict === "pass" ? "passed" : "failed";
     await persistSession(session);
@@ -1287,7 +1313,18 @@ it("does NOT re-enqueue when attempts == maxRetries", async () => { /* ... */ })
 
 - [ ] **Step 3: Implement**
 
-On the `push_detected` / PR update event, if `session.verifyStatus === "failed"` and `session.verifyAttempts < cfg.maxRetries`, enqueue `"verify-ui"` again.
+On the `push_detected` / PR update event, if `session.verifyStatus === "failed"` and `session.verifyAttempts < cfg.maxRetries`:
+
+1. **Reset `session.verifyStatus` to `"pending"`** and persist (so the auto-merge gate does not see a stale `failed` while the re-run is in flight, and any dashboard polling reflects the fresh run).
+2. Enqueue `"verify-ui"` again.
+
+```typescript
+if (session.verifyStatus === "failed" && (session.verifyAttempts ?? 0) < cfg.maxRetries) {
+  session.verifyStatus = "pending";
+  await persistSession(session);
+  await enqueueReaction(session, "verify-ui");
+}
+```
 
 - [ ] **Step 4: Pass**
 
