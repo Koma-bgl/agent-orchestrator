@@ -1,25 +1,14 @@
 import type { Issue, McpVerifyConfig } from "./types.js";
 
 /**
- * Determines whether MCP verify should run for a given issue.
- *
- * Pure function that checks:
- * 1. If config is enabled
- * 2. If the issue has the configured trigger label
- *
- * @param issue - The issue to check
- * @param config - The MCP verify configuration (can be null or undefined)
- * @returns true if verify should run, false otherwise
+ * Pure function — given config + issue, returns whether MCP verify should run.
+ * No side effects. Safe to call from anywhere in the lifecycle.
  */
 export function isEligibleForVerify(
-  issue: Issue,
-  config: McpVerifyConfig | null | undefined
+  config: McpVerifyConfig | undefined,
+  issue: Pick<Issue, "labels"> | undefined,
 ): boolean {
-  // If config is not provided or disabled, verify is not eligible
-  if (!config?.enabled) {
-    return false;
-  }
-
-  // Check if issue has the trigger label
-  return issue.labels.includes(config.triggerLabel);
+  if (!config?.enabled) return false;
+  const labels = issue?.labels ?? [];
+  return labels.includes(config.triggerLabel);
 }

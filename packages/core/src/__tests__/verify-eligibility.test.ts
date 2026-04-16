@@ -29,17 +29,12 @@ describe("isEligibleForVerify", () => {
   describe("when config is disabled", () => {
     it("should return false if config.enabled is false", () => {
       const config: McpVerifyConfig = { ...baseConfig, enabled: false };
-      const result = isEligibleForVerify(baseIssue, config);
+      const result = isEligibleForVerify(config, baseIssue);
       expect(result).toBe(false);
     });
 
     it("should return false if config is undefined", () => {
-      const result = isEligibleForVerify(baseIssue, undefined);
-      expect(result).toBe(false);
-    });
-
-    it("should return false if config is null", () => {
-      const result = isEligibleForVerify(baseIssue, null as any);
+      const result = isEligibleForVerify(undefined, baseIssue);
       expect(result).toBe(false);
     });
   });
@@ -50,7 +45,7 @@ describe("isEligibleForVerify", () => {
         ...baseIssue,
         labels: ["verify", "bug"],
       };
-      const result = isEligibleForVerify(issue, baseConfig);
+      const result = isEligibleForVerify(baseConfig, issue);
       expect(result).toBe(true);
     });
 
@@ -59,7 +54,7 @@ describe("isEligibleForVerify", () => {
         ...baseIssue,
         labels: ["bug", "feature"],
       };
-      const result = isEligibleForVerify(issue, baseConfig);
+      const result = isEligibleForVerify(baseConfig, issue);
       expect(result).toBe(false);
     });
 
@@ -68,7 +63,7 @@ describe("isEligibleForVerify", () => {
         ...baseIssue,
         labels: [],
       };
-      const result = isEligibleForVerify(issue, baseConfig);
+      const result = isEligibleForVerify(baseConfig, issue);
       expect(result).toBe(false);
     });
 
@@ -77,7 +72,7 @@ describe("isEligibleForVerify", () => {
         ...baseIssue,
         labels: ["Verify", "bug"],
       };
-      const result = isEligibleForVerify(issue, baseConfig);
+      const result = isEligibleForVerify(baseConfig, issue);
       expect(result).toBe(false);
     });
 
@@ -86,7 +81,7 @@ describe("isEligibleForVerify", () => {
         ...baseIssue,
         labels: ["label1", "verify", "label2", "label3"],
       };
-      const result = isEligibleForVerify(issue, baseConfig);
+      const result = isEligibleForVerify(baseConfig, issue);
       expect(result).toBe(true);
     });
 
@@ -95,7 +90,7 @@ describe("isEligibleForVerify", () => {
         ...baseIssue,
         labels: ["verify"],
       };
-      const result = isEligibleForVerify(issue, baseConfig);
+      const result = isEligibleForVerify(baseConfig, issue);
       expect(result).toBe(true);
     });
 
@@ -108,7 +103,7 @@ describe("isEligibleForVerify", () => {
         ...baseConfig,
         triggerLabel: "ui-test",
       };
-      const result = isEligibleForVerify(issue, customConfig);
+      const result = isEligibleForVerify(customConfig, issue);
       expect(result).toBe(true);
     });
 
@@ -121,7 +116,7 @@ describe("isEligibleForVerify", () => {
         ...baseConfig,
         triggerLabel: "needs-verify",
       };
-      const result = isEligibleForVerify(issue, customConfig);
+      const result = isEligibleForVerify(customConfig, issue);
       expect(result).toBe(false);
     });
   });
@@ -136,7 +131,7 @@ describe("isEligibleForVerify", () => {
         ...baseConfig,
         triggerLabel: "verify-ui",
       };
-      const result = isEligibleForVerify(issue, customConfig);
+      const result = isEligibleForVerify(customConfig, issue);
       expect(result).toBe(true);
     });
 
@@ -145,8 +140,17 @@ describe("isEligibleForVerify", () => {
         ...baseIssue,
         labels: ["verification"],
       };
-      const result = isEligibleForVerify(issue, baseConfig);
+      const result = isEligibleForVerify(baseConfig, issue);
       expect(result).toBe(false);
+    });
+
+    it("returns false when issue is undefined", () => {
+      expect(isEligibleForVerify(baseConfig, undefined)).toBe(false);
+    });
+
+    it("returns false when config is undefined", () => {
+      const issue = { labels: ["verify"] };
+      expect(isEligibleForVerify(undefined, issue)).toBe(false);
     });
   });
 });
