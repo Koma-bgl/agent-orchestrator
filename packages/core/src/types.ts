@@ -1183,6 +1183,44 @@ export interface VerifyScreenshot {
   filePath: string;
 }
 
+// --- New MCP-driven verify config (lives alongside the existing headless VerifyConfig) ---
+export interface VerifyAccount {
+  email: string;
+  password: string;
+}
+
+export interface McpVerifyReadyProbe {
+  url: string;
+  timeoutSec: number;
+}
+
+export interface McpVerifyConfig {
+  enabled: boolean;
+  triggerLabel: string; // default "ui-verify"
+  baseUrl: string; // e.g. "http://localhost:3100"
+  verifyWorktreeDir: string; // supports ~ expansion
+  startCommand: string; // e.g. "pnpm dev"
+  readyProbe: McpVerifyReadyProbe;
+  accounts: Record<string, VerifyAccount>; // role-name → credentials
+  loginSelectors?: LoginSelectors; // reuse existing type
+  maxRetries: number; // default 2
+  timeoutSec: number; // default 300
+  uiVerifierPersona: string; // default "ui-verifier"
+}
+
+export type VerifyStatus = "not-required" | "pending" | "passed" | "failed";
+
+export interface VerifierResult {
+  verdict: "pass" | "fail";
+  summary: string;
+  screenshots: Array<{ label: string; path: string }>;
+  observations: {
+    consoleErrors: string[];
+    networkFailures: string[];
+    stepsTaken: string[];
+  };
+}
+
 // =============================================================================
 // PLUGIN SYSTEM
 // =============================================================================
@@ -1249,6 +1287,8 @@ export interface SessionMetadata {
   dashboardPort?: number;
   terminalWsPort?: number;
   directTerminalWsPort?: number;
+  verifyStatus?: VerifyStatus; // absent = not-required by default
+  verifyAttempts?: number; // number of verification runs so far
 }
 
 // =============================================================================
