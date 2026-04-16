@@ -38,17 +38,17 @@ Seven components:
 
 1. **Verify-eligibility check** (in `packages/core/src/lifecycle-manager.ts`) — on `pr_open`, read the ticket's labels via `Tracker.getIssue()`. If the configured trigger label is present → enqueue a verify reaction. Re-checked each poll cycle so the label can be added mid-flight.
 
-2. **Verify worktree manager** (new: `packages/core/src/verify-worktree-manager.ts`) — owns the single shared `<project>-verify` worktree at a configurable path. Responsible for: fetching origin, checking out the target branch, lockfile-gated `pnpm install`, starting and stopping the dev server on a fixed port (`verify.baseUrl`). Serializes access via an in-process mutex.
+2. **Verify worktree manager** (new: `packages/core/src/verify-worktree-manager.ts`) — owns the single shared `<project>-verify` worktree at a configurable path. Responsible for: fetching origin, checking out the target branch, lockfile-gated `pnpm install`, starting and stopping the dev server on a fixed port (`verify.baseUrl`). Serializes access via an in-process mutex. **Release path is crash-tolerant**: if the dev server process has already exited when `release()` is called (crash, OOM, user-killed), the manager logs and proceeds rather than throwing.
 
-3. **Verifier agent plugin** (new: `packages/plugins/agent-claude-code-verifier/`) — wraps `claude-code` with: a verifier persona (new file `personas/ui-verifier.md`), MCP browser tools bound (Playwright-MCP or Claude-in-Chrome), the `ao_verify_login` helper exposed as an MCP tool, and `maxSessions: 1` enforced at the plugin level.
+3. **Verifier agent plugin** (new: `packages/plugins/agent-claude-code-verifier/`) — a new `Agent` plugin implementing the existing `Agent` interface from `types.ts` (not a parallel session type). Wraps `claude-code` with: a verifier persona (new file `personas/ui-verifier.md`), MCP browser tools bound (Playwright-MCP or Claude-in-Chrome), the `ao_verify_login` helper exposed as an MCP tool, and `maxSessions: 1` enforced at the plugin level. Uses the existing `Runtime` (tmux) and session metadata plumbing unchanged.
 
-4. **`ao_verify_login` helper** (new: `packages/cli/src/commands/verify-login.ts`) — CLI subcommand the sub-agent invokes as a tool. Args: role name (e.g., `default`, `admin`). Reads credentials from `verify.accounts.<role>` in the orchestrator config, drives the login flow through the already-open Chrome session, reports success/failure. **Credentials never enter Claude's context.**
+4. **`ao_verify_login` helper** (new: `packages/cli/src/commands/verify-login.ts`) — a CLI subcommand. The verifier plugin registers a thin MCP tool shim that invokes this subcommand via `execFile` and returns the result, so the CLI stays the single source of truth. Args: role name (e.g., `default`, `admin`). Reads credentials from `verify.accounts.<role>` in the orchestrator config, drives the login flow through the already-open Chrome session, reports success/failure. **Credentials never enter Claude's context.**
 
 5. **Verify reaction handler** (extension to `lifecycle-manager`) — acquires the verify worktree, spawns the verifier agent session with context (PR title, body, diff, route hints, optional `## Verification` section from PR body), waits for completion, posts result, releases worktree.
 
 6. **Result reporter** (new: `packages/plugins/scm-github/src/verify-reporter.ts`) — posts a new PR comment per run (screenshots + console observations + network observations + summary), updates a single delimited status block in the PR body (`<!-- ao-verify-status -->✅ Verified by ao at 12:34<!-- /ao-verify-status -->`).
 
-7. **Auto-merge gate** (extension to `lifecycle-manager`) — before auto-merging, consult `session.verifyStatus`. States: `not-required | pending | passed | failed`. Only `passed` and `not-required` clear the gate.
+7. **Auto-merge gate** (extension to `lifecycle-manager`) — before auto-merging, consult `session.verifyStatus`. States: `not-required | pending | passed | failed`. Only `passed` and `not-required` clear the gate. **Persistence**: `verifyStatus` lives in the flat session metadata file (same file that already tracks `prUrl`, `branch`, etc., per CLAUDE.md's "stateless orchestrator, flat metadata files" principle). Transitions also emit events to the JSONL log (`verify.started`, `verify.passed`, `verify.failed`, `verify.skipped`) for observability, but metadata is authoritative for gating decisions.
 
 ## 4. Data Flow (Happy Path)
 
@@ -122,7 +122,7 @@ projects:
       uiVerifierPersona: "ui-verifier"         # persona file name (without .md)
 ```
 
-Env var placeholders (`${VAR}`) are resolved at config load, matching the existing `verify-runner` pattern.
+Env var placeholders (`${VAR}`) are resolved at config load, matching the existing `verify-runner` pattern (`resolveEnvVars` in `verify-runner.ts`). The `verify` block gains a Zod schema in the existing config module (`packages/core/src/config.ts` or wherever the project-level Zod schema currently lives), validated at load time alongside the rest of the config.
 
 ## 6. Component Interfaces (Sketch)
 
@@ -175,6 +175,8 @@ interface VerifierResult {
   };
 }
 ```
+
+**Output contract.** The sub-agent is instructed (via its persona) to write this structure as JSON to a well-known path in the verify worktree — `<verifyWorktreeDir>/<project>/.ao-verify-result.json` — and then exit its session. The orchestrator polls for the file's existence (or session exit, whichever comes first), then reads and validates the JSON against a Zod schema. Validation failures are treated as `fail` with the parse error included in the reported summary.
 
 ## 7. Security Considerations
 
