@@ -45,6 +45,16 @@ export async function GET() {
           ? new Date(mergedAt).getTime() - new Date(createdAt).getTime()
           : null;
 
+      // Working time: spawn → agent exit (or merge if no exit recorded)
+      const agentExitedAt = ds.metadata["agentExitedAt"] ?? null;
+      const endTime = agentExitedAt ?? mergedAt;
+      const workingTimeMs =
+        endTime && createdAt
+          ? (typeof endTime === "string" && /^\d+$/.test(endTime)
+              ? parseInt(endTime, 10)
+              : new Date(endTime).getTime()) - new Date(createdAt).getTime()
+          : null;
+
       return {
         id: ds.id,
         status: ds.status,
@@ -53,6 +63,7 @@ export async function GET() {
         createdAt: ds.createdAt,
         mergedAt,
         cycleTimeMs,
+        workingTimeMs: workingTimeMs && workingTimeMs > 0 ? workingTimeMs : null,
         costUsd: ds.cost?.estimatedCostUsd ?? null,
         inputTokens: ds.cost
           ? ds.cost.inputTokens + ds.cost.cacheReadTokens + ds.cost.cacheCreationTokens
@@ -81,9 +92,20 @@ export async function GET() {
         ? cycleTimes.reduce((a, b) => a + b, 0) / cycleTimes.length
         : null;
 
+    // Working time — across all decided sessions (merged + killed)
+    const workingTimes = sessionMetrics
+      .map((s) => s.workingTimeMs)
+      .filter((t): t is number => t !== null && t > 0);
+    const avgWorkingTime =
+      workingTimes.length > 0
+        ? workingTimes.reduce((a, b) => a + b, 0) / workingTimes.length
+        : null;
+
     // Cost
     const allCosts = sessionMetrics.map((s) => s.costUsd).filter((c): c is number => c !== null);
     const totalCostUsd = allCosts.reduce((a, b) => a + b, 0);
+    const avgCostPerTask =
+      allCosts.length > 0 ? totalCostUsd / allCosts.length : null;
     const mergedCosts = merged.map((s) => s.costUsd).filter((c): c is number => c !== null);
     const killedCosts = killed.map((s) => s.costUsd).filter((c): c is number => c !== null);
     const avgCostPerMergedPR =
@@ -113,6 +135,46 @@ export async function GET() {
     );
     const cacheHitRatio = totalAllInput > 0 ? totalCacheRead / totalAllInput : 0;
 
+    // Trends: compare recent half vs older half (sorted by createdAt)
+    // Positive = metric is going up, negative = going down
+    const sorted = [...sessionMetrics].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+    const mid = Math.floor(sorted.length / 2);
+    const olderHalf = sorted.slice(0, mid);
+    const recentHalf = sorted.slice(mid);
+
+    function avgOf(arr: SessionMetric[], fn: (s: SessionMetric) => number | null): number | null {
+      const vals = arr.map(fn).filter((v): v is number => v !== null && v > 0);
+      return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    }
+
+    function trendDelta(older: number | null, recent: number | null): number | null {
+      if (older === null || recent === null || older === 0) return null;
+      return (recent - older) / older; // e.g. 0.15 = 15% increase
+    }
+
+    const olderCompletion = olderHalf.length > 0
+      ? olderHalf.filter((s) => s.status === "merged").length /
+        Math.max(olderHalf.filter((s) => s.status === "merged" || s.status === "killed").length, 1)
+      : null;
+    const recentCompletion = recentHalf.length > 0
+      ? recentHalf.filter((s) => s.status === "merged").length /
+        Math.max(recentHalf.filter((s) => s.status === "merged" || s.status === "killed").length, 1)
+      : null;
+
+    const trends = {
+      completionRate: trendDelta(olderCompletion, recentCompletion),
+      avgWorkingTime: trendDelta(
+        avgOf(olderHalf, (s) => s.workingTimeMs),
+        avgOf(recentHalf, (s) => s.workingTimeMs),
+      ),
+      avgCostPerTask: trendDelta(
+        avgOf(olderHalf, (s) => s.costUsd),
+        avgOf(recentHalf, (s) => s.costUsd),
+      ),
+    };
+
     // Human intervention
     const sessionsNeedingInput = sessionMetrics.filter(
       (s) => s.status === "needs_input" || s.status === "stuck",
@@ -128,12 +190,15 @@ export async function GET() {
       avgSpawnToPR: null, // TODO: requires event log timestamps
       avgPRToMerge: null, // TODO: requires PR creation timestamp
       avgEndToEnd,
+      avgWorkingTime,
       totalCostUsd,
+      avgCostPerTask,
       avgCostPerMergedPR,
       avgCostPerKilledSession,
       totalInputTokens,
       totalOutputTokens,
       cacheHitRatio,
+      trends,
       sessionsNeedingInput,
       escalationRate,
       totalRestores,

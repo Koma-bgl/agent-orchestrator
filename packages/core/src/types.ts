@@ -557,6 +557,11 @@ export interface SCM {
   /** Get overall CI summary */
   getCISummary(pr: PRInfo): Promise<CIStatus>;
 
+  /** Get failure logs for failed CI checks.
+   *  Returns a per-check summary with annotations and/or truncated log output.
+   *  Optional — if not implemented, the ci-failed reaction will only include check names. */
+  getCILogs?(pr: PRInfo): Promise<CIFailureLog[]>;
+
   // --- Review Tracking ---
 
   /** Get all reviews on a PR */
@@ -633,6 +638,22 @@ export interface CICheck {
 }
 
 export type CIStatus = "pending" | "passing" | "failing" | "none";
+
+/** Failure details for a single CI check — annotations and/or log output. */
+export interface CIFailureLog {
+  /** Check name (e.g. "lint", "test", "build") */
+  name: string;
+  /** URL to the check run (for reference, not for the agent to click) */
+  url?: string;
+  /** Error annotations from the check run (file, line, message) */
+  annotations: Array<{
+    path?: string;
+    line?: number;
+    message: string;
+  }>;
+  /** Truncated log output from the failed step(s) — last N lines */
+  log?: string;
+}
 
 /** CI status constants */
 export const CI_STATUS = {

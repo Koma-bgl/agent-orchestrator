@@ -145,7 +145,10 @@ export interface SessionMetric {
   summary: string | null;
   createdAt: string;
   mergedAt: string | null;
+  /** Total time from spawn to merge (ms), null if not merged */
   cycleTimeMs: number | null;
+  /** Active working time from spawn to agent exit or merge (ms) */
+  workingTimeMs: number | null;
   costUsd: number | null;
   inputTokens: number;
   outputTokens: number;
@@ -163,14 +166,23 @@ export interface AnalyticsData {
   avgSpawnToPR: number | null;
   avgPRToMerge: number | null;
   avgEndToEnd: number | null;
+  avgWorkingTime: number | null;
 
   // Cost
   totalCostUsd: number;
+  avgCostPerTask: number | null;
   avgCostPerMergedPR: number | null;
   avgCostPerKilledSession: number | null;
   totalInputTokens: number;
   totalOutputTokens: number;
   cacheHitRatio: number;
+
+  // Trends (recent half vs older half, positive = going up)
+  trends: {
+    completionRate: number | null;
+    avgWorkingTime: number | null;
+    avgCostPerTask: number | null;
+  };
 
   // Human intervention
   sessionsNeedingInput: number;

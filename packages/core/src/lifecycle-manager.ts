@@ -608,15 +608,99 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
     switch (action) {
       case "send-to-agent": {
-        if (reactionConfig.message) {
+        let message = reactionConfig.message;
+
+        // Auto-build message for ci-failed when no static message is configured:
+        // fetch actual CI failure logs (annotations + step output) so the agent
+        // can read the errors and fix the code instead of blindly re-running CI.
+        if (!message && reactionKey === "ci-failed") {
           try {
-            await sessionManager.send(sessionId, reactionConfig.message);
+            const session = await sessionManager.get(sessionId);
+            if (!session?.pr) break;
+
+            const project = config.projects[projectId];
+            const scm = project?.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
+            if (!scm) break;
+
+            // Try getCILogs first (detailed), fall back to getCIChecks (names only)
+            if (scm.getCILogs) {
+              const failureLogs = await scm.getCILogs(session.pr);
+
+              if (failureLogs.length === 0) {
+                // CI may have recovered between poll cycles
+                return { reactionType: reactionKey, success: true, action, escalated: false };
+              }
+
+              const sections = failureLogs.map((f) => {
+                const parts: string[] = [`## ${f.name}`];
+
+                if (f.annotations.length > 0) {
+                  parts.push("");
+                  parts.push("**Errors:**");
+                  for (const ann of f.annotations) {
+                    const loc = ann.path
+                      ? `${ann.path}${ann.line ? `:${ann.line}` : ""}`
+                      : "";
+                    parts.push(loc ? `- ${loc} — ${ann.message}` : `- ${ann.message}`);
+                  }
+                }
+
+                if (f.log) {
+                  parts.push("");
+                  parts.push("**Log output:**");
+                  parts.push("```");
+                  parts.push(f.log);
+                  parts.push("```");
+                }
+
+                if (f.annotations.length === 0 && !f.log) {
+                  parts.push("(no details available — check failed but no logs were captured)");
+                }
+
+                return parts.join("\n");
+              });
+
+              message = [
+                `CI is failing on your PR (#${session.pr.number}). ${failureLogs.length} check${failureLogs.length !== 1 ? "s" : ""} failed.`,
+                "Read the errors below carefully, fix the code, and push.",
+                "",
+                ...sections,
+              ].join("\n");
+            } else {
+              // Fallback: no getCILogs — just report check names
+              const checks = await scm.getCIChecks(session.pr);
+              const failed = checks.filter((c) => c.status === "failed");
+
+              if (failed.length === 0) {
+                return { reactionType: reactionKey, success: true, action, escalated: false };
+              }
+
+              message = [
+                `CI is failing on your PR (#${session.pr.number}). ${failed.length} check${failed.length !== 1 ? "s" : ""} failed:`,
+                "",
+                ...failed.map((c) => `- ${c.name}`),
+                "",
+                "Run the failing checks locally to see the errors, fix them, and push.",
+              ].join("\n");
+            }
+          } catch (err: unknown) {
+            console.error(
+              `[lifecycle] ${sessionId}: failed to build ci-failed message:`,
+              err instanceof Error ? err.message : String(err),
+            );
+            // Fall through — message remains undefined, we break below
+          }
+        }
+
+        if (message) {
+          try {
+            await sessionManager.send(sessionId, message);
 
             return {
               reactionType: reactionKey,
               success: true,
               action: "send-to-agent",
-              message: reactionConfig.message,
+              message,
               escalated: false,
             };
           } catch {
@@ -1283,14 +1367,27 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   }
 
   /**
-   * Clean up worktrees for merged sessions after the configured grace period.
+   * Statuses eligible for worktree cleanup.
+   * - "merged": PR was merged — use configured delayAfterMerge grace period.
+   * - "killed"/"done"/"terminated": session ended without merge — clean up
+   *   immediately (no PR to reference, worktree is just wasting disk space).
+   */
+  const WORKTREE_CLEANUP_STATUSES = new Set([
+    "merged",
+    "killed",
+    "done",
+    "terminated",
+  ]);
+
+  /**
+   * Clean up worktrees for terminal sessions after the configured grace period.
    * Only destroys the worktree — metadata is preserved so sessions remain in the dashboard.
    */
-  async function cleanupMergedWorktrees(sessions: Session[]): Promise<void> {
+  async function cleanupStaleWorktrees(sessions: Session[]): Promise<void> {
     const now = Date.now();
 
     for (const session of sessions) {
-      if (session.status !== "merged") continue;
+      if (!WORKTREE_CLEANUP_STATUSES.has(session.status)) continue;
 
       const project = config.projects[session.projectId];
       if (!project) continue;
@@ -1310,26 +1407,30 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       const worktreePath = raw["worktree"];
       if (!worktreePath || worktreePath === project.path) continue;
 
-      // Check if grace period has elapsed
-      // Backfill mergedAt for sessions merged before this feature was deployed
-      let mergedAt = raw["mergedAt"];
-      if (!mergedAt) {
-        mergedAt = new Date().toISOString();
-        updateMetadata(sessionsDir, session.id, { mergedAt });
-        continue; // Start grace period from now — will be cleaned on a future poll
+      // For merged sessions, respect the configured grace period.
+      // For killed/done/terminated sessions, clean up immediately — there's no
+      // PR to reference and the worktree is just wasting disk space.
+      if (session.status === "merged") {
+        // Backfill mergedAt for sessions merged before this feature was deployed
+        let mergedAt = raw["mergedAt"];
+        if (!mergedAt) {
+          mergedAt = new Date().toISOString();
+          updateMetadata(sessionsDir, session.id, { mergedAt });
+          continue; // Start grace period from now — will be cleaned on a future poll
+        }
+
+        const mergedTime = new Date(mergedAt).getTime();
+        if (Number.isNaN(mergedTime)) continue;
+
+        const delay =
+          typeof cleanupConfig.delayAfterMerge === "number"
+            ? cleanupConfig.delayAfterMerge
+            : parseDuration(cleanupConfig.delayAfterMerge);
+
+        if (now - mergedTime < delay) continue;
       }
 
-      const mergedTime = new Date(mergedAt).getTime();
-      if (Number.isNaN(mergedTime)) continue;
-
-      const delay =
-        typeof cleanupConfig.delayAfterMerge === "number"
-          ? cleanupConfig.delayAfterMerge
-          : parseDuration(cleanupConfig.delayAfterMerge);
-
-      if (now - mergedTime < delay) continue;
-
-      // Grace period elapsed — destroy the worktree
+      // Destroy the worktree
       const workspaceName = project.workspace ?? config.defaults.workspace;
       const workspacePlugin = registry.get<Workspace>("workspace", workspaceName);
       if (!workspacePlugin) continue;
@@ -1341,7 +1442,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           worktree: "",
         });
         console.log(
-          `[lifecycle] Cleaned up worktree for merged session ${session.id} (merged ${mergedAt})`,
+          `[lifecycle] Cleaned up worktree for ${session.status} session ${session.id}`,
         );
       } catch {
         // Non-fatal — will retry on next poll
@@ -1393,8 +1494,8 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       // Poll all sessions concurrently
       await Promise.allSettled(sessionsToCheck.map((s) => checkSession(s)));
 
-      // Delayed worktree cleanup for merged sessions
-      await cleanupMergedWorktrees(sessions);
+      // Delayed worktree cleanup for terminal sessions (merged, killed, done, terminated)
+      await cleanupStaleWorktrees(sessions);
 
       // Prune stale entries from states and reactionTrackers for sessions
       // that no longer appear in the session list (e.g., after kill/cleanup)
