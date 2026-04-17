@@ -6,15 +6,18 @@
  * branch; the manager serializes concurrent acquires with an in-process
  * mutex so only one verification run touches the worktree at a time.
  *
- * This module is deliberately minimal — Task 2.1 covers only:
- *   - Serialized acquire
- *   - Ensuring the git worktree exists (create if missing)
- *   - Fetching origin and checking out the requested branch
+ * The acquire pipeline, in order:
+ *   1. Ensure the git worktree exists (create if missing)
+ *   2. Fetch origin and checkout the requested branch
+ *   3. Lockfile-gated `pnpm install` (only when lockfile hash changed)
+ *   4. Spawn the dev server and wait for the ready probe to respond
  *
- * `pnpm install` and dev-server spawn land in Tasks 2.2 and 2.3.
+ * `release()` stops the dev server cleanly (SIGTERM → 5s grace → SIGKILL) and
+ * advances the mutex. It is crash-tolerant: if the dev server has already
+ * exited on its own, release() logs and returns without throwing.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -98,6 +101,160 @@ function computeLockfileHash(worktreePath: string): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Dev server lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * Polling interval for the ready probe, in ms. Fixed rather than configurable
+ * because the useful range is narrow — sub-100ms hammers a booting server,
+ * multi-second misses fast-boot dev servers.
+ */
+const READY_PROBE_POLL_MS = 500;
+
+/**
+ * Per-request AbortController timeout for ready-probe fetches, in ms. Without
+ * this, a hanging server that accepts the TCP connection but never responds
+ * would stall the probe loop entirely — we'd never notice the overall timeout.
+ */
+const READY_PROBE_PER_REQUEST_TIMEOUT_MS = 2_000;
+
+/**
+ * Grace period after SIGTERM before escalating to SIGKILL in stopDevServer.
+ * Matches the convention used by runtime-process for destroy().
+ */
+const SIGTERM_GRACE_MS = 5_000;
+
+interface DevServerHandle {
+  child: ChildProcess;
+  /** Resolves when the child emits "exit" (or already resolved if it has exited). */
+  exited: Promise<void>;
+}
+
+/**
+ * Spawn the configured dev server in `worktreePath`, then poll
+ * `config.readyProbe.url` until the server responds 2xx or the configured
+ * timeout elapses.
+ *
+ * Returns `[handle, null]` on success. Returns `[handle, error]` if the
+ * probe times out or the server exits early — in both error cases the handle
+ * is still returned so the caller can pass it to `stopDevServer()` for
+ * cleanup (a no-op if the child is already dead).
+ *
+ * `shell: true` is a deliberate deviation from the project convention of
+ * `execFile`. `startCommand` is operator-configured YAML (e.g.
+ * `"PORT=3100 pnpm dev"`) and needs shell interpretation for env-prefix and
+ * quoting. It is NEVER derived from agent/user input, so the shell-injection
+ * threat model does not apply.
+ */
+async function startAndProbeDevServer(
+  worktreePath: string,
+  config: McpVerifyConfig,
+): Promise<[DevServerHandle, Error | null]> {
+  const child = spawn(config.startCommand, {
+    cwd: worktreePath,
+    shell: true,
+    // "ignore" for stdin (we never write to the dev server). "pipe" for
+    // stdout/stderr so (a) the pipes stay open (preventing the child from
+    // blocking on a full buffer) and (b) future iterations can tail logs.
+    // We deliberately avoid "inherit" — that would merge the dev server's
+    // output into the orchestrator's own stdout, which is noisy and makes
+    // it impossible to cleanly stop the server later.
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  // Track the exit so both the early-exit race and stopDevServer() can await
+  // it without re-registering listeners. Using `once()` avoids a leaked
+  // listener if the child outlives the probe loop.
+  let exitedResolve!: () => void;
+  const exited = new Promise<void>((r) => {
+    exitedResolve = r;
+  });
+  child.once("exit", () => {
+    exitedResolve();
+  });
+
+  const handle: DevServerHandle = { child, exited };
+
+  const timeoutMs = config.readyProbe.timeoutSec * 1000;
+  const url = config.readyProbe.url;
+  const deadline = Date.now() + timeoutMs;
+
+  // Race loop: each iteration either (a) observes ready, (b) observes
+  // early-exit, (c) hits the overall timeout, or (d) sleeps and retries.
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return [
+        handle,
+        new Error(
+          `dev server exited during ready probe (exitCode=${child.exitCode}, signal=${child.signalCode ?? "none"})`,
+        ),
+      ];
+    }
+
+    // Per-request abort prevents a hanging server from stalling the loop.
+    const reqController = new AbortController();
+    const reqTimer = setTimeout(
+      () => reqController.abort(),
+      READY_PROBE_PER_REQUEST_TIMEOUT_MS,
+    );
+    try {
+      const res = await fetch(url, { signal: reqController.signal });
+      if (res.ok) {
+        return [handle, null];
+      }
+    } catch {
+      // Expected while the server boots: ECONNREFUSED, DNS errors, aborted
+      // requests, etc. Swallow and retry after the poll interval.
+    } finally {
+      clearTimeout(reqTimer);
+    }
+
+    await new Promise<void>((r) => setTimeout(r, READY_PROBE_POLL_MS));
+  }
+
+  return [
+    handle,
+    new Error(
+      `dev server did not become ready within ${config.readyProbe.timeoutSec}s (probe url=${url})`,
+    ),
+  ];
+}
+
+/**
+ * Stop a dev server started by `startAndProbeDevServer`. Crash-tolerant:
+ *   - If the child has already exited (exitCode or signalCode non-null),
+ *     log and return without throwing.
+ *   - Otherwise send SIGTERM, wait up to SIGTERM_GRACE_MS for exit, then
+ *     escalate to SIGKILL if still alive.
+ */
+async function stopDevServer(handle: DevServerHandle): Promise<void> {
+  const { child, exited } = handle;
+
+  if (child.exitCode !== null || child.signalCode !== null) {
+    console.log(
+      `[verify-worktree] dev server already exited (exitCode=${child.exitCode}, signal=${child.signalCode ?? "none"}); skipping stop`,
+    );
+    return;
+  }
+
+  child.kill("SIGTERM");
+
+  // Wait up to SIGTERM_GRACE_MS for the child to exit cleanly, then SIGKILL.
+  const timedOut = await Promise.race([
+    exited.then(() => false),
+    new Promise<boolean>((r) => setTimeout(() => r(true), SIGTERM_GRACE_MS)),
+  ]);
+
+  if (timedOut && child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGKILL");
+    // Wait for the kernel to reap the process so callers know the handle is
+    // truly gone. If this hangs for some reason, the caller's own timeout
+    // is the only backstop — by design, we don't add a second layer here.
+    await exited;
+  }
+}
+
 export interface VerifyWorktreeHandle {
   /** Absolute path to the verify worktree on disk */
   path: string;
@@ -121,8 +278,9 @@ export interface VerifyWorktreeManager {
    * recover short of recreating the manager.
    *
    * If the acquire body itself throws (e.g. network failure during fetch,
-   * bad branch during checkout), the mutex is automatically advanced and
-   * the error is re-thrown — callers do not need to release in that case.
+   * bad branch during checkout, dev server crash), the mutex is automatically
+   * advanced and the error is re-thrown — callers do not need to release in
+   * that case.
    */
   acquire(projectId: string, branch: string): Promise<VerifyWorktreeHandle>;
 }
@@ -168,6 +326,11 @@ export function createVerifyWorktreeManager(deps: Deps): VerifyWorktreeManager {
       const prev = lock;
       lock = lock.then(() => ours);
       await prev;
+
+      // Track the dev server handle separately so we can kill it if any step
+      // between "spawn" and "return" throws. Without this, a failed ready
+      // probe would leave an orphaned server process behind.
+      let devServer: DevServerHandle | undefined;
 
       try {
         const wtRoot = expandHome(deps.config.verifyWorktreeDir);
@@ -216,17 +379,46 @@ export function createVerifyWorktreeManager(deps: Deps): VerifyWorktreeManager {
           }
         }
 
+        // Spawn dev server + probe. On failure we still hold a handle so we
+        // can attempt to kill the child before re-throwing.
+        const [handle, readyErr] = await startAndProbeDevServer(path, deps.config);
+        devServer = handle;
+        if (readyErr) {
+          throw readyErr;
+        }
+
         return {
           path,
           baseUrl: deps.config.baseUrl,
           async release() {
-            release();
+            // Stop the dev server first (crash-tolerant — never throws), then
+            // advance the mutex. Ordering matters: if stopDevServer throws in
+            // the future, we still want release() to run so we don't deadlock.
+            try {
+              await stopDevServer(handle);
+            } finally {
+              release();
+            }
           },
         };
       } catch (err) {
+        // Best-effort cleanup of any spawned dev server so we don't leak a
+        // process when the acquire body throws. stopDevServer is already
+        // crash-tolerant, but we wrap in try/catch defensively — the mutex
+        // advance below is the load-bearing part.
+        if (devServer) {
+          try {
+            await stopDevServer(devServer);
+          } catch (stopErr) {
+            console.log(
+              `[verify-worktree] ${projectId}: stopDevServer during error cleanup failed: ${(stopErr as Error).message}`,
+            );
+          }
+        }
         // Advance the mutex even on failure so subsequent acquires aren't
         // blocked forever. Without this, a single failed fetch/checkout/
-        // ambiguous-tilde/etc deadlocks the manager for its lifetime.
+        // ambiguous-tilde/install/ready-probe deadlocks the manager for its
+        // lifetime.
         release();
         throw err;
       }

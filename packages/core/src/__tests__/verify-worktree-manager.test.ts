@@ -1,13 +1,21 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as childProcess from "node:child_process";
-import * as fs from "node:fs";
+import { EventEmitter } from "node:events";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { McpVerifyConfig } from "../types.js";
 
-// Mock child_process.execFile
+// Hoisted spawn mock — must be defined before the vi.mock() call below because
+// vi.mock() is itself hoisted. The runtime-process tests use the same pattern.
+const { mockSpawn } = vi.hoisted(() => ({
+  mockSpawn: vi.fn(),
+}));
+
+// Mock child_process.execFile + spawn. execFile is used for one-shot git/pnpm
+// commands; spawn is used for the long-lived dev server in Task 2.3.
 vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
+  spawn: mockSpawn,
 }));
 
 // Mock node:fs — readFileSync is used for lockfile hashing. We only mock the
@@ -98,6 +106,47 @@ const baseConfig: McpVerifyConfig = {
   uiVerifierPersona: "ui-verifier",
 };
 
+/**
+ * Minimal ChildProcess-like mock. Extends EventEmitter so tests can emit
+ * "exit" / "error" at will. `exitCode` starts null (running); set to a number
+ * and emit "exit" to simulate termination.
+ */
+class MockChildProcess extends EventEmitter {
+  pid = 12345;
+  exitCode: number | null = null;
+  signalCode: string | null = null;
+  stdout = new EventEmitter();
+  stderr = new EventEmitter();
+  kill = vi.fn((_signal?: string) => true);
+}
+
+function createMockChild(): MockChildProcess {
+  return new MockChildProcess();
+}
+
+/**
+ * Default spawn factory used across most tests — returns a child that
+ * emits "exit" on the next tick after receiving any kill signal. Tests that
+ * want to assert on SIGTERM→SIGKILL escalation, or on already-exited
+ * behavior, override this with their own child.
+ */
+function createWellBehavedChild(): MockChildProcess {
+  const child = createMockChild();
+  child.kill = vi.fn((signal?: string) => {
+    // Simulate a cooperative process that terminates on signal. Using
+    // setImmediate (rather than synchronous emit) mirrors the real node
+    // behavior where "exit" fires on a future tick.
+    setImmediate(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.signalCode = signal ?? "SIGTERM";
+        child.emit("exit", null, signal ?? "SIGTERM");
+      }
+    });
+    return true;
+  });
+  return child;
+}
+
 beforeEach(async () => {
   vi.clearAllMocks();
   // Default: any readFileSync call returns the same lockfile content. Individual
@@ -109,6 +158,22 @@ beforeEach(async () => {
   // last installed"), so tests must reset it explicitly.
   const { __clearInstalledHashCacheForTests } = await import("../verify-worktree-manager.js");
   __clearInstalledHashCacheForTests();
+
+  // Default spawn: returns a well-behaved child that cooperatively exits on
+  // any kill signal. Tests that care about the spawn details (early-exit,
+  // SIGKILL escalation, already-dead) override this per-test.
+  mockSpawn.mockImplementation(() => createWellBehavedChild());
+
+  // Default fetch: resolves with ok:true on the very first call so the ready
+  // probe succeeds immediately. Tests that care about probe behavior override.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({ ok: true, status: 200 }) as unknown as Response),
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("createVerifyWorktreeManager", () => {
@@ -672,6 +737,237 @@ describe("createVerifyWorktreeManager", () => {
 
       const handle = await mgr.acquire("my-app", "feature-branch");
       expect(handle.baseUrl).toBe("http://localhost:3100");
+      await handle.release();
+    });
+  });
+
+  // ===========================================================================
+  // Task 2.3 — Dev server lifecycle
+  // ===========================================================================
+  describe("dev server lifecycle", () => {
+    /**
+     * Configure execFile to happily answer all git + pnpm commands so the
+     * tests can focus on spawn/fetch behavior without redefining the git
+     * plumbing for every test.
+     */
+    function mockHappyGitAndPnpm(): void {
+      const calls: ExecFileCall[] = [];
+      mockGitCommands(
+        [
+          { match: isWorktreeListCall, respond: () => ({ stdout: "" }) },
+          { match: isWorktreeAddCall, respond: () => ({ stdout: "" }) },
+          { match: isFetchCall, respond: () => ({ stdout: "" }) },
+          { match: isCheckoutCall, respond: () => ({ stdout: "" }) },
+          { match: isPnpmInstallCall, respond: () => ({ stdout: "" }) },
+        ],
+        calls,
+      );
+    }
+
+    it("spawns startCommand via shell:true so env-prefixed commands work", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      mockHappyGitAndPnpm();
+      const child = createWellBehavedChild();
+      mockSpawn.mockReturnValue(child);
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: { ...baseConfig, startCommand: "PORT=3100 pnpm dev" },
+      });
+
+      const handle = await mgr.acquire("my-app", "feature-branch");
+
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      expect(mockSpawn).toHaveBeenCalledWith(
+        "PORT=3100 pnpm dev",
+        expect.objectContaining({
+          cwd: resolve("/tmp/verify-worktrees", "my-app"),
+          shell: true,
+          stdio: ["ignore", "pipe", "pipe"],
+        }),
+      );
+
+      await handle.release();
+    });
+
+    it("polls readyProbe.url until it responds with 2xx, then resolves", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      mockHappyGitAndPnpm();
+      const child = createWellBehavedChild();
+      mockSpawn.mockReturnValue(child);
+
+      // First two fetches reject (connection refused while server boots),
+      // third fetch resolves ok. The loop must keep polling through errors.
+      const fetchMock = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("ECONNREFUSED"))
+        .mockRejectedValueOnce(new Error("ECONNREFUSED"))
+        .mockResolvedValue({ ok: true, status: 200 });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: baseConfig,
+      });
+
+      const handle = await mgr.acquire("my-app", "feature-branch");
+
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+      // All probes hit the configured URL
+      for (const call of fetchMock.mock.calls) {
+        expect(call[0]).toBe("http://localhost:3100/");
+      }
+
+      await handle.release();
+    });
+
+    it("throws when ready probe times out without ever succeeding", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      mockHappyGitAndPnpm();
+      const child = createWellBehavedChild();
+      mockSpawn.mockReturnValue(child);
+
+      const fetchMock = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        // 1-second timeout keeps the test fast. Implementation polls every
+        // 500ms so we'll get 2-3 attempts before timing out.
+        config: { ...baseConfig, readyProbe: { url: "http://localhost:3100/", timeoutSec: 1 } },
+      });
+
+      await expect(mgr.acquire("my-app", "feature-branch")).rejects.toThrow(/did not become ready/);
+
+      // The dev server must have been killed on timeout (cleanup path).
+      expect(child.kill).toHaveBeenCalled();
+    });
+
+    it("throws when dev server exits during ready-probe polling", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      mockHappyGitAndPnpm();
+      const child = createMockChild();
+      mockSpawn.mockImplementation(() => {
+        // Schedule the child to crash very shortly after spawn returns.
+        setTimeout(() => {
+          child.exitCode = 1;
+          child.emit("exit", 1, null);
+        }, 20);
+        return child;
+      });
+
+      // Fetch always rejects — if early-exit detection fails, the test would
+      // hang until the probe timeout and then fail with "did not become ready".
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        // Generous timeout so the early-exit path is what wins the race.
+        config: { ...baseConfig, readyProbe: { url: "http://localhost:3100/", timeoutSec: 30 } },
+      });
+
+      await expect(mgr.acquire("my-app", "feature-branch")).rejects.toThrow(/dev server exited/);
+    });
+
+    it("release() stops the dev server via SIGTERM then SIGKILL if it doesn't exit", async () => {
+      vi.useFakeTimers();
+      try {
+        const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+        mockHappyGitAndPnpm();
+
+        const child = createMockChild();
+        // Child exits ONLY on SIGKILL. SIGTERM is ignored so the grace
+        // window elapses and the implementation must escalate.
+        child.kill = vi.fn((signal?: string) => {
+          if (signal === "SIGKILL") {
+            setImmediate(() => {
+              child.exitCode = 137; // 128 + 9
+              child.emit("exit", null, "SIGKILL");
+            });
+          }
+          return true;
+        });
+        mockSpawn.mockReturnValue(child);
+
+        const mgr = createVerifyWorktreeManager({
+          projectPath: "/repo/my-app",
+          config: baseConfig,
+        });
+
+        // The acquire() call awaits fetch/setTimeout — under fake timers
+        // we need to flush microtasks + advance any pending timers.
+        const acquirePromise = mgr.acquire("my-app", "feature-branch");
+        await vi.runAllTimersAsync();
+        const handle = await acquirePromise;
+
+        // Fire release in the background; advance past the 5s SIGTERM grace
+        // so the implementation escalates to SIGKILL.
+        const releasePromise = handle.release();
+        await vi.advanceTimersByTimeAsync(5_100);
+        await releasePromise;
+
+        const signals = child.kill.mock.calls.map((c) => c[0]);
+        expect(signals).toContain("SIGTERM");
+        expect(signals).toContain("SIGKILL");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("release() does NOT throw when the dev server has already exited (crash-tolerant)", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      mockHappyGitAndPnpm();
+
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: baseConfig,
+      });
+
+      const handle = await mgr.acquire("my-app", "feature-branch");
+
+      // Simulate the process dying on its own (crash / OOM / user-killed).
+      // exitCode is no longer null — release() must treat this as "already
+      // stopped" and return cleanly without throwing.
+      child.exitCode = 0;
+
+      await expect(handle.release()).resolves.toBeUndefined();
+      // kill() must not be invoked on a process that has already exited.
+      expect(child.kill).not.toHaveBeenCalled();
+
+      // And — critically — the mutex must have advanced, so a subsequent
+      // acquire can proceed. Use a fresh child for the second acquire.
+      const child2 = createMockChild();
+      mockSpawn.mockReturnValue(child2);
+      const handle2 = await mgr.acquire("my-app", "other-branch");
+      expect(handle2).toBeDefined();
+      child2.exitCode = 0;
+      await handle2.release();
+    });
+
+    it("probes with a short per-request timeout so a hanging server doesn't stall the loop", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      mockHappyGitAndPnpm();
+      const child = createWellBehavedChild();
+      mockSpawn.mockReturnValue(child);
+
+      // Capture the signal passed to fetch so we can assert the impl attached
+      // an AbortSignal (i.e., is using AbortController).
+      const fetchMock = vi.fn(async (_url: unknown, opts?: { signal?: AbortSignal }) => {
+        expect(opts?.signal).toBeDefined();
+        return { ok: true, status: 200 } as unknown as Response;
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: baseConfig,
+      });
+
+      const handle = await mgr.acquire("my-app", "feature-branch");
+      expect(fetchMock).toHaveBeenCalled();
       await handle.release();
     });
   });
