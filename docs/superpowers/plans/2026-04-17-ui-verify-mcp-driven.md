@@ -809,14 +809,16 @@ Scope: this wires the tool list the verifier agent exposes. Implementation of `a
 
 The existing `agent-claude-code` plugin configures MCP servers via the `.mcp.json` file in the workspace. Extend the verifier variant to write an additional entry for the MCP browser tool and for the `ao_verify_login` shim.
 
-**Important:** Write `.mcp.json` to the verify worktree path (the `VerifyWorktreeHandle.path` from Phase 2), **not** the implementing session's workspace. Sessions that use `claude-code` (not verifier) must not have their MCP config overwritten. The verifier session's `ctx.workspacePath` should already be the verify worktree by the time this runs (the reaction handler passes `handle.path` as the session's workspace in Task 5.4).
+**Important:** Write `.mcp.json` to the verify worktree path (the `VerifyWorktreeHandle.path` from Phase 2), **not** the implementing session's workspace. Sessions that use `claude-code` (not verifier) must not have their MCP config overwritten. The verifier session's workspace path (passed to `preLaunchSetup(workspacePath)`) should already be the verify worktree by the time this runs (the reaction handler passes `handle.path` as the session's workspace in Task 5.4).
+
+**Note on `Agent` interface:** the actual interface exposes `preLaunchSetup(workspacePath: string): Promise<void>` (not a generic `setup(ctx)`). The verifier plugin overrides `preLaunchSetup` and chains `await base.preLaunchSetup?.(workspacePath)` before writing `.mcp.json`. The session manager (`packages/core/src/session-manager.ts`) invokes `preLaunchSetup` at spawn/restore time.
 
 ```typescript
 // Inside create():
-async setup(ctx) {
-  await base.setup?.(ctx);
-  // ctx.workspacePath is the verify worktree (handle.path), passed by the reaction handler
-  const mcpConfigPath = resolve(ctx.workspacePath, ".mcp.json");
+async preLaunchSetup(workspacePath) {
+  await base.preLaunchSetup?.(workspacePath);
+  // workspacePath is the verify worktree (handle.path), passed by the reaction handler
+  const mcpConfigPath = resolve(workspacePath, ".mcp.json");
   const mcpConfig = {
     mcpServers: {
       "browser": {
