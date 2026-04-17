@@ -79,16 +79,22 @@ export function __clearInstalledHashCacheForTests(): void {
 
 /**
  * Compute the sha256 hash of `pnpm-lock.yaml` inside the worktree. Returns
- * an empty string if the file is missing — callers treat that as "force
+ * an empty string if the file is missing (ENOENT) — callers treat that as "force
  * install" since we can't prove node_modules is in sync with a lockfile
- * that doesn't exist.
+ * that doesn't exist. Throws for other errors (e.g. EACCES permission denied).
  */
 function computeLockfileHash(worktreePath: string): string {
   try {
     const lockPath = resolve(worktreePath, "pnpm-lock.yaml");
     return createHash("sha256").update(readFileSync(lockPath)).digest("hex");
-  } catch {
-    return "";
+  } catch (err) {
+    const nodeErr = err as NodeJS.ErrnoException;
+    if (nodeErr.code === "ENOENT") {
+      return "";
+    }
+    throw new Error(
+      `Failed to read pnpm-lock.yaml at ${resolve(worktreePath, "pnpm-lock.yaml")}: ${nodeErr.message}`,
+    );
   }
 }
 
@@ -193,7 +199,18 @@ export function createVerifyWorktreeManager(deps: Deps): VerifyWorktreeManager {
         const currentHash = computeLockfileHash(path);
         const cachedHash = installedHashCache.get(projectId);
         if (currentHash === "" || cachedHash !== currentHash) {
+          const reason =
+            currentHash === ""
+              ? "no-lockfile"
+              : cachedHash === undefined
+                ? "first-acquire"
+                : "hash-changed";
+          const hashDisplay = currentHash.slice(0, 8) || "none";
+          console.log(
+            `[verify-worktree] ${projectId}: pnpm install (${reason}, hash=${hashDisplay})`,
+          );
           await run("pnpm", ["install"], 300_000, { cwd: path });
+          console.log(`[verify-worktree] ${projectId}: pnpm install complete`);
           if (currentHash !== "") {
             installedHashCache.set(projectId, currentHash);
           }

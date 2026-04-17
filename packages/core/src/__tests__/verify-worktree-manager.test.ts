@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as childProcess from "node:child_process";
+import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { McpVerifyConfig } from "../types.js";
@@ -615,6 +616,38 @@ describe("createVerifyWorktreeManager", () => {
       expect(capturedOpts[0]?.cwd).toBe(expectedWorktreePath);
 
       await handle.release();
+    });
+
+    it("throws when lockfile read fails with permission denied (EACCES)", async () => {
+      const { __clearInstalledHashCacheForTests, createVerifyWorktreeManager } = await import(
+        "../verify-worktree-manager.js"
+      );
+      __clearInstalledHashCacheForTests();
+
+      vi.mocked(childProcess.execFile).mockImplementation((cmd, args, opts, callback) => {
+        // Happy path for all git commands
+        (callback as ExecFileCallback)(null, "", "");
+        return {} as ReturnType<typeof childProcess.execFile>;
+      });
+
+      readFileSyncMock.mockImplementation((path: string) => {
+        // Simulate permission denied when reading pnpm-lock.yaml
+        if (path.includes("pnpm-lock.yaml")) {
+          const err = new Error("Permission denied") as NodeJS.ErrnoException;
+          err.code = "EACCES";
+          throw err;
+        }
+        return Buffer.from("");
+      });
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: baseConfig,
+      });
+
+      await expect(mgr.acquire("my-app", "feature-branch")).rejects.toThrow(
+        /Failed to read pnpm-lock.yaml.*Permission denied/,
+      );
     });
   });
 

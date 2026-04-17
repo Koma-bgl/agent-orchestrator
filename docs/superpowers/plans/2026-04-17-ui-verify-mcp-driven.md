@@ -579,7 +579,9 @@ try {
 }
 if (currentHash === "" || installedHashCache.get(projectId) !== currentHash) {
   await execFileAsync("pnpm", ["install"], { cwd: path, timeout: 300_000 });
-  installedHashCache.set(projectId, currentHash);
+  if (currentHash !== "") {
+    installedHashCache.set(projectId, currentHash);
+  }
 }
 ```
 
