@@ -291,6 +291,146 @@ describe("createVerifyWorktreeManager", () => {
       // Ensure no worktree add call was issued as a recovery attempt
       expect(calls.filter(isWorktreeAddCall)).toHaveLength(0);
     });
+
+    it("advances the mutex when the acquire body throws (does not deadlock subsequent acquires)", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: baseConfig,
+      });
+
+      // First acquire: worktree exists, fetch fails → body throws.
+      const expectedPath = resolve("/tmp/verify-worktrees", "my-app");
+      const porcelain = `worktree ${expectedPath}\nHEAD abcdef\nbranch refs/heads/main\n`;
+      const firstCalls: ExecFileCall[] = [];
+      mockGitCommands(
+        [
+          { match: isWorktreeListCall, respond: () => ({ stdout: porcelain }) },
+          { match: isFetchCall, respond: () => ({ error: "network unreachable" }) },
+        ],
+        firstCalls,
+      );
+
+      await expect(mgr.acquire("my-app", "feat/a")).rejects.toThrow(/network unreachable/);
+
+      // Second acquire: all git commands succeed. If the mutex deadlocks,
+      // this hangs forever and the test times out.
+      mockExecFile.mockReset();
+      const secondCalls: ExecFileCall[] = [];
+      mockGitCommands(
+        [
+          { match: isWorktreeListCall, respond: () => ({ stdout: porcelain }) },
+          { match: isWorktreeAddCall, respond: () => ({ stdout: "" }) },
+          { match: isFetchCall, respond: () => ({ stdout: "" }) },
+          { match: isCheckoutCall, respond: () => ({ stdout: "" }) },
+        ],
+        secondCalls,
+      );
+
+      const handle = await mgr.acquire("my-app", "feat/b");
+      expect(handle).toBeDefined();
+      expect(handle.path).toBe(expectedPath);
+      await handle.release();
+    });
+
+    it("includes command context and stderr in run() error messages", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+
+      // Make the first git call (worktree list) fail with a specific stderr.
+      mockExecFile.mockImplementation((cmd, args, _opts, callback) => {
+        const stderr = "fatal: not a git repository";
+        (callback as ExecFileCallback)(new Error("Command failed"), "", stderr);
+        return {} as ReturnType<typeof childProcess.execFile>;
+      });
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: baseConfig,
+      });
+
+      let caught: Error | undefined;
+      try {
+        await mgr.acquire("my-app", "feature-branch");
+      } catch (e) {
+        caught = e as Error;
+      }
+
+      expect(caught).toBeDefined();
+      // Error message must include the command string...
+      expect(caught?.message).toContain("git");
+      expect(caught?.message).toContain("worktree");
+      expect(caught?.message).toContain("list");
+      // ...and the stderr content.
+      expect(caught?.message).toContain("fatal: not a git repository");
+    });
+  });
+
+  describe("expandHome path validation", () => {
+    it("throws on bare `~` (ambiguous)", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: { ...baseConfig, verifyWorktreeDir: "~" },
+      });
+      await expect(mgr.acquire("my-app", "feature-branch")).rejects.toThrow(/ambiguous/);
+    });
+
+    it("throws on `~otheruser/foo` (we do not resolve other users' homes)", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: { ...baseConfig, verifyWorktreeDir: "~otheruser/foo" },
+      });
+      await expect(mgr.acquire("my-app", "feature-branch")).rejects.toThrow(/ambiguous/);
+    });
+
+    it("accepts absolute paths and `~/subdir`", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+
+      // Absolute path case
+      {
+        const calls: ExecFileCall[] = [];
+        mockGitCommands(
+          [
+            { match: isWorktreeListCall, respond: () => ({ stdout: "" }) },
+            { match: isWorktreeAddCall, respond: () => ({ stdout: "" }) },
+            { match: isFetchCall, respond: () => ({ stdout: "" }) },
+            { match: isCheckoutCall, respond: () => ({ stdout: "" }) },
+          ],
+          calls,
+        );
+        const mgr = createVerifyWorktreeManager({
+          projectPath: "/repo/my-app",
+          config: { ...baseConfig, verifyWorktreeDir: "/abs/path" },
+        });
+        const handle = await mgr.acquire("my-app", "feature-branch");
+        expect(handle.path).toBe(resolve("/abs/path", "my-app"));
+        await handle.release();
+      }
+
+      // `~/x` case
+      mockExecFile.mockReset();
+      {
+        const calls: ExecFileCall[] = [];
+        mockGitCommands(
+          [
+            { match: isWorktreeListCall, respond: () => ({ stdout: "" }) },
+            { match: isWorktreeAddCall, respond: () => ({ stdout: "" }) },
+            { match: isFetchCall, respond: () => ({ stdout: "" }) },
+            { match: isCheckoutCall, respond: () => ({ stdout: "" }) },
+          ],
+          calls,
+        );
+        const mgr = createVerifyWorktreeManager({
+          projectPath: "/repo/my-app",
+          config: { ...baseConfig, verifyWorktreeDir: "~/x" },
+        });
+        const handle = await mgr.acquire("my-app", "feature-branch");
+        expect(handle.path).toBe(resolve(homedir(), "x", "my-app"));
+        await handle.release();
+      }
+    });
   });
 
   describe("return value", () => {
