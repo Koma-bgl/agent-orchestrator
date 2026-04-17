@@ -687,7 +687,7 @@ cp -r packages/plugins/agent-claude-code packages/plugins/agent-claude-code-veri
 
 ```json
 {
-  "name": "@composio/ao-agent-claude-code-verifier",
+  "name": "@composio/ao-plugin-agent-claude-code-verifier",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -704,7 +704,7 @@ cp -r packages/plugins/agent-claude-code packages/plugins/agent-claude-code-veri
 
 ```typescript
 import type { Agent, PluginModule } from "@composio/ao-core";
-import claudeCodePlugin from "@composio/ao-agent-claude-code";
+import claudeCodePlugin from "@composio/ao-plugin-agent-claude-code";
 
 export const manifest = {
   name: "claude-code-verifier",
@@ -730,7 +730,7 @@ export default { manifest, create } satisfies PluginModule<Agent>;
 
 ```bash
 pnpm install   # picks up the new workspace package
-pnpm --filter @composio/ao-agent-claude-code-verifier build
+pnpm --filter @composio/ao-plugin-agent-claude-code-verifier build
 pnpm typecheck
 ```
 
