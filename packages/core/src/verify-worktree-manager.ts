@@ -154,14 +154,20 @@ async function startAndProbeDevServer(
   const child = spawn(config.startCommand, {
     cwd: worktreePath,
     shell: true,
-    // "ignore" for stdin (we never write to the dev server). "pipe" for
-    // stdout/stderr so (a) the pipes stay open (preventing the child from
-    // blocking on a full buffer) and (b) future iterations can tail logs.
+    // stdio: ignore stdin, pipe stdout/stderr. We attach drain listeners below
+    // so the OS pipe buffer doesn't fill and block the child. If we ever need
+    // the dev server's log output for debugging, this is where to tee it.
     // We deliberately avoid "inherit" — that would merge the dev server's
     // output into the orchestrator's own stdout, which is noisy and makes
     // it impossible to cleanly stop the server later.
     stdio: ["ignore", "pipe", "pipe"],
   });
+
+  // Drain stdout/stderr so the child doesn't block on a full pipe buffer.
+  // Data is intentionally discarded — a future task can add a ring buffer
+  // if we need to surface last-N-lines for debugging.
+  child.stdout?.on("data", () => { /* drain */ });
+  child.stderr?.on("data", () => { /* drain */ });
 
   // Track the exit so both the early-exit race and stopDevServer() can await
   // it without re-registering listeners. Using `once()` avoids a leaked
@@ -241,10 +247,14 @@ async function stopDevServer(handle: DevServerHandle): Promise<void> {
   child.kill("SIGTERM");
 
   // Wait up to SIGTERM_GRACE_MS for the child to exit cleanly, then SIGKILL.
+  let graceTimer: NodeJS.Timeout | undefined;
   const timedOut = await Promise.race([
     exited.then(() => false),
-    new Promise<boolean>((r) => setTimeout(() => r(true), SIGTERM_GRACE_MS)),
+    new Promise<boolean>((r) => {
+      graceTimer = setTimeout(() => r(true), SIGTERM_GRACE_MS);
+    }),
   ]);
+  if (graceTimer) clearTimeout(graceTimer);
 
   if (timedOut && child.exitCode === null && child.signalCode === null) {
     child.kill("SIGKILL");
