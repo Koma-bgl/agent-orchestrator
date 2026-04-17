@@ -26,6 +26,7 @@ import {
   type MergeReadiness,
 } from "@composio/ao-core";
 import { TTLCache } from "./cache.js";
+import { filterAoVerifyComments } from "./comment-filter.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -316,7 +317,14 @@ async function fetchReviewThreadComments(pr: PRInfo): Promise<ReviewComment[]> {
       };
     } = JSON.parse(raw);
 
-    const threads = data.data.repository.pullRequest.reviewThreads.nodes;
+    // Drop ao-verify reporter comments at the earliest point so the marker
+    // never leaks into the agent-facing review stream (spec §3.8 / §6).
+    const threads = filterAoVerifyComments(
+      data.data.repository.pullRequest.reviewThreads.nodes.map((t) => ({
+        ...t,
+        body: t.comments.nodes[0]?.body ?? "",
+      })),
+    );
 
     return threads
       .filter((t) => {
@@ -359,7 +367,7 @@ async function fetchIssueComments(pr: PRInfo): Promise<ReviewComment[]> {
       `repos/${repoFlag(pr)}/issues/${pr.number}/comments?per_page=100`,
     ]);
 
-    const comments: Array<{
+    const parsed: Array<{
       id: number;
       user: { login: string } | null;
       body: string;
@@ -367,6 +375,10 @@ async function fetchIssueComments(pr: PRInfo): Promise<ReviewComment[]> {
       html_url: string;
       reactions?: Record<string, number>;
     }> = JSON.parse(raw);
+
+    // Drop ao-verify reporter comments at the earliest point so the marker
+    // never leaks into the agent-facing review stream (spec §3.8 / §6).
+    const comments = filterAoVerifyComments(parsed);
 
     const filtered = comments.filter((c) => {
       const author = c.user?.login ?? "";
@@ -884,7 +896,7 @@ function createGitHubSCM(): SCM {
               `repos/${repoFlag(pr)}/pulls/${pr.number}/comments?per_page=100`,
             ]);
 
-            const comments: Array<{
+            const parsed: Array<{
               id: number;
               user: { login: string };
               body: string;
@@ -894,6 +906,10 @@ function createGitHubSCM(): SCM {
               created_at: string;
               html_url: string;
             }> = JSON.parse(raw);
+
+            // Drop ao-verify reporter comments at the earliest point so the
+            // marker never leaks downstream (spec §3.8 / §6).
+            const comments = filterAoVerifyComments(parsed);
 
             return comments
               .filter((c) => BOT_AUTHORS.has(c.user?.login ?? ""))
