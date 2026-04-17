@@ -991,6 +991,9 @@ export interface ProjectConfig {
   /** Visual verification config for this project */
   verify?: VerifyConfig;
 
+  /** MCP-based verification config for this project */
+  mcpVerify?: McpVerifyConfig;
+
   /** Queue poller config — auto-spawn sessions from tracker issues */
   queuePoller?: QueuePollerConfig;
 

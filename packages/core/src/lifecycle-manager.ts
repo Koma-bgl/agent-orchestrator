@@ -575,9 +575,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     // do so we can observe the wiring end-to-end in dev environments.
     if (reactionKey === "verify-ui") {
       const session = await sessionManager.get(sessionId);
-      const project = config.projects[projectId] as
-        | (ProjectConfig & { mcpVerify?: McpVerifyConfig })
-        | undefined;
+      const project = config.projects[projectId];
       const cfg = project?.mcpVerify;
 
       let issue: { labels: string[] } | undefined;
@@ -1322,9 +1320,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         // handler itself is currently a log-only stub — real verification
         // lands in Task 5.4.
         if (eventType === "pr.created") {
-          const project = config.projects[session.projectId] as
-            | (ProjectConfig & { mcpVerify?: McpVerifyConfig })
-            | undefined;
+          const project = config.projects[session.projectId];
           if (project?.mcpVerify) {
             const verifyReactionConfig: ReactionConfig = {
               auto: true,
