@@ -17,19 +17,25 @@ interface McpConfig {
 }
 
 /**
- * TODO(before impl): confirm the actual MCP browser package name.
+ * Browser MCP server: `chrome-devtools-mcp` (Google).
  *
- * Spec §11 recommends Claude-in-Chrome for v1 (richer events), with
- * Playwright-MCP as the deterministic fallback. The published npm package name
- * for the browser MCP server is still unverified — this placeholder lets
- * Phase 3 land the wiring without blocking on package naming. When Task 5.4
- * wires the reaction handler, whoever lands the first real run must replace
- * `@composio/mcp-browser-placeholder` with the verified package identifier.
+ * **Attaches to a running Chrome** via the Chrome DevTools Protocol. The operator
+ * must launch Chrome with a debug port before the verifier session runs, e.g.:
+ *
+ *     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+ *       --remote-debugging-port=9222
+ *
+ * This matches the "queue of 1" model — a single long-lived Chrome window,
+ * multiple verifier sessions attach and detach. Document this prerequisite in
+ * the Phase 7 docs (Task 7.3).
+ *
+ * Alternative considered: `@playwright/mcp` spawns its own browser per session
+ * (cleaner isolation, but you can't watch it drive your real Chrome).
  */
 const VERIFIER_MCP_SERVERS: Record<string, McpServerConfig> = {
   browser: {
     command: "npx",
-    args: ["-y", "@composio/mcp-browser-placeholder"],
+    args: ["-y", "chrome-devtools-mcp"],
   },
   // Task 4.1 lands the `ao verify-login` CLI subcommand. This entry just
   // reserves the MCP server slot so Task 5.4 can spawn the verifier with the

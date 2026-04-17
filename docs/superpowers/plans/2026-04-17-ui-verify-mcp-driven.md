@@ -822,12 +822,11 @@ async preLaunchSetup(workspacePath) {
   const mcpConfig = {
     mcpServers: {
       "browser": {
-        // TODO(before impl): confirm the actual MCP browser package name.
-        // Candidates: Playwright-MCP (deterministic) or Claude-in-Chrome (richer events).
-        // Spec §11 recommends Claude-in-Chrome for v1. Verify the published npm name
-        // or binary path before committing this line.
+        // chrome-devtools-mcp (Google) attaches to a running Chrome via CDP.
+        // Prerequisite: Chrome launched with --remote-debugging-port=9222.
+        // Documented in Phase 7 Task 7.3.
         command: "npx",
-        args: ["-y", "<mcp-browser-package-name>"],
+        args: ["-y", "chrome-devtools-mcp"],
       },
       "ao-verify-login": {
         command: "ao",
