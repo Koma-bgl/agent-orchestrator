@@ -1157,11 +1157,13 @@ git commit -am "feat(scm-github): add verify-reporter with marker + status-line 
 
 Replaces the log-only stub from Task 1.4.
 
+**v1 scope (narrowed):** this reaction is single-shot — run verify once when the PR opens, post the result as a PR comment (for reviewer visibility), update the PR body status line, release resources, done. **No in-session failure dispatch. No retry. No notifier escalation. No auto-merge gate.** Phase 6 is deferred to v2; see the Phase 6 section below for what "visible artifact, not strict gate" means.
+
 **Carryover notes from Task 1.4 code review** (address or explicitly defer — don't inherit silently):
 - **Synthetic `ReactionConfig` at the enqueue site.** Task 1.4 bolted a parallel dispatch call onto `pr.created` with an inline `{ auto: true, action: "notify" }` config. Decide: (a) promote `"verify-ui"` into the normal `eventToReactionKey` + `config.reactions` pipeline so users can override it, or (b) keep `mcpVerify` as its own config surface and document the rationale. If (a), consider extending `eventToReactionKey` to return an array or adding `eventToReactionKeys`.
-- **`action: "notify"` is a placeholder.** The real reaction spawns a sub-agent, which is closer to `send-to-agent`. Extend the `action` union (e.g. add `"verify-ui"`) or pick a reused value consciously.
-- **Retry/escalation semantics.** The stub returns before `reactionTrackers` escalation logic, but `reactionTrackers` still accumulates `attempts` on every poll. Either use the standard escalation machinery for `verify-ui` (move the early return) OR maintain `session.verifyAttempts` independently (per plan Task 6.2) and reset/ignore the `reactionTrackers` entry.
-- **Parallelism.** Once verify-ui does real work, consider whether it should run in parallel with the primary `pr-created` reaction (currently awaited sequentially).
+- **~~`action: "notify"` placeholder.~~** **Moot for v1.** No notifier call in the v1 reaction — the PR comment IS the output. Revisit only if Phase 6 escalation is un-deferred.
+- **~~Retry/escalation semantics.~~** **Moot for v1.** Single-shot reaction — `reactionTrackers` escalation is irrelevant. `session.verifyAttempts` still gets incremented per run so a future v2 can use it, but nothing reads it in v1.
+- **Parallelism.** Low-stakes for v1 (single reaction per PR open) but still worth considering: should verify-ui run in parallel with the primary `pr-created` reaction? Currently awaited sequentially.
 - **Grep target.** Both stub sites are fenced with `// --- STUB: Task 1.4 ...` / `// --- end STUB ---` — find them via `grep -n "STUB: Task 1.4" packages/core/src/lifecycle-manager.ts`.
 
 **Files:**
@@ -1229,17 +1231,12 @@ case "verify-ui": {
     session.verifyStatus = result.verdict === "pass" ? "passed" : "failed";
     await persistSession(session);
 
-    // Post PR comment + update body status line
+    // Post PR comment + update body status line. The PR comment IS the user-facing
+    // artifact for v1 — no in-session failure dispatch, no notifier escalation,
+    // no retry loop. Reviewers read the comment and decide to merge.
     await postVerifierComment(octokit, { owner, repo, prNumber: session.prNumber!, result });
     const prBody = await scm.getPrBody(session.prNumber!);
     await scm.updatePrBody(session.prNumber!, updatePrBodyStatusLine(prBody, `${result.verdict === "pass" ? "✅" : "❌"} Verified by ao at ${new Date().toISOString()}`));
-
-    if (result.verdict === "fail" && (session.verifyAttempts ?? 0) < cfg!.maxRetries) {
-      // Dispatch in-session message to the implementing agent (NOT a PR comment)
-      await sessionManager.sendMessage(session.id, `UI verification failed (attempt ${session.verifyAttempts}/${cfg!.maxRetries}):\n\n${result.summary}\n\nSee PR comment for details. Fix and push.`);
-    } else if (result.verdict === "fail") {
-      await notifier.notify({ title: "UI verification failed", body: result.summary, url: session.prUrl });
-    }
   } catch (err) {
     session.verifyStatus = "failed";
     await persistSession(session);
@@ -1273,93 +1270,17 @@ git commit -am "feat(lifecycle): implement verify-ui reaction end-to-end"
 
 ---
 
-## Phase 6 — Auto-Merge Gate + Retry-on-Push + Notifier Escalation
+## Phase 6 — DEFERRED to v2
 
-### Task 6.1: Gate auto-merge on `verifyStatus`
+**v1 scope decision:** UI verification in v1 is a **visible artifact**, not a strict gate or retry loop. Verify runs once when a PR opens for a `ui-verify`-labeled ticket, posts a PR comment with screenshots and verdict, and that's it. Reviewers use the comment as evidence when deciding whether to merge. The original Phase 6 (auto-merge gate, retry-on-push, notifier escalation) was designed for a richer gating model that proved unnecessary for v1 usage patterns (UI work is typically complete at PR-open time; review comments rarely re-touch UI).
 
-**Files:**
-- Modify: `packages/core/src/lifecycle-manager.ts` (auto-merge logic)
+**Deferred work (for a future v2 if/when needed):**
 
-- [ ] **Step 1: Failing test**
+1. **Auto-merge gate** — consult `session.verifyStatus` before auto-merging; block if `pending` or `failed`. The `verifyStatus` field still gets written by Task 5.4 so this is just "start reading it."
+2. **Re-run on push (broader than the original Task 6.2 spec)** — re-run verify on ANY push to a PR with `ui-verify` label, not just after failure. Reset `verifyAttempts=0` on pass so consecutive-failure budget starts fresh. See session-level discussion of why the narrower "re-run only after failure" design missed the `pass → push → stale verify` case.
+3. **Notifier escalation** — call `notifier.notify()` when `verifyAttempts >= maxRetries` after consecutive failures.
 
-```typescript
-it("auto-merge blocks when verifyStatus is pending or failed", async () => { /* ... */ });
-it("auto-merge proceeds when verifyStatus is passed or not-required", async () => { /* ... */ });
-```
-
-- [ ] **Step 2: Run, fail**
-
-- [ ] **Step 3: Extend the auto-merge gate**
-
-In the auto-merge branch, add:
-```typescript
-if (session.verifyStatus && session.verifyStatus !== "passed" && session.verifyStatus !== "not-required") {
-  logger.info(`auto-merge blocked: verifyStatus=${session.verifyStatus}`);
-  return;
-}
-```
-
-- [ ] **Step 4: Pass**
-
-- [ ] **Step 5: Commit**
-
-```bash
-git commit -am "feat(lifecycle): gate auto-merge on verifyStatus"
-```
-
-### Task 6.2: Re-run verify on new push after failure
-
-**Files:**
-- Modify: `packages/core/src/lifecycle-manager.ts` (push-to-pr event handler)
-
-- [ ] **Step 1: Failing test**
-
-```typescript
-it("enqueues verify-ui again when a push lands on a PR whose last verifyStatus was failed", async () => { /* ... */ });
-it("does NOT re-enqueue when attempts == maxRetries", async () => { /* ... */ });
-```
-
-- [ ] **Step 2: Run, fail**
-
-- [ ] **Step 3: Implement**
-
-On the `push_detected` / PR update event, if `session.verifyStatus === "failed"` and `session.verifyAttempts < cfg.maxRetries`:
-
-1. **Reset `session.verifyStatus` to `"pending"`** and persist (so the auto-merge gate does not see a stale `failed` while the re-run is in flight, and any dashboard polling reflects the fresh run).
-2. Enqueue `"verify-ui"` again.
-
-```typescript
-if (session.verifyStatus === "failed" && (session.verifyAttempts ?? 0) < cfg.maxRetries) {
-  session.verifyStatus = "pending";
-  await persistSession(session);
-  await enqueueReaction(session, "verify-ui");
-}
-```
-
-- [ ] **Step 4: Pass**
-
-- [ ] **Step 5: Commit**
-
-```bash
-git commit -am "feat(lifecycle): re-run verify on push after failure"
-```
-
-### Task 6.3: Notifier escalation on final failure
-
-**Files:**
-- Modify: `packages/core/src/lifecycle-manager.ts` (inside the verify-ui reaction's fail branch)
-
-- [ ] **Step 1: Failing test asserting notifier called when attempts == maxRetries**
-
-- [ ] **Step 2: Wire**
-
-Already stubbed in Task 5.4. Verify the call to `notifier.notify()` happens when `session.verifyAttempts >= cfg.maxRetries`.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git commit -am "feat(lifecycle): escalate UI verify failure to notifier after maxRetries"
-```
+**Implication for Task 5.4:** simplify. Task 5.4 MUST NOT dispatch in-session failure messages to the implementing agent (no retry loop means no "fix this" nudge — the PR comment is the artifact). Task 5.4 MUST still write `session.verifyStatus` and `session.verifyAttempts` so the deferred v2 work has the fields it needs. See Task 5.4's carryover notes, updated to reflect the narrower v1 scope.
 
 ---
 
