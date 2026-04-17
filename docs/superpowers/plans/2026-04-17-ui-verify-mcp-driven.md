@@ -1154,6 +1154,13 @@ git commit -am "feat(scm-github): add verify-reporter with marker + status-line 
 
 Replaces the log-only stub from Task 1.4.
 
+**Carryover notes from Task 1.4 code review** (address or explicitly defer — don't inherit silently):
+- **Synthetic `ReactionConfig` at the enqueue site.** Task 1.4 bolted a parallel dispatch call onto `pr.created` with an inline `{ auto: true, action: "notify" }` config. Decide: (a) promote `"verify-ui"` into the normal `eventToReactionKey` + `config.reactions` pipeline so users can override it, or (b) keep `mcpVerify` as its own config surface and document the rationale. If (a), consider extending `eventToReactionKey` to return an array or adding `eventToReactionKeys`.
+- **`action: "notify"` is a placeholder.** The real reaction spawns a sub-agent, which is closer to `send-to-agent`. Extend the `action` union (e.g. add `"verify-ui"`) or pick a reused value consciously.
+- **Retry/escalation semantics.** The stub returns before `reactionTrackers` escalation logic, but `reactionTrackers` still accumulates `attempts` on every poll. Either use the standard escalation machinery for `verify-ui` (move the early return) OR maintain `session.verifyAttempts` independently (per plan Task 6.2) and reset/ignore the `reactionTrackers` entry.
+- **Parallelism.** Once verify-ui does real work, consider whether it should run in parallel with the primary `pr-created` reaction (currently awaited sequentially).
+- **Grep target.** Both stub sites are fenced with `// --- STUB: Task 1.4 ...` / `// --- end STUB ---` — find them via `grep -n "STUB: Task 1.4" packages/core/src/lifecycle-manager.ts`.
+
 **Files:**
 - Modify: `packages/core/src/lifecycle-manager.ts`
 
