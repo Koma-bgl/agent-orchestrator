@@ -35,8 +35,6 @@ import {
   type Session,
   type EventPriority,
   type Workspace,
-  type McpVerifyConfig,
-  type ProjectConfig,
 } from "./types.js";
 import { updateMetadata, readMetadataRaw } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";

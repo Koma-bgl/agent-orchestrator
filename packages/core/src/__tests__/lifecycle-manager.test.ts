@@ -20,7 +20,6 @@ import type {
   Tracker,
   Issue,
   McpVerifyConfig,
-  ProjectConfig,
 } from "../types.js";
 
 let tmpDir: string;
@@ -1116,12 +1115,8 @@ describe("verify-ui reaction (Task 1.4 stub)", () => {
       }),
     };
 
-    // Attach mcpVerify to the project config via an intersection cast.
-    // ProjectConfig interface doesn't declare mcpVerify yet (Task 1.1 only
-    // added it to the Zod schema), so we widen at the attachment site.
-    const project = config.projects["my-app"] as
-      | (ProjectConfig & { mcpVerify?: McpVerifyConfig; tracker?: unknown })
-      | undefined;
+    // Retrieve the project config (may be undefined if not in config.projects)
+    const project = config.projects["my-app"];
     if (project) {
       project.mcpVerify = mcpVerify;
       project.tracker = { plugin: "mock-tracker" };
