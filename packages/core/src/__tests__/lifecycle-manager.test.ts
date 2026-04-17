@@ -17,6 +17,10 @@ import type {
   Notifier,
   ActivityState,
   PRInfo,
+  Tracker,
+  Issue,
+  McpVerifyConfig,
+  ProjectConfig,
 } from "../types.js";
 
 let tmpDir: string;
@@ -1031,6 +1035,182 @@ describe("approved-behind reaction guards", () => {
     expect(lm.getStates().get("app-1")).not.toBe("merge_conflicts");
     // Should NOT send any rebase instruction
     expect(mockSessionManager.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("verify-ui reaction (Task 1.4 stub)", () => {
+  function makeMcpVerifyConfig(overrides: Partial<McpVerifyConfig> = {}): McpVerifyConfig {
+    return {
+      enabled: true,
+      triggerLabel: "ui-verify",
+      baseUrl: "http://localhost:3100",
+      verifyWorktreeDir: "/tmp/verify-wt",
+      startCommand: "pnpm dev",
+      readyProbe: { url: "http://localhost:3100", timeoutSec: 30 },
+      accounts: {},
+      maxRetries: 2,
+      timeoutSec: 300,
+      uiVerifierPersona: "ui-verifier",
+      ...overrides,
+    };
+  }
+
+  function makeIssue(overrides: Partial<Issue> = {}): Issue {
+    return {
+      id: "ISSUE-1",
+      title: "Test issue",
+      description: "",
+      url: "https://tracker/ISSUE-1",
+      state: "in_progress",
+      labels: [],
+      ...overrides,
+    };
+  }
+
+  function makePrOpenSCM(): SCM {
+    return {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("open"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn().mockResolvedValue("passing"),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn().mockResolvedValue("none"),
+      getPendingComments: vi.fn().mockResolvedValue([]),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn().mockResolvedValue({
+        mergeable: false,
+        ciPassing: true,
+        approved: false,
+        noConflicts: true,
+        blockers: [],
+      }),
+    };
+  }
+
+  function setupLifecycle(
+    mcpVerify: McpVerifyConfig | undefined,
+    issue: Issue,
+  ): { lm: ReturnType<typeof createLifecycleManager>; consoleSpy: ReturnType<typeof vi.spyOn>; getIssueSpy: ReturnType<typeof vi.fn> } {
+    const mockSCM = makePrOpenSCM();
+    const getIssueSpy = vi.fn().mockResolvedValue(issue);
+    const mockTracker: Tracker = {
+      name: "mock-tracker",
+      getIssue: getIssueSpy,
+      isCompleted: vi.fn(),
+      issueUrl: vi.fn(),
+      branchName: vi.fn(),
+      generatePrompt: vi.fn(),
+    };
+
+    const registryWithPlugins: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return mockSCM;
+        if (slot === "tracker") return mockTracker;
+        return null;
+      }),
+    };
+
+    // Attach mcpVerify to the project config via an intersection cast.
+    // ProjectConfig interface doesn't declare mcpVerify yet (Task 1.1 only
+    // added it to the Zod schema), so we widen at the attachment site.
+    const project = config.projects["my-app"] as
+      | (ProjectConfig & { mcpVerify?: McpVerifyConfig; tracker?: unknown })
+      | undefined;
+    if (project) {
+      project.mcpVerify = mcpVerify;
+      project.tracker = { plugin: "mock-tracker" };
+    }
+
+    // Session starts in "working" and has a PR — SCM mocks above drive
+    // determineStatus() to return "pr_open", producing a working → pr_open
+    // transition which emits the pr.created event.
+    const session = makeSession({
+      status: "working",
+      issueId: "ISSUE-1",
+      pr: makePR(),
+    });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+    });
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const lm = createLifecycleManager({
+      config,
+      registry: registryWithPlugins,
+      sessionManager: mockSessionManager,
+    });
+
+    return { lm, consoleSpy, getIssueSpy };
+  }
+
+  it("enqueues verify-ui and logs 'would verify' when issue has the trigger label", async () => {
+    const mcpVerify = makeMcpVerifyConfig({ triggerLabel: "ui-verify" });
+    const issue = makeIssue({ labels: ["ui-verify", "frontend"] });
+    const { lm, consoleSpy, getIssueSpy } = setupLifecycle(mcpVerify, issue);
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("pr_open");
+    expect(getIssueSpy).toHaveBeenCalledWith("ISSUE-1", expect.any(Object));
+
+    const calls = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    const wouldVerify = calls.find((m: string) => m.includes("verify-ui: would verify"));
+    expect(wouldVerify).toBeDefined();
+    expect(wouldVerify).toContain("session=app-1");
+
+    consoleSpy.mockRestore();
+  });
+
+  it("enqueues verify-ui but logs 'skipped' when issue lacks the trigger label", async () => {
+    const mcpVerify = makeMcpVerifyConfig({ triggerLabel: "ui-verify" });
+    const issue = makeIssue({ labels: ["backend"] });
+    const { lm, consoleSpy, getIssueSpy } = setupLifecycle(mcpVerify, issue);
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("pr_open");
+    expect(getIssueSpy).toHaveBeenCalledWith("ISSUE-1", expect.any(Object));
+
+    const calls = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    const skipped = calls.find((m: string) => m.includes("verify-ui: skipped (not eligible)"));
+    expect(skipped).toBeDefined();
+    expect(skipped).toContain("session=app-1");
+
+    // And must NOT log the "would verify" line
+    const wouldVerify = calls.find((m: string) => m.includes("verify-ui: would verify"));
+    expect(wouldVerify).toBeUndefined();
+
+    consoleSpy.mockRestore();
+  });
+
+  it("does not enqueue verify-ui when project has no mcpVerify config", async () => {
+    const issue = makeIssue({ labels: ["ui-verify"] });
+    const { lm, consoleSpy, getIssueSpy } = setupLifecycle(undefined, issue);
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("pr_open");
+    // No mcpVerify → verify-ui reaction is not even enqueued, so getIssue
+    // (which only runs inside the verify-ui handler) must not fire.
+    expect(getIssueSpy).not.toHaveBeenCalled();
+
+    const calls = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    const anyVerifyLog = calls.find((m: string) => m.includes("verify-ui"));
+    expect(anyVerifyLog).toBeUndefined();
+
+    consoleSpy.mockRestore();
   });
 });
 

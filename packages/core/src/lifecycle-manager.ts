@@ -35,11 +35,13 @@ import {
   type Session,
   type EventPriority,
   type Workspace,
-  type ProjectConfig as _ProjectConfig,
+  type McpVerifyConfig,
+  type ProjectConfig,
 } from "./types.js";
 import { updateMetadata, readMetadataRaw } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";
 import { createQueuePoller } from "./queue-poller.js";
+import { isEligibleForVerify } from "./verify-eligibility.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -565,6 +567,50 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
     // Increment attempts before checking escalation
     tracker.attempts++;
+
+    // --- STUB: Task 1.4 (UI Verify MCP plan) ---
+    // Log-only plumbing for the verify-ui reaction. The real implementation
+    // (worktree acquire, agent spawn, verdict handling, PR comment) lands in
+    // Task 5.4. For now: consult isEligibleForVerify and log what we *would*
+    // do so we can observe the wiring end-to-end in dev environments.
+    if (reactionKey === "verify-ui") {
+      const session = await sessionManager.get(sessionId);
+      const project = config.projects[projectId] as
+        | (ProjectConfig & { mcpVerify?: McpVerifyConfig })
+        | undefined;
+      const cfg = project?.mcpVerify;
+
+      let issue: { labels: string[] } | undefined;
+      if (session?.issueId && project?.tracker) {
+        const trackerPlugin = registry.get<Tracker>("tracker", project.tracker.plugin);
+        if (trackerPlugin) {
+          try {
+            issue = await trackerPlugin.getIssue(session.issueId, project);
+          } catch (err: unknown) {
+            console.warn(
+              `[lifecycle] verify-ui: getIssue failed for ${session.issueId}:`,
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        }
+      }
+
+      if (!isEligibleForVerify(cfg, issue)) {
+        console.log(`[lifecycle] verify-ui: skipped (not eligible) session=${sessionId}`);
+      } else {
+        console.log(
+          `[lifecycle] verify-ui: would verify session=${sessionId} pr=${session?.pr?.url ?? "?"}`,
+        );
+      }
+
+      return {
+        reactionType: reactionKey,
+        success: true,
+        action: reactionConfig.action ?? "notify",
+        escalated: false,
+      };
+    }
+    // --- end STUB ---
 
     // Check if we should escalate
     const maxRetries = reactionConfig.retries ?? Infinity;
@@ -1268,6 +1314,31 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             }
           }
         }
+
+        // --- STUB: Task 1.4 (UI Verify MCP plan) ---
+        // Additionally enqueue the "verify-ui" reaction on pr.created when the
+        // project has an mcpVerify config. This runs in addition to whatever
+        // the primary reactionKey (e.g. "pr-created") already does. The
+        // handler itself is currently a log-only stub — real verification
+        // lands in Task 5.4.
+        if (eventType === "pr.created") {
+          const project = config.projects[session.projectId] as
+            | (ProjectConfig & { mcpVerify?: McpVerifyConfig })
+            | undefined;
+          if (project?.mcpVerify) {
+            const verifyReactionConfig: ReactionConfig = {
+              auto: true,
+              action: "notify",
+            };
+            await executeReaction(
+              session.id,
+              session.projectId,
+              "verify-ui",
+              verifyReactionConfig,
+            );
+          }
+        }
+        // --- end STUB ---
 
         // For significant transitions not already notified by a reaction, notify humans
         if (!reactionHandledNotify) {
