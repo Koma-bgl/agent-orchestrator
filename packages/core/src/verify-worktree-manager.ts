@@ -15,6 +15,8 @@
  */
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { McpVerifyConfig } from "./types.js";
@@ -27,10 +29,19 @@ import type { McpVerifyConfig } from "./types.js";
  *
  * Rejection messages include the command + args (for triage) and flag
  * timeout failures explicitly (execFile signals timeout via SIGTERM kill).
+ *
+ * The optional `opts.cwd` is forwarded to execFile — required for commands
+ * that must run inside the verify worktree (e.g. `pnpm install`) rather
+ * than inheriting the orchestrator's cwd.
  */
-function run(cmd: string, args: string[], timeoutMs: number): Promise<string> {
+function run(
+  cmd: string,
+  args: string[],
+  timeoutMs: number,
+  opts?: { cwd?: string },
+): Promise<string> {
   return new Promise((resolveRun, rejectRun) => {
-    execFile(cmd, args, { timeout: timeoutMs }, (error, stdout, stderr) => {
+    execFile(cmd, args, { timeout: timeoutMs, cwd: opts?.cwd }, (error, stdout, stderr) => {
       if (error) {
         const ctx = `${cmd} ${args.join(" ")}`;
         const nodeErr = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
@@ -43,6 +54,42 @@ function run(cmd: string, args: string[], timeoutMs: number): Promise<string> {
       resolveRun(stdout);
     });
   });
+}
+
+/**
+ * Module-level cache of the last successfully-installed lockfile hash per
+ * projectId. Used to gate `pnpm install` so it only runs when the lockfile
+ * actually changed since the last acquire for that project.
+ *
+ * This cache is intentionally in-process only; it's reset on orchestrator
+ * restart, at which point the next acquire will run `pnpm install` once to
+ * reseed the cache. That is the correct behavior — we cannot safely assume
+ * the worktree's node_modules match the lockfile across restarts.
+ */
+const installedHashCache = new Map<string, string>();
+
+/**
+ * Test-only hook to clear the module-level install-hash cache between tests.
+ * The leading `__` signals "not part of the public API" — production code
+ * must not call this.
+ */
+export function __clearInstalledHashCacheForTests(): void {
+  installedHashCache.clear();
+}
+
+/**
+ * Compute the sha256 hash of `pnpm-lock.yaml` inside the worktree. Returns
+ * an empty string if the file is missing — callers treat that as "force
+ * install" since we can't prove node_modules is in sync with a lockfile
+ * that doesn't exist.
+ */
+function computeLockfileHash(worktreePath: string): string {
+  try {
+    const lockPath = resolve(worktreePath, "pnpm-lock.yaml");
+    return createHash("sha256").update(readFileSync(lockPath)).digest("hex");
+  } catch {
+    return "";
+  }
 }
 
 export interface VerifyWorktreeHandle {
@@ -137,6 +184,20 @@ export function createVerifyWorktreeManager(deps: Deps): VerifyWorktreeManager {
         // Fetch + checkout — errors here are real and should propagate.
         await run("git", ["-C", path, "fetch", "origin"], 60_000);
         await run("git", ["-C", path, "checkout", branch], 30_000);
+
+        // Lockfile-gated install: run `pnpm install` only when the lockfile
+        // hash differs from what we last installed for this project. A missing
+        // lockfile (hash === "") forces install — we don't cache "" so a
+        // subsequent acquire that still lacks a lockfile will re-install,
+        // which is the conservative choice.
+        const currentHash = computeLockfileHash(path);
+        const cachedHash = installedHashCache.get(projectId);
+        if (currentHash === "" || cachedHash !== currentHash) {
+          await run("pnpm", ["install"], 300_000, { cwd: path });
+          if (currentHash !== "") {
+            installedHashCache.set(projectId, currentHash);
+          }
+        }
 
         return {
           path,

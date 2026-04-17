@@ -9,6 +9,16 @@ vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }));
 
+// Mock node:fs — readFileSync is used for lockfile hashing. We only mock the
+// functions we reference in production code under test; this keeps other
+// modules (which import readFileSync from node:fs at module load time) from
+// breaking. At runtime the production module only uses readFileSync, so a
+// partial mock is sufficient here.
+const readFileSyncMock = vi.fn();
+vi.mock("node:fs", () => ({
+  readFileSync: (p: string) => readFileSyncMock(p),
+}));
+
 const mockExecFile = vi.mocked(childProcess.execFile);
 
 type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
@@ -70,6 +80,10 @@ function isCheckoutCall(call: ExecFileCall): boolean {
   return call.cmd === "git" && call.args.includes("checkout");
 }
 
+function isPnpmInstallCall(call: ExecFileCall): boolean {
+  return call.cmd === "pnpm" && call.args.includes("install");
+}
+
 const baseConfig: McpVerifyConfig = {
   enabled: true,
   triggerLabel: "ui-verify",
@@ -83,8 +97,17 @@ const baseConfig: McpVerifyConfig = {
   uiVerifierPersona: "ui-verifier",
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
+  // Default: any readFileSync call returns the same lockfile content. Individual
+  // tests override with mockReturnValueOnce / mockImplementation for differing
+  // behavior (missing file, changed content, etc.).
+  readFileSyncMock.mockReturnValue(Buffer.from("lockfile-content-v1"));
+  // Clear the module-level install hash cache so tests don't see each other's
+  // state. The cache is process-global by design (it models "what this process
+  // last installed"), so tests must reset it explicitly.
+  const { __clearInstalledHashCacheForTests } = await import("../verify-worktree-manager.js");
+  __clearInstalledHashCacheForTests();
 });
 
 describe("createVerifyWorktreeManager", () => {
@@ -430,6 +453,168 @@ describe("createVerifyWorktreeManager", () => {
         expect(handle.path).toBe(resolve(homedir(), "x", "my-app"));
         await handle.release();
       }
+    });
+  });
+
+  describe("lockfile-gated install", () => {
+    // Helper: configure execFile mock to answer all git commands happily and
+    // also record pnpm install calls. Returns the shared `calls` array.
+    function mockHappyGitAndPnpm(): ExecFileCall[] {
+      const calls: ExecFileCall[] = [];
+      mockGitCommands(
+        [
+          { match: isWorktreeListCall, respond: () => ({ stdout: "" }) },
+          { match: isWorktreeAddCall, respond: () => ({ stdout: "" }) },
+          { match: isFetchCall, respond: () => ({ stdout: "" }) },
+          { match: isCheckoutCall, respond: () => ({ stdout: "" }) },
+          { match: isPnpmInstallCall, respond: () => ({ stdout: "" }) },
+        ],
+        calls,
+      );
+      return calls;
+    }
+
+    it("runs pnpm install on first acquire when lockfile exists", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      const calls = mockHappyGitAndPnpm();
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: baseConfig,
+      });
+
+      const handle = await mgr.acquire("my-app", "feature-branch");
+
+      const installCalls = calls.filter(isPnpmInstallCall);
+      expect(installCalls).toHaveLength(1);
+
+      await handle.release();
+    });
+
+    it("skips pnpm install on second acquire when lockfile hash unchanged", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      const calls = mockHappyGitAndPnpm();
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: baseConfig,
+      });
+
+      // First acquire — install runs.
+      const first = await mgr.acquire("my-app", "feature-branch");
+      await first.release();
+
+      // Second acquire — lockfile unchanged (default mock), install must NOT run again.
+      const second = await mgr.acquire("my-app", "other-branch");
+      await second.release();
+
+      const installCalls = calls.filter(isPnpmInstallCall);
+      expect(installCalls).toHaveLength(1);
+    });
+
+    it("runs pnpm install again when lockfile hash changes between acquires", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      const calls = mockHappyGitAndPnpm();
+
+      // First call: v1. Second call: v2.
+      readFileSyncMock.mockReset();
+      readFileSyncMock
+        .mockReturnValueOnce(Buffer.from("lockfile-content-v1"))
+        .mockReturnValueOnce(Buffer.from("lockfile-content-v2"));
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: baseConfig,
+      });
+
+      const first = await mgr.acquire("my-app", "feature-branch");
+      await first.release();
+
+      const second = await mgr.acquire("my-app", "other-branch");
+      await second.release();
+
+      const installCalls = calls.filter(isPnpmInstallCall);
+      expect(installCalls).toHaveLength(2);
+    });
+
+    it("forces install when pnpm-lock.yaml is missing (ENOENT)", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      const calls = mockHappyGitAndPnpm();
+
+      readFileSyncMock.mockReset();
+      readFileSyncMock.mockImplementation(() => {
+        const err = new Error("ENOENT: no such file or directory") as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      });
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: baseConfig,
+      });
+
+      const handle = await mgr.acquire("my-app", "feature-branch");
+
+      const installCalls = calls.filter(isPnpmInstallCall);
+      expect(installCalls).toHaveLength(1);
+
+      await handle.release();
+    });
+
+    it("install cache is keyed by projectId (project-a install does not satisfy project-b)", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      const calls = mockHappyGitAndPnpm();
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/shared",
+        config: baseConfig,
+      });
+
+      // project-a, first acquire → install runs.
+      const a1 = await mgr.acquire("project-a", "main");
+      await a1.release();
+
+      // project-b, first acquire → install must run again (different cache key).
+      const b1 = await mgr.acquire("project-b", "main");
+      await b1.release();
+
+      // project-a, second acquire → cache hit, install must NOT run.
+      const a2 = await mgr.acquire("project-a", "main");
+      await a2.release();
+
+      const installCalls = calls.filter(isPnpmInstallCall);
+      expect(installCalls).toHaveLength(2);
+    });
+
+    it("runs pnpm install in the worktree path (cwd)", async () => {
+      const { createVerifyWorktreeManager } = await import("../verify-worktree-manager.js");
+      const calls: ExecFileCall[] = [];
+      const capturedOpts: Array<{ cwd?: string; timeout?: number }> = [];
+      mockExecFile.mockImplementation((cmd, args, opts, callback) => {
+        const call: ExecFileCall = {
+          cmd: cmd as string,
+          args: (args as string[]) ?? [],
+        };
+        calls.push(call);
+        if (call.cmd === "pnpm" && call.args.includes("install")) {
+          capturedOpts.push(opts as { cwd?: string; timeout?: number });
+        }
+        (callback as ExecFileCallback)(null, "", "");
+        return {} as ReturnType<typeof childProcess.execFile>;
+      });
+
+      const mgr = createVerifyWorktreeManager({
+        projectPath: "/repo/my-app",
+        config: baseConfig,
+      });
+
+      const handle = await mgr.acquire("my-app", "feature-branch");
+
+      const expectedWorktreePath = resolve("/tmp/verify-worktrees", "my-app");
+      expect(capturedOpts).toHaveLength(1);
+      expect(capturedOpts[0]?.cwd).toBe(expectedWorktreePath);
+
+      await handle.release();
     });
   });
 
