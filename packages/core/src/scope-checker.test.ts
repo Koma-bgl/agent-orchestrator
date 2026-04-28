@@ -76,4 +76,26 @@ describe("checkScope", () => {
       allowed: ["src/sports/**"],
     })).toBeNull();
   });
+
+  it("alwaysDeny wins when file is also out-of-scope (precedence pin)", () => {
+    const v = checkScope({
+      changedFiles: [".github/workflows/ci.yml"],
+      allowed: ["src/sports/**"],
+      alwaysDeny: ["**/.github/**"],
+    });
+    expect(v?.reason).toBe("always-denied");
+    expect(v?.offending).toEqual([".github/workflows/ci.yml"]);
+  });
+
+  it("too-many-files wins over too-many-lines when both exceeded", () => {
+    const files = Array.from({ length: 60 }, (_, i) => `src/sports/f${i}.ts`);
+    const v = checkScope({
+      changedFiles: files,
+      allowed: ["src/sports/**"],
+      maxFiles: 50,
+      maxLines: 100,
+      totalLines: 5000,
+    });
+    expect(v?.reason).toBe("too-many-files");
+  });
 });

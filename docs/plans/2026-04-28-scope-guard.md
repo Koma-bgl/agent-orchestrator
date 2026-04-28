@@ -400,14 +400,22 @@ export function checkScope(input: CheckScopeInput): ScopeViolation | null {
 
   if (allowed.length === 0) return null; // disabled
 
+  // IMPORTANT: use the array-filter form `micromatch(files, patterns)`, NOT
+  // `micromatch.isMatch(file, patterns)`. The latter evaluates each pattern
+  // independently against a single file and does not compose `!negation`
+  // patterns correctly (a positive followed by a negation gets ignored).
+  // The array form applies all patterns as a pipeline (positives include,
+  // negations exclude), which is what we want.
+
   if (alwaysDeny && alwaysDeny.length > 0) {
-    const denied = changedFiles.filter((f) => micromatch.isMatch(f, alwaysDeny));
+    const denied = micromatch(changedFiles, alwaysDeny);
     if (denied.length > 0) {
       return { offending: denied, allowed, reason: "always-denied" };
     }
   }
 
-  const offending = changedFiles.filter((f) => !micromatch.isMatch(f, allowed));
+  const matchedSet = new Set(micromatch(changedFiles, allowed));
+  const offending = changedFiles.filter((f) => !matchedSet.has(f));
   if (offending.length > 0) {
     return { offending, allowed, reason: "out-of-scope-files" };
   }
