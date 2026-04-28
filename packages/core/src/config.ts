@@ -124,6 +124,14 @@ const WorktreeCleanupConfigSchema = z.object({
   delayAfterMerge: z.union([z.string(), z.number()]).default("1d"),
 });
 
+const ScopeConfigSchema = z.object({
+  defaultAllow: z.array(z.string()).optional(),
+  alwaysDeny: z.array(z.string()).optional(),
+  onViolation: z.enum(["block", "warn", "ask-agent-to-revert"]),
+  maxFiles: z.number().int().positive().optional(),
+  maxLines: z.number().int().positive().optional(),
+});
+
 const ProjectConfigSchema = z.object({
   name: z.string().optional(),
   repo: z.string(),
@@ -147,6 +155,7 @@ const ProjectConfigSchema = z.object({
   agentRulesFile: z.string().optional(),
   orchestratorRules: z.string().optional(),
   verify: VerifyConfigSchema.optional(),
+  scope: ScopeConfigSchema.optional(),
   queuePoller: QueuePollerConfigSchema.optional(),
   worktreeCleanup: WorktreeCleanupConfigSchema.optional(),
 });

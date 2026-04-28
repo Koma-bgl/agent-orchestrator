@@ -338,6 +338,45 @@ describe("Config Schema Validation", () => {
   });
 });
 
+describe("ScopeConfig validation", () => {
+  it("accepts a valid scope block", () => {
+    const config = {
+      projects: {
+        app: {
+          path: "/tmp/x",
+          repo: "foo/bar",
+          defaultBranch: "main",
+          scope: {
+            defaultAllow: ["src/**"],
+            alwaysDeny: ["**/.github/**"],
+            onViolation: "ask-agent-to-revert",
+            maxFiles: 50,
+          },
+        },
+      },
+    };
+
+    expect(() => validateConfig(config)).not.toThrow();
+  });
+
+  it("rejects unknown onViolation value", () => {
+    const config = {
+      projects: {
+        app: {
+          path: "/tmp/x",
+          repo: "foo/bar",
+          defaultBranch: "main",
+          scope: {
+            onViolation: "nuke",
+          },
+        },
+      },
+    };
+
+    expect(() => validateConfig(config)).toThrow(/onViolation/);
+  });
+});
+
 describe("Config Defaults", () => {
   it("applies default session prefix from project ID", () => {
     const config = {
