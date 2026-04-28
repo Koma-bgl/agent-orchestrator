@@ -4,12 +4,19 @@
 
 **Goal:** Prevent agents from making changes outside the ticket's stated scope. Primary defense: a new `ao scope-check` CLI command the agent runs **before** `gh pr create` — it exits non-zero on violation and lists offending files, forcing the agent to revert before opening a PR. Safety net: an orchestrator-side post-PR check that catches cases where the agent skipped the pre-check or force-pushed out-of-scope changes; violations fire a `pr.scope_violation` event that `send-to-agent` (with retries + human escalation) handles.
 
-**Architecture:** Two enforcement layers:
+**Architecture:** Two enforcement layers, scope sourced from the agent itself (skill-driven):
 
-1. **Pre-PR (primary, agent-driven):** `ao scope-check` reads scope from a `.ao/scope` file written into the workspace at spawn, runs `git diff --name-only $(git merge-base HEAD <base>)..HEAD`, and calls `checkScope()`. Exit non-zero ⇒ agent must revert. Mirrors the existing `ao verify` pattern.
+1. **Pre-PR (primary, agent-driven):** the agent reads the ticket, declares its scope via `ao scope set "src/sports/**, !src/sports/apis/**"`, then runs `ao scope-check` before `gh pr create`. The CLI reads `metadata.scopeGlobs` (looked up by matching `process.cwd()` to a session's `workspacePath`), runs `git diff --name-only $(git merge-base HEAD <base>)..HEAD`, calls `checkScope()`. Exit non-zero ⇒ agent must revert.
 2. **Post-PR (safety net, orchestrator-side):** lifecycle manager runs the same `checkScope()` on every PR poll using `SCM.getChangedFiles()`, idempotent on PR HEAD SHA. Violations emit `pr.scope_violation` → existing reaction system (`send-to-agent`, retries: 2, escalateAfter: 30m).
 
-Scope is sourced from a `<!-- ao-scope: globA, globB -->` marker in the issue body (parsed by tracker plugins into `Issue.scope`), falling back to a per-project `scope.defaultAllow`. Resolved scope is persisted to `metadata.scopeGlobs` and `<workspace>/.ao/scope` at spawn. `BASE_AGENT_PROMPT` is strengthened with scope-discipline rules and correction-handling rules (re-verify, not defend) — and instructs the agent to run `ao scope-check` before `gh pr create`.
+**Single source of truth:** scope lives in session metadata only (`metadata.scopeGlobs`, comma-joined). No filesystem artifacts in the worktree (which would pollute `git status` and need `.gitignore` management). The CLI looks up the session by matching cwd to `session.workspacePath`.
+
+**Sources of scope (priority order):**
+1. Agent's own declaration via `ao scope set` (the primary mechanism — set by `BASE_AGENT_PROMPT` instruction).
+2. Issue body marker `<!-- ao-scope: globA, globB -->` (optional power-user override; parsed by tracker plugins into `Issue.scope`).
+3. Per-project `scope.defaultAllow` in `agent-orchestrator.yaml` (fallback for sessions without ticket-level scope).
+
+`BASE_AGENT_PROMPT` is strengthened with: (a) scope discipline rules (no scope creep, list adjacent issues as Follow-ups), (b) correction-handling rules (re-verify, not defend), (c) explicit instructions to declare scope via `ao scope set` BEFORE coding, then `ao scope-check` BEFORE `gh pr create`.
 
 **Tech Stack:** TypeScript (ESM), Node 20+, vitest, Zod, micromatch (new dep), Commander.js (CLI).
 
@@ -1000,14 +1007,242 @@ git commit -m "feat(cli): add 'ao scope-check' command (primary pre-PR scope gua
 
 ---
 
-## Task 8: Strengthen `BASE_AGENT_PROMPT` and inject scope into prompt
+## Task 8: Bundle agent self-declaration — `ao scope set`, metadata-driven `ao scope-check`, drop `.ao/scope`, strengthen prompt
+
+**Why this task changed shape:** the issue-body marker (Task 5) is aspirational — humans rarely write `<!-- ao-scope: ... -->` in tickets. We need a path where the **agent** declares its own scope from prompt instructions. We also pivoted the source-of-truth from a `.ao/scope` workspace file to session **metadata only** (no worktree pollution, no .gitignore needed). This task bundles all four pieces because they ship together or not at all:
+
+1. **New CLI: `ao scope set <globs>`** — agent writes its scope into session metadata.
+2. **Update `ao scope-check`** — read scope from session metadata (resolved via `process.cwd()` → `session.workspacePath`), not from `.ao/scope`.
+3. **Stop writing `.ao/scope`** — drop the file write in `session-manager.ts` (added in Task 6). Metadata is the only source of truth.
+4. **Strengthen `BASE_AGENT_PROMPT`** — instruct the agent: read ticket → run `ao scope set "..."` → code → `ao scope-check` before `gh pr create` → re-verify rather than defend on pushback.
 
 **Files:**
-- Modify: `packages/core/src/prompt-builder.ts`
+- Create: `packages/cli/src/commands/scope-set.ts`
+- Create: `packages/cli/test/scope-set.test.ts`
+- Modify: `packages/cli/src/index.ts` (register `scope-set`)
+- Modify: `packages/cli/src/commands/scope-check.ts` (read metadata, not `.ao/scope`)
+- Modify: `packages/cli/test/scope-check.test.ts` (update fixtures to write metadata, not `.ao/scope`)
+- Modify: `packages/core/src/session-manager.ts` (remove `.ao/scope` file write)
+- Modify: `packages/core/src/prompt-builder.ts` (add scope-discipline + correction-handling sections; render `scopeGlobs` block when present)
 - Modify: `packages/core/src/__tests__/prompt-builder.test.ts`
-- Modify: every call site of `buildPrompt` (find with grep — see Step 4)
+- Modify: every call site of `buildPrompt` (spawn + restore — find with grep, see Step 6)
 
-- [ ] **Step 1: Write the failing tests**
+---
+
+### Step 1 — Write failing tests for `ao scope set`
+
+Create `packages/cli/test/scope-set.test.ts`. Mock the session-manager lookup the same way `scope-check.test.ts` does (whatever shim the existing test uses — read `scope-check.test.ts` first to copy its mock surface).
+
+```typescript
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { runScopeSet } from "../src/commands/scope-set.js";
+
+// Mock the session lookup to return a fake session whose workspacePath matches cwd.
+// Whatever helper scope-check.test.ts uses, mirror it here.
+
+describe("runScopeSet", () => {
+  it("writes the comma-joined globs to session metadata.scopeGlobs", async () => {
+    const result = await runScopeSet({
+      cwd: "/tmp/fake-workspace",
+      globs: ["src/sports/**", "!src/sports/apis/**"],
+    });
+    expect(result.exitCode).toBe(0);
+    // Assert the metadata writer was called with scopeGlobs: "src/sports/**,!src/sports/apis/**"
+  });
+
+  it("trims whitespace and de-duplicates globs", async () => {
+    const result = await runScopeSet({
+      cwd: "/tmp/fake-workspace",
+      globs: [" src/foo/** ", "src/foo/**", "src/bar/**"],
+    });
+    expect(result.exitCode).toBe(0);
+    // Assert metadata.scopeGlobs === "src/foo/**,src/bar/**"
+  });
+
+  it("exits 1 with a clear message when cwd does not match any session.workspacePath", async () => {
+    const result = await runScopeSet({
+      cwd: "/tmp/not-a-session",
+      globs: ["src/sports/**"],
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.message).toMatch(/no.*session/i);
+  });
+
+  it("exits 1 when globs is empty", async () => {
+    const result = await runScopeSet({ cwd: "/tmp/fake-workspace", globs: [] });
+    expect(result.exitCode).toBe(1);
+    expect(result.message).toMatch(/at least one glob/i);
+  });
+});
+```
+
+Run: `pnpm --filter @composio/ao-cli test -- scope-set`
+Expected: FAIL (file does not exist).
+
+---
+
+### Step 2 — Implement `ao scope set` (`packages/cli/src/commands/scope-set.ts`)
+
+Mirror the structure of `scope-check.ts`. Two functions: testable core `runScopeSet(opts)` that returns `{exitCode, message}`, and `registerScopeSet(program)` that wires up Commander.
+
+```typescript
+import chalk from "chalk";
+import type { Command } from "commander";
+import { listSessions, writeMetadata, readMetadata } from "@composio/ao-core";
+
+export interface RunScopeSetOpts {
+  cwd: string;
+  globs: string[];
+}
+export interface ScopeSetResult {
+  exitCode: 0 | 1;
+  message: string;
+}
+
+export async function runScopeSet(opts: RunScopeSetOpts): Promise<ScopeSetResult> {
+  const cleaned = Array.from(
+    new Set(opts.globs.map((g) => g.trim()).filter((g) => g.length > 0)),
+  );
+  if (cleaned.length === 0) {
+    return { exitCode: 1, message: "scope set requires at least one glob argument." };
+  }
+
+  // Resolve session by cwd → workspacePath. Use the SAME helper that scope-check.ts uses
+  // (extract one if it doesn't exist yet — see Step 4).
+  const session = await findSessionByCwd(opts.cwd);
+  if (!session) {
+    return {
+      exitCode: 1,
+      message: `No session found for current directory: ${opts.cwd}\n` +
+        `Run this from inside a session worktree.`,
+    };
+  }
+
+  const meta = await readMetadata(session.id);
+  await writeMetadata(session.id, { ...meta, scopeGlobs: cleaned.join(",") });
+
+  return {
+    exitCode: 0,
+    message:
+      `Scope set for session ${session.id}:\n` +
+      cleaned.map((g) => `  ${g}`).join("\n") +
+      `\n\nNow code, then run \`ao scope-check\` before \`gh pr create\`.`,
+  };
+}
+
+export function registerScopeSet(program: Command): void {
+  program
+    .command("scope set <globs...>")
+    .description(
+      "Declare the scope this session is allowed to modify. Sets metadata.scopeGlobs. " +
+      "Pass multiple space-separated globs, or one comma-joined string. Negation supported with leading `!`.",
+    )
+    .action(async (globs: string[]) => {
+      // Allow either `ao scope set "src/foo/**, !src/bar/**"` or `ao scope set src/foo/** '!src/bar/**'`.
+      const flat = globs.flatMap((g) => g.split(",")).map((g) => g.trim()).filter(Boolean);
+      const result = await runScopeSet({ cwd: process.cwd(), globs: flat });
+      if (result.exitCode === 0) console.log(chalk.green(result.message));
+      else console.error(chalk.red(result.message));
+      process.exit(result.exitCode);
+    });
+}
+```
+
+Run tests: `pnpm --filter @composio/ao-cli test -- scope-set` → PASS.
+
+---
+
+### Step 3 — Register `scope-set` in CLI entry point
+
+In `packages/cli/src/index.ts`, find the line that calls `registerScopeCheck(program)` and add right after it:
+
+```typescript
+import { registerScopeSet } from "./commands/scope-set.js";
+// ...
+registerScopeSet(program);
+```
+
+Verify with: `pnpm --filter @composio/ao-cli build && node packages/cli/dist/index.js scope --help`
+Expected: shows `scope set` and `scope-check` subcommands.
+
+> Note on command shape: Commander treats `scope set <globs...>` as a top-level command "scope set" — same pattern existing CLIs use. If your version of Commander does not parse this form, fall back to a flat `scope-set <globs...>` and update the prompt copy in Step 7 to match.
+
+---
+
+### Step 4 — Update `ao scope-check` to read scope from session metadata
+
+Modify `packages/cli/src/commands/scope-check.ts`:
+
+**4a.** Replace the `.ao/scope` file read with a session-metadata read. Extract the cwd→session resolver into a shared helper if `findSessionByCwd` doesn't already exist in core (`packages/core/src/session-manager.ts` should expose it — add and export if missing):
+
+```typescript
+// In core/src/session-manager.ts — export this helper if it doesn't exist yet:
+export async function findSessionByCwd(cwd: string): Promise<Session | null> {
+  const sessions = await listSessions();
+  return sessions.find((s) => s.workspacePath === cwd) ?? null;
+}
+```
+
+**4b.** In `scope-check.ts`, replace lines 37–49 (the `scopeFilePath` block):
+
+```typescript
+const session = await findSessionByCwd(opts.workspace);
+if (!session) {
+  return {
+    exitCode: 0,
+    violation: null,
+    message: `No session matched cwd ${opts.workspace} — scope check skipped.`,
+  };
+}
+
+const meta = await readMetadata(session.id);
+const raw = meta.scopeGlobs;
+if (!raw || raw.trim().length === 0) {
+  return {
+    exitCode: 0,
+    violation: null,
+    message: "No scope set for this session — scope check skipped. " +
+      "(Run `ao scope set \"<globs>\"` to declare scope.)",
+  };
+}
+const allowed = raw.split(",").map((s) => s.trim()).filter(Boolean);
+```
+
+**4c.** Update existing `scope-check.test.ts` fixtures: instead of writing a `.ao/scope` file, mock `findSessionByCwd` + `readMetadata` to return `{ scopeGlobs: "src/sports/**" }`. Re-read the existing test to see how it sets up the workspace and adapt minimally. Each existing assertion should still pass; only the setup changes.
+
+Run: `pnpm --filter @composio/ao-cli test -- scope-check` → PASS.
+
+---
+
+### Step 5 — Drop `.ao/scope` file write in `session-manager.ts`
+
+In `packages/core/src/session-manager.ts`, find the block (around line 557–561) that writes `.ao/scope`:
+
+```typescript
+// Write .ao/scope for `ao scope-check` CLI (Task 7)
+if (resolvedScope && resolvedScope.length > 0) {
+  const scopeFilePath = join(workspacePath, ".ao", "scope");
+  mkdirSync(dirname(scopeFilePath), { recursive: true });
+  writeFileSync(scopeFilePath, resolvedScope.join("\n") + "\n", "utf8");
+}
+```
+
+**Delete it entirely.** Also remove now-unused imports (`mkdirSync`, `writeFileSync`, `dirname`, `join` — only if they have no other callers; check first with `grep`).
+
+Update the comment near the metadata write to drop the reference to the file:
+
+```typescript
+// Resolve effective scope — issue scope wins over project default.
+// Persisted to metadata.scopeGlobs only (single source of truth; no worktree file).
+```
+
+Verify the worktree no longer contains `.ao/scope` after a fresh spawn (you'll cover this in the integration test in Task 11; for now, just confirm the code path is gone).
+
+---
+
+### Step 6 — Strengthen `BASE_AGENT_PROMPT` and inject `scopeGlobs`
+
+**6a. Tests in `packages/core/src/__tests__/prompt-builder.test.ts`:**
 
 ```typescript
 it("BASE_AGENT_PROMPT includes scope discipline rules", () => {
@@ -1015,22 +1250,22 @@ it("BASE_AGENT_PROMPT includes scope discipline rules", () => {
   expect(BASE_AGENT_PROMPT).toMatch(/do not bundle/i);
 });
 
-it("BASE_AGENT_PROMPT instructs running ao scope-check before PR", () => {
+it("BASE_AGENT_PROMPT instructs running ao scope set after reading the ticket", () => {
+  expect(BASE_AGENT_PROMPT).toMatch(/ao scope set/);
+});
+
+it("BASE_AGENT_PROMPT instructs running ao scope-check before gh pr create", () => {
   expect(BASE_AGENT_PROMPT).toMatch(/ao scope-check/);
   expect(BASE_AGENT_PROMPT).toMatch(/before.*gh pr create/i);
 });
 
-it("BASE_AGENT_PROMPT includes correction-handling rules", () => {
+it("BASE_AGENT_PROMPT includes correction-handling rules (re-verify, not defend)", () => {
   expect(BASE_AGENT_PROMPT).toMatch(/re-verify, not defend/i);
 });
 
 it("buildPrompt appends scope info when scopeGlobs is provided", () => {
-  const out = buildPrompt({
-    /* minimal config */
-    scopeGlobs: ["src/sports/**"],
-  });
+  const out = buildPrompt({ /* minimal config */ scopeGlobs: ["src/sports/**"] });
   expect(out).toContain("src/sports/**");
-  expect(out).toMatch(/scope/i);
 });
 
 it("buildPrompt omits scope section when scopeGlobs is empty/undefined", () => {
@@ -1039,20 +1274,19 @@ it("buildPrompt omits scope section when scopeGlobs is empty/undefined", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+Run → expect FAIL.
 
-Run: `pnpm --filter @composio/ao-core test -- prompt-builder`
-Expected: FAIL.
-
-- [ ] **Step 3: Update `BASE_AGENT_PROMPT`**
-
-Append two new sections to `BASE_AGENT_PROMPT` (between "PR Best Practices" and "Visual Verification"):
+**6b. Update `BASE_AGENT_PROMPT`** in `packages/core/src/prompt-builder.ts`. Insert two new sections (between "PR Best Practices" and "Visual Verification" — confirm exact section names by reading the current file):
 
 ```markdown
 ## Scope Discipline
-- Stay strictly inside the scope of the assigned ticket. Do not bundle unrelated cleanup, refactors, or fixes — even if the change "feels right" or "is on the way."
+- After reading the ticket, **declare your scope** with `ao scope set "<globs>"` BEFORE you start coding. Examples:
+  - `ao scope set "src/sports/**"`
+  - `ao scope set "src/sports/**, !src/sports/apis/**"`
+  - Multiple files outside one tree? List each: `ao scope set "src/sports/**, src/shared/utils.ts"`
+- Stay strictly inside that scope. Do not bundle unrelated cleanup, refactors, or fixes — even if a change "feels right" or "is on the way."
 - If you find adjacent issues worth fixing, list them in the PR description under a "Follow-ups" section. Do not commit them.
-- BEFORE running `gh pr create`, run `ao scope-check`. If it exits non-zero, revert the out-of-scope changes (use `git restore` or `git revert`) and re-run until it passes.
+- BEFORE running `gh pr create`, run `ao scope-check`. If it exits non-zero, revert the out-of-scope changes (`git restore` or `git revert`) and re-run until it passes.
 - The orchestrator also runs a scope check on the PR after creation as a safety net. If it flags anything, you'll be asked to revert.
 
 ## Handling Disagreement
@@ -1062,7 +1296,7 @@ Append two new sections to `BASE_AGENT_PROMPT` (between "PR Best Practices" and 
 - Performative confidence is a failure mode. Performative agreement is also a failure mode. The goal is calibrated, evidence-backed responses.
 ```
 
-- [ ] **Step 4: Add `scopeGlobs` to `PromptBuildConfig` and inject it everywhere `buildPrompt` is called**
+**6c. Add `scopeGlobs` to `PromptBuildConfig` and render it:**
 
 ```typescript
 export interface PromptBuildConfig {
@@ -1072,7 +1306,7 @@ export interface PromptBuildConfig {
 }
 ```
 
-In `buildPrompt`, after the existing config-derived context block, append:
+In `buildPrompt`, after the existing config-derived context block:
 
 ```typescript
 if (config.scopeGlobs && config.scopeGlobs.length > 0) {
@@ -1084,23 +1318,22 @@ Run \`ao scope-check\` before \`gh pr create\` to verify your changes stay in bo
 }
 ```
 
-Then update **every** call site of `buildPrompt`:
+**6d. Wire scope into every `buildPrompt` call site:**
 
 ```bash
 grep -rn "buildPrompt(" packages/ --include="*.ts" | grep -v "\.test\.ts"
 ```
 
-Expect at least: spawn path in `session-manager.ts`, restore/respawn path. For each:
-
-- **Spawn path:** pass the resolved `string[]` from Task 6 directly. Do not re-parse the comma-joined `metadata.scopeGlobs` here — Task 6 already has the array in scope.
-- **Restore/respawn path:** split `metadata.scopeGlobs` here:
+For each call site:
+- **Spawn path (`session-manager.ts`):** pass the resolved `string[]` from Task 6 directly. Do not re-parse the comma-joined `metadata.scopeGlobs` here — Task 6 already has the array in scope.
+- **Restore/respawn path:** split metadata back to an array:
   ```typescript
   const scopeGlobs = session.metadata.scopeGlobs
     ? session.metadata.scopeGlobs.split(",").map((s) => s.trim()).filter(Boolean)
     : undefined;
   ```
 
-Add a test that verifies the restore path also injects scope:
+Add a restore-path test:
 
 ```typescript
 it("buildPrompt includes scope when restoring a session with metadata.scopeGlobs set", () => {
@@ -1108,18 +1341,40 @@ it("buildPrompt includes scope when restoring a session with metadata.scopeGlobs
 });
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+Run: `pnpm --filter @composio/ao-core test -- prompt-builder` → PASS.
 
-Run: `pnpm --filter @composio/ao-core test -- prompt-builder`
-Expected: PASS — all 5 cases.
+---
 
-- [ ] **Step 6: Commit**
+### Step 7 — Final checks and commit
+
+Run the full suite to make sure nothing else regressed:
 
 ```bash
-git add packages/core/src/prompt-builder.ts \
-        packages/core/src/__tests__/prompt-builder.test.ts \
-        packages/core/src/session-manager.ts
-git commit -m "feat(core): scope discipline + correction-handling in BASE_AGENT_PROMPT, inject scopeGlobs"
+pnpm --filter @composio/ao-core test
+pnpm --filter @composio/ao-cli test
+pnpm typecheck
+pnpm lint
+```
+
+All green. Then commit as ONE bundled change:
+
+```bash
+git add packages/cli/src/commands/scope-set.ts \
+        packages/cli/src/commands/scope-check.ts \
+        packages/cli/src/index.ts \
+        packages/cli/test/scope-set.test.ts \
+        packages/cli/test/scope-check.test.ts \
+        packages/core/src/session-manager.ts \
+        packages/core/src/prompt-builder.ts \
+        packages/core/src/__tests__/prompt-builder.test.ts
+
+git commit -m "feat(scope): agent self-declares scope via 'ao scope set'; metadata is sole source of truth
+
+- New 'ao scope set <globs>' CLI writes metadata.scopeGlobs.
+- 'ao scope-check' now reads scope from session metadata (cwd → workspacePath lookup) instead of .ao/scope file.
+- Drop .ao/scope file writes from session-manager — metadata is the only source of truth (no worktree pollution).
+- BASE_AGENT_PROMPT instructs: read ticket → ao scope set → code → ao scope-check before gh pr create.
+- Adds correction-handling section (re-verify, not defend)."
 ```
 
 ---
