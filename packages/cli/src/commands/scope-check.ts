@@ -5,6 +5,10 @@
  * Exits 0 if scope is satisfied or no scope is configured. Exits 1 with a clear
  * message listing offending files if violation is found.
  *
+ * Scope source: `metadata.scopeGlobs` for the session whose `worktree` matches
+ * the current working directory. The agent declares this with `ao scope set`,
+ * or the orchestrator pre-populates it from the issue's scope marker.
+ *
  * Usage:
  *   ao scope-check                 # auto-detect project from CWD, base from config
  *   ao scope-check --base develop  # explicit base branch
@@ -12,11 +16,15 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import chalk from "chalk";
 import type { Command } from "commander";
-import { checkScope, loadConfig, type ScopeViolation } from "@composio/ao-core";
+import {
+  checkScope,
+  loadConfig,
+  findSessionByCwd,
+  type ScopeViolation,
+  type OrchestratorConfig,
+} from "@composio/ao-core";
 
 const execFileAsync = promisify(execFile);
 
@@ -24,6 +32,12 @@ export interface RunScopeCheckOpts {
   workspace: string;
   baseBranch?: string;
   projectId?: string;
+  /**
+   * Test injection — resolves the allowed scope globs for `cwd`.
+   * Returns null when no session matches; returns [] when session has no scope.
+   * Defaults to: loadConfig() → findSessionByCwd → metadata.scopeGlobs.
+   */
+  resolveScope?: (cwd: string) => string[] | null;
 }
 
 export interface ScopeCheckResult {
@@ -32,20 +46,46 @@ export interface ScopeCheckResult {
   message: string;
 }
 
-/** Testable core (no process.exit, no console output). */
-export async function runScopeCheck(opts: RunScopeCheckOpts): Promise<ScopeCheckResult> {
-  const scopeFilePath = join(opts.workspace, ".ao", "scope");
-  if (!existsSync(scopeFilePath)) {
-    return { exitCode: 0, violation: null, message: "No .ao/scope file — scope check skipped." };
+function defaultResolveScope(cwd: string): string[] | null {
+  let config: OrchestratorConfig;
+  try {
+    config = loadConfig();
+  } catch {
+    return null;
   }
-
-  const allowed = readFileSync(scopeFilePath, "utf8")
-    .split("\n")
+  const session = findSessionByCwd(config, cwd);
+  if (!session) return null;
+  const raw = session.scopeGlobs;
+  if (!raw || raw.trim().length === 0) return [];
+  return raw
+    .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/** Testable core (no process.exit, no console output). */
+export async function runScopeCheck(opts: RunScopeCheckOpts): Promise<ScopeCheckResult> {
+  const resolveScope = opts.resolveScope ?? defaultResolveScope;
+  const allowed = resolveScope(opts.workspace);
+
+  if (allowed === null) {
+    return {
+      exitCode: 0,
+      violation: null,
+      message:
+        `No session matched cwd ${opts.workspace} — scope check skipped.\n` +
+        `(Run \`ao scope set "<globs>"\` from inside a session worktree to declare scope.)`,
+    };
+  }
 
   if (allowed.length === 0) {
-    return { exitCode: 0, violation: null, message: ".ao/scope file is empty — scope check skipped." };
+    return {
+      exitCode: 0,
+      violation: null,
+      message:
+        "No scope set for this session — scope check skipped. " +
+        '(Run `ao scope set "<globs>"` to declare scope.)',
+    };
   }
 
   // Resolve base branch: explicit > project config > "main"

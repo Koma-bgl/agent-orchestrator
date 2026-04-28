@@ -12,6 +12,7 @@ import { registerOpen } from "./commands/open.js";
 import { registerStart, registerStop } from "./commands/start.js";
 import { registerVerify } from "./commands/verify.js";
 import { registerScopeCheck } from "./commands/scope-check.js";
+import { registerScopeSet } from "./commands/scope-set.js";
 import { registerClean } from "./commands/clean.js";
 
 const program = new Command();
@@ -34,6 +35,7 @@ registerDashboard(program);
 registerOpen(program);
 registerVerify(program);
 registerScopeCheck(program);
+registerScopeSet(program);
 registerClean(program);
 
 program.parse();

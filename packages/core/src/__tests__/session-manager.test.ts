@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -1519,19 +1519,21 @@ describe("scope persistence at spawn", () => {
     expect(meta!.scopeGlobs).toBeUndefined();
   });
 
-  it("writes resolved globs to <workspace>/.ao/scope (newline-separated, trailing newline)", async () => {
+  it("does not write a .ao/scope file in the worktree (metadata is the only source of truth)", async () => {
     const tracker = makeTrackerWithScope(["src/sports/**", "!src/sports/apis/**"]);
     const sm = createSessionManager({ config, registry: makeRegistryWith(tracker) });
 
     await sm.spawn({ projectId: "my-app", issueId: "INT-1" });
 
     const scopeFile = join(wsPath, ".ao", "scope");
-    expect(existsSync(scopeFile)).toBe(true);
-    const content = readFileSync(scopeFile, "utf8");
-    expect(content).toBe("src/sports/**\n!src/sports/apis/**\n");
+    expect(existsSync(scopeFile)).toBe(false);
+
+    // But metadata.scopeGlobs IS set — this is now the single source of truth.
+    const meta = readMetadata(sessionsDir, "app-1");
+    expect(meta!.scopeGlobs).toBe("src/sports/**,!src/sports/apis/**");
   });
 
-  it("does not write .ao/scope when no scope is resolved", async () => {
+  it("does not write any scope file when no scope is resolved", async () => {
     const tracker = makeTrackerWithScope(undefined);
     // no project scope either
     const sm = createSessionManager({ config, registry: makeRegistryWith(tracker) });

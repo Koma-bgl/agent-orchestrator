@@ -417,4 +417,58 @@ describe("BASE_AGENT_PROMPT", () => {
     expect(BASE_AGENT_PROMPT).toContain("Git Workflow");
     expect(BASE_AGENT_PROMPT).toContain("PR Best Practices");
   });
+
+  it("includes scope discipline rules", () => {
+    expect(BASE_AGENT_PROMPT).toMatch(/out of scope/i);
+    expect(BASE_AGENT_PROMPT).toMatch(/do not bundle/i);
+  });
+
+  it("instructs running ao scope-set after reading the ticket", () => {
+    expect(BASE_AGENT_PROMPT).toMatch(/ao scope-set/);
+  });
+
+  it("instructs running ao scope-check before gh pr create", () => {
+    expect(BASE_AGENT_PROMPT).toMatch(/ao scope-check/);
+    expect(BASE_AGENT_PROMPT).toMatch(/before.*gh pr create/i);
+  });
+
+  it("includes correction-handling rules (re-verify, not defend)", () => {
+    expect(BASE_AGENT_PROMPT).toMatch(/re-verify, not defend/i);
+  });
+});
+
+describe("buildPrompt — scopeGlobs", () => {
+  it("appends scope info when scopeGlobs is provided", () => {
+    const result = buildPrompt({
+      project,
+      projectId: "test-app",
+      issueId: "INT-1",
+      scopeGlobs: ["src/sports/**", "!src/sports/apis/**"],
+    });
+    expect(result).not.toBeNull();
+    expect(result).toContain("src/sports/**");
+    expect(result).toContain("!src/sports/apis/**");
+    expect(result).toMatch(/## Scope \(this session\)/);
+  });
+
+  it("omits scope section when scopeGlobs is empty", () => {
+    const result = buildPrompt({
+      project,
+      projectId: "test-app",
+      issueId: "INT-1",
+      scopeGlobs: [],
+    });
+    expect(result).not.toBeNull();
+    expect(result).not.toMatch(/## Scope \(this session\)/);
+  });
+
+  it("omits scope section when scopeGlobs is undefined", () => {
+    const result = buildPrompt({
+      project,
+      projectId: "test-app",
+      issueId: "INT-1",
+    });
+    expect(result).not.toBeNull();
+    expect(result).not.toMatch(/## Scope \(this session\)/);
+  });
 });

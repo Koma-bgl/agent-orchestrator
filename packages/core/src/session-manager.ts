@@ -12,7 +12,7 @@
  */
 
 import { statSync, existsSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import {
   isIssueNotFoundError,
   isRestorable,
@@ -115,6 +115,49 @@ function validateStatus(raw: string | undefined): SessionStatus {
   if (raw === "starting") return "working";
   if (raw && VALID_STATUSES.has(raw)) return raw as SessionStatus;
   return "spawning";
+}
+
+/**
+ * Look up a session whose `metadata.worktree` matches the given cwd.
+ *
+ * Walks every project's sessions directory, reads metadata for each session,
+ * and returns the first session whose recorded workspace path matches `cwd`.
+ * Returns null when no session matches (e.g. the caller is outside any
+ * managed worktree).
+ *
+ * Used by `ao scope set` and `ao scope-check` to resolve the current session
+ * from process.cwd() so the agent does not need to pass --session flags.
+ */
+export interface FoundSession {
+  sessionId: SessionId;
+  sessionsDir: string;
+  projectId: string;
+  workspacePath: string;
+  scopeGlobs?: string;
+}
+
+export function findSessionByCwd(
+  config: OrchestratorConfig,
+  cwd: string,
+): FoundSession | null {
+  for (const [projectId, project] of Object.entries(config.projects)) {
+    const sessionsDir = getSessionsDir(config.configPath, project.path);
+    if (!existsSync(sessionsDir)) continue;
+    for (const sessionId of listMetadata(sessionsDir)) {
+      const raw = readMetadataRaw(sessionsDir, sessionId);
+      if (!raw) continue;
+      if (raw["worktree"] === cwd) {
+        return {
+          sessionId,
+          sessionsDir,
+          projectId,
+          workspacePath: raw["worktree"],
+          scopeGlobs: raw["scopeGlobs"],
+        };
+      }
+    }
+  }
+  return null;
 }
 
 /** Reconstruct a Session object from raw metadata key=value pairs. */
@@ -453,6 +496,18 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       }
     }
 
+    // Resolve effective scope — issue scope wins over project default.
+    // Persisted to metadata.scopeGlobs only (single source of truth; no worktree file).
+    // Computed here (before buildPrompt) so the prompt can include the scope block.
+    const issueScope = resolvedIssue?.scope;
+    const projectScope = project.scope?.defaultAllow;
+    const resolvedScope: string[] | undefined =
+      issueScope && issueScope.length > 0
+        ? issueScope
+        : projectScope && projectScope.length > 0
+          ? projectScope
+          : undefined;
+
     const composedPrompt = buildPrompt({
       project,
       projectId: spawnConfig.projectId,
@@ -461,6 +516,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       userPrompt: spawnConfig.prompt,
       personasDir: config.personasDir,
       configPath: config.configPath,
+      scopeGlobs: resolvedScope,
     });
 
     // Get agent launch config and create runtime — clean up workspace on failure
@@ -529,17 +585,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       metadata: {},
     };
 
-    // Resolve effective scope — issue scope wins over project default.
-    // Compute ONCE; reuse for both metadata and .ao/scope file.
-    const issueScope = resolvedIssue?.scope;
-    const projectScope = project.scope?.defaultAllow;
-    const resolvedScope: string[] | undefined =
-      issueScope && issueScope.length > 0
-        ? issueScope
-        : projectScope && projectScope.length > 0
-          ? projectScope
-          : undefined;
-
     try {
       writeMetadata(sessionsDir, sessionId, {
         worktree: workspacePath,
@@ -553,13 +598,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         runtimeHandle: JSON.stringify(handle),
         ...(resolvedScope && { scopeGlobs: resolvedScope.join(",") }),
       });
-
-      // Write .ao/scope for `ao scope-check` CLI (Task 7)
-      if (resolvedScope) {
-        const scopeFilePath = join(workspacePath, ".ao", "scope");
-        mkdirSync(dirname(scopeFilePath), { recursive: true });
-        writeFileSync(scopeFilePath, resolvedScope.join("\n") + "\n", "utf8");
-      }
 
       if (plugins.agent.postLaunchSetup) {
         await plugins.agent.postLaunchSetup(session);

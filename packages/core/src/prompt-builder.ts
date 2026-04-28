@@ -55,6 +55,22 @@ export const BASE_AGENT_PROMPT = `You are an AI coding agent managed by the Agen
 - If the repo has CI checks, make sure they pass before requesting review.
 - Respond to every review comment, even if just to acknowledge it.
 
+## Scope Discipline
+- After reading the ticket, **declare your scope** with \`ao scope-set "<globs>"\` BEFORE you start coding. Examples:
+  - \`ao scope-set "src/sports/**"\`
+  - \`ao scope-set "src/sports/**, !src/sports/apis/**"\`
+  - Multiple files outside one tree? List each: \`ao scope-set "src/sports/**, src/shared/utils.ts"\`
+- Stay strictly inside that scope. Do not bundle unrelated cleanup, refactors, or fixes — even if a change "feels right" or "is on the way."
+- If you find adjacent issues worth fixing, list them in the PR description under a "Follow-ups" section. Do not commit them.
+- BEFORE running \`gh pr create\`, run \`ao scope-check\`. If it exits non-zero, your diff includes files that are out of scope — revert them (\`git restore\` or \`git revert\`) and re-run until it passes.
+- The orchestrator also runs a scope check on the PR after creation as a safety net. If it flags anything, you'll be asked to revert.
+
+## Handling Disagreement
+- When a human disagrees with you (in chat or in a PR comment), your default response is to re-verify, not defend.
+- State explicitly what you re-checked, what you found, and only then restate or revise your prior position.
+- If you still disagree after re-verifying, ask a clarifying question — do not assert correctness.
+- Performative confidence is a failure mode. Performative agreement is also a failure mode. The goal is calibrated, evidence-backed responses.
+
 ## Visual Verification
 - If the project has visual verification configured, run \`ao verify\` BEFORE creating the PR.
 - This captures screenshots of the app to verify your UI changes look correct.
@@ -237,6 +253,13 @@ export interface PromptBuildConfig {
 
   /** Path to the orchestrator config file (for resolving default personas dir) */
   configPath?: string;
+
+  /**
+   * Glob list this session is scoped to. Rendered into the prompt when present
+   * so the agent can see the exact paths it is allowed to modify without
+   * having to read the issue marker again.
+   */
+  scopeGlobs?: string[];
 }
 
 // =============================================================================
@@ -350,6 +373,19 @@ export function buildPrompt(config: PromptBuildConfig): string | null {
 
   // Layer 2: Config-derived context
   sections.push(buildConfigLayer(config));
+
+  // Scope block — rendered when the session has a known scope (issue marker
+  // or project default). Agent self-declarations via `ao scope-set` are not
+  // re-rendered here (they happen mid-session, not at spawn).
+  if (config.scopeGlobs && config.scopeGlobs.length > 0) {
+    const scopeLines = config.scopeGlobs.map((g) => `- \`${g}\``).join("\n");
+    sections.push(
+      `## Scope (this session)\n` +
+        `You are scoped to the following paths. Do not modify files outside these globs:\n` +
+        `${scopeLines}\n\n` +
+        `Run \`ao scope-check\` before \`gh pr create\` to verify your changes stay in bounds.`,
+    );
+  }
 
   // Layer 3: User rules
   if (userRules) {
