@@ -195,7 +195,7 @@ describe("scm-github plugin", () => {
       ghMock.mockResolvedValueOnce({ stdout: "" });
       await scm.mergePR(pr);
       expect(ghMock).toHaveBeenCalledWith(
-        "gh",
+        expect.stringMatching(/(^|\/)gh$/),
         ["pr", "merge", "42", "--repo", "acme/repo", "--squash"],
         expect.any(Object),
       );
@@ -205,7 +205,7 @@ describe("scm-github plugin", () => {
       ghMock.mockResolvedValueOnce({ stdout: "" });
       await scm.mergePR(pr, "merge");
       expect(ghMock).toHaveBeenCalledWith(
-        "gh",
+        expect.stringMatching(/(^|\/)gh$/),
         expect.arrayContaining(["--merge"]),
         expect.any(Object),
       );
@@ -215,7 +215,7 @@ describe("scm-github plugin", () => {
       ghMock.mockResolvedValueOnce({ stdout: "" });
       await scm.mergePR(pr, "rebase");
       expect(ghMock).toHaveBeenCalledWith(
-        "gh",
+        expect.stringMatching(/(^|\/)gh$/),
         expect.arrayContaining(["--rebase"]),
         expect.any(Object),
       );
@@ -229,7 +229,7 @@ describe("scm-github plugin", () => {
       ghMock.mockResolvedValueOnce({ stdout: "" });
       await scm.closePR(pr);
       expect(ghMock).toHaveBeenCalledWith(
-        "gh",
+        expect.stringMatching(/(^|\/)gh$/),
         ["pr", "close", "42", "--repo", "acme/repo"],
         expect.any(Object),
       );
@@ -446,7 +446,9 @@ describe("scm-github plugin", () => {
                   comments: {
                     nodes: [
                       {
-                        id: t.id,
+                        // Implementation reads `databaseId` for the public id;
+                        // fixture's `t.id` is the canonical comment id (e.g. "C1").
+                        databaseId: t.id,
                         author: t.author ? { login: t.author } : null,
                         body: t.body,
                         path: t.path,
@@ -537,7 +539,10 @@ describe("scm-github plugin", () => {
     });
 
     it("returns empty on error", async () => {
-      mockGhError("API rate limit");
+      // Use a non-rate-limit error message — "rate limit" / "API rate limit"
+      // would trigger the implementation's retry+backoff path and pollute
+      // the module-level `rateLimitResetAt` state, cascading into later tests.
+      mockGhError("network failure");
       expect(await scm.getPendingComments(pr)).toEqual([]);
     });
 
@@ -764,7 +769,9 @@ describe("scm-github plugin", () => {
         mergeStateStatus: "UNSTABLE",
         isDraft: false,
       });
-      mockGhError("rate limited");
+      // See note above — avoid messages that match detectRateLimit() to keep
+      // the impl's module-level backoff state from leaking across tests.
+      mockGhError("network failure");
 
       const result = await scm.getMergeability(pr);
       expect(result.ciPassing).toBe(false);
@@ -925,19 +932,16 @@ describe("scm-github plugin", () => {
   // ---- rebasePR ----------------------------------------------------------
 
   describe("rebasePR", () => {
-    it("calls GitHub update-branch API with rebase method", async () => {
+    it("calls GitHub update-branch API (default merge method, not rebase)", async () => {
       ghMock.mockResolvedValueOnce({ stdout: "" });
       await scm.rebasePR(pr);
+      // Implementation intentionally omits `-f update_method=rebase` so the
+      // server-side update uses the default "merge" strategy — this avoids
+      // rewriting commit SHAs (and re-triggering CI) on the PR branch, since
+      // PRs are squash-merged anyway.
       expect(ghMock).toHaveBeenCalledWith(
-        "gh",
-        [
-          "api",
-          "--method",
-          "PUT",
-          "/repos/acme/repo/pulls/42/update-branch",
-          "-f",
-          "update_method=rebase",
-        ],
+        expect.stringMatching(/(^|\/)gh$/),
+        ["api", "--method", "PUT", "/repos/acme/repo/pulls/42/update-branch"],
         expect.any(Object),
       );
     });

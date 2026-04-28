@@ -97,7 +97,7 @@ describe("runtime.create()", () => {
     expect(handle.runtimeName).toBe("tmux");
     expect(handle.data.workspacePath).toBe("/tmp/workspace");
 
-    // First call: new-session
+    // First call: new-session — implementation also injects parent PATH via -e
     expect(mockExecFileCustom).toHaveBeenCalledWith("tmux", [
       "new-session",
       "-d",
@@ -105,6 +105,8 @@ describe("runtime.create()", () => {
       "test-session",
       "-c",
       "/tmp/workspace",
+      "-e",
+      expect.stringMatching(/^PATH=/),
     ]);
   });
 
@@ -229,9 +231,19 @@ describe("runtime.create()", () => {
       launchCommand: "echo hi",
     } as any);
 
-    // First call should not contain -e flags
+    // First call: implementation always injects parent PATH via -e PATH=... when
+    // env doesn't already define PATH (including when environment is undefined).
     const firstCallArgs = mockExecFileCustom.mock.calls[0][1] as string[];
-    expect(firstCallArgs).toEqual(["new-session", "-d", "-s", "no-env", "-c", "/tmp/ws"]);
+    expect(firstCallArgs).toEqual([
+      "new-session",
+      "-d",
+      "-s",
+      "no-env",
+      "-c",
+      "/tmp/ws",
+      "-e",
+      expect.stringMatching(/^PATH=/),
+    ]);
   });
 });
 
