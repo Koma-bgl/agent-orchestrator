@@ -69,6 +69,10 @@ export { runVerification } from "./verify-runner.js";
 // Scope marker parser — parses <!-- ao-scope: glob --> from issue bodies
 export { parseScopeMarker } from "./scope-marker.js";
 
+// Scope checker — validates changed files against allowed globs
+export { checkScope } from "./scope-checker.js";
+export type { ScopeViolation, ScopeConfig } from "./types.js";
+
 // Shared utilities
 export { shellEscape, escapeAppleScript, validateUrl, readLastJsonlEntry } from "./utils.js";
 
