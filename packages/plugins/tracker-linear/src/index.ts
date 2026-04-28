@@ -9,6 +9,7 @@
  */
 
 import { request } from "node:https";
+import { parseScopeMarker } from "@composio/ao-core";
 import type {
   PluginModule,
   Tracker,
@@ -305,7 +306,7 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
       );
 
       const node = data.issue;
-      return {
+      const issue: Issue = {
         id: node.identifier,
         title: node.title,
         description: node.description ?? "",
@@ -315,6 +316,8 @@ function createLinearTracker(query: GraphQLTransport): Tracker {
         assignee: node.assignee?.displayName ?? node.assignee?.name,
         priority: node.priority,
       };
+      const scope = parseScopeMarker(node.description) ?? undefined;
+      return { ...issue, scope };
     },
 
     async isCompleted(identifier: string, _project: ProjectConfig): Promise<boolean> {

@@ -66,6 +66,9 @@ export type { OrchestratorPromptConfig } from "./orchestrator-prompt.js";
 // Visual verification runner
 export { runVerification } from "./verify-runner.js";
 
+// Scope marker parser — parses <!-- ao-scope: glob --> from issue bodies
+export { parseScopeMarker } from "./scope-marker.js";
+
 // Shared utilities
 export { shellEscape, escapeAppleScript, validateUrl, readLastJsonlEntry } from "./utils.js";
 

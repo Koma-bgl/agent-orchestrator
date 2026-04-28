@@ -128,6 +128,21 @@ describe("tracker-github plugin", () => {
       ghMock.mockResolvedValueOnce({ stdout: "not json{" });
       await expect(tracker.getIssue("123", project)).rejects.toThrow();
     });
+
+    it("populates Issue.scope from <!-- ao-scope --> marker in body", async () => {
+      const BODY_WITH_MARKER =
+        "Closes SPOR-2921\n\n<!-- ao-scope: src/sports/** -->\n\nDescription...";
+      mockGh({ ...sampleIssue, body: BODY_WITH_MARKER });
+      const issue = await tracker.getIssue("123", project);
+      expect(issue.scope).toEqual(["src/sports/**"]);
+    });
+
+    it("leaves Issue.scope undefined when no marker", async () => {
+      const BODY_NO_MARKER = "Closes SPOR-2921\n\nDescription with no marker.";
+      mockGh({ ...sampleIssue, body: BODY_NO_MARKER });
+      const issue = await tracker.getIssue("123", project);
+      expect(issue.scope).toBeUndefined();
+    });
   });
 
   // ---- isCompleted -------------------------------------------------------

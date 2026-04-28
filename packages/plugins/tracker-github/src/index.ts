@@ -7,6 +7,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
+import { parseScopeMarker } from "@composio/ao-core";
 import type {
   PluginModule,
   Tracker,
@@ -191,7 +192,7 @@ function createGitHubTracker(): Tracker {
         assignees: Array<{ login: string }>;
       } = JSON.parse(raw);
 
-      return {
+      const issue: Issue = {
         id: String(data.number),
         title: data.title,
         description: data.body ?? "",
@@ -200,6 +201,8 @@ function createGitHubTracker(): Tracker {
         labels: data.labels.map((l) => l.name),
         assignee: data.assignees[0]?.login,
       };
+      const scope = parseScopeMarker(data.body) ?? undefined;
+      return { ...issue, scope };
     },
 
     async isCompleted(identifier: string, project: ProjectConfig): Promise<boolean> {

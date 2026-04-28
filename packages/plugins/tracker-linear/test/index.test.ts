@@ -254,6 +254,25 @@ describe("tracker-linear plugin", () => {
       expect(issue.labels).toEqual([]);
     });
 
+    it("populates Issue.scope from <!-- ao-scope --> marker in description", async () => {
+      const BODY_WITH_MARKER =
+        "Closes SPOR-2921\n\n<!-- ao-scope: src/sports/** -->\n\nDescription...";
+      mockLinearAPI({
+        issue: { ...sampleIssueNode, description: BODY_WITH_MARKER },
+      });
+      const issue = await tracker.getIssue("INT-123", project);
+      expect(issue.scope).toEqual(["src/sports/**"]);
+    });
+
+    it("leaves Issue.scope undefined when no marker", async () => {
+      const BODY_NO_MARKER = "Closes SPOR-2921\n\nDescription with no marker.";
+      mockLinearAPI({
+        issue: { ...sampleIssueNode, description: BODY_NO_MARKER },
+      });
+      const issue = await tracker.getIssue("INT-123", project);
+      expect(issue.scope).toBeUndefined();
+    });
+
     it("propagates API errors", async () => {
       mockLinearError("Issue not found");
       await expect(tracker.getIssue("INT-999", project)).rejects.toThrow(
