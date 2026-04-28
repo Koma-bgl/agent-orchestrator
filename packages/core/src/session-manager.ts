@@ -12,7 +12,7 @@
  */
 
 import { statSync, existsSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import {
   isIssueNotFoundError,
   isRestorable,
@@ -529,6 +529,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       metadata: {},
     };
 
+    // Resolve effective scope — issue scope wins over project default.
+    // Compute ONCE; reuse for both metadata and .ao/scope file.
+    const issueScope = resolvedIssue?.scope;
+    const projectScope = project.scope?.defaultAllow;
+    const resolvedScope: string[] | undefined =
+      issueScope && issueScope.length > 0
+        ? issueScope
+        : projectScope && projectScope.length > 0
+          ? projectScope
+          : undefined;
+
     try {
       writeMetadata(sessionsDir, sessionId, {
         worktree: workspacePath,
@@ -540,7 +551,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         agent: plugins.agent.name, // Persist agent name for lifecycle manager
         createdAt: new Date().toISOString(),
         runtimeHandle: JSON.stringify(handle),
+        ...(resolvedScope && { scopeGlobs: resolvedScope.join(",") }),
       });
+
+      // Write .ao/scope for `ao scope-check` CLI (Task 7)
+      if (resolvedScope) {
+        const scopeFilePath = join(workspacePath, ".ao", "scope");
+        mkdirSync(dirname(scopeFilePath), { recursive: true });
+        writeFileSync(scopeFilePath, resolvedScope.join("\n") + "\n", "utf8");
+      }
 
       if (plugins.agent.postLaunchSetup) {
         await plugins.agent.postLaunchSetup(session);

@@ -102,6 +102,8 @@ export function readMetadata(dataDir: string, sessionId: SessionId): SessionMeta
     runtimeHandle: raw["runtimeHandle"],
     mergedAt: raw["mergedAt"],
     worktreeCleanedAt: raw["worktreeCleanedAt"],
+    scopeGlobs: raw["scopeGlobs"],
+    scopeCheckedSha: raw["scopeCheckedSha"],
     dashboardPort: raw["dashboardPort"] ? Number(raw["dashboardPort"]) : undefined,
     terminalWsPort: raw["terminalWsPort"] ? Number(raw["terminalWsPort"]) : undefined,
     directTerminalWsPort: raw["directTerminalWsPort"] ? Number(raw["directTerminalWsPort"]) : undefined,
@@ -147,6 +149,8 @@ export function writeMetadata(
   if (metadata.runtimeHandle) data["runtimeHandle"] = metadata.runtimeHandle;
   if (metadata.mergedAt) data["mergedAt"] = metadata.mergedAt;
   if (metadata.worktreeCleanedAt) data["worktreeCleanedAt"] = metadata.worktreeCleanedAt;
+  if (metadata.scopeGlobs) data["scopeGlobs"] = metadata.scopeGlobs;
+  if (metadata.scopeCheckedSha) data["scopeCheckedSha"] = metadata.scopeCheckedSha;
   if (metadata.dashboardPort !== undefined)
     data["dashboardPort"] = String(metadata.dashboardPort);
   if (metadata.terminalWsPort !== undefined)

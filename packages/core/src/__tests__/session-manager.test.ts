@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -1421,5 +1421,124 @@ describe("PluginRegistry.loadBuiltins importFn", () => {
     // Should have attempted to import builtin plugins via the provided importFn
     expect(importedPackages.length).toBeGreaterThan(0);
     expect(importedPackages).toContain("@composio/ao-plugin-runtime-tmux");
+  });
+});
+
+describe("scope persistence at spawn", () => {
+  // Use a per-test workspace path derived from tmpDir (unique per beforeEach run)
+  // to avoid cross-test filesystem pollution.
+  let wsPath: string;
+  let mockWorkspaceForScope: Workspace;
+
+  beforeEach(() => {
+    wsPath = join(tmpDir, "scope-ws");
+    mkdirSync(wsPath, { recursive: true });
+    mockWorkspaceForScope = {
+      ...mockWorkspace,
+      create: vi.fn().mockResolvedValue({
+        path: wsPath,
+        branch: "feat/INT-1",
+        sessionId: "app-1",
+        projectId: "my-app",
+      }),
+    };
+  });
+
+  function makeTrackerWithScope(scope?: string[]): Tracker {
+    return {
+      name: "mock-tracker",
+      getIssue: vi.fn().mockResolvedValue({
+        id: "INT-1",
+        title: "Test issue",
+        description: "Test",
+        url: "https://example.com/INT-1",
+        state: "open",
+        labels: [],
+        ...(scope !== undefined && { scope }),
+      }),
+      isCompleted: vi.fn().mockResolvedValue(false),
+      issueUrl: vi.fn().mockReturnValue("https://example.com/INT-1"),
+      branchName: vi.fn().mockReturnValue("feat/INT-1"),
+      generatePrompt: vi.fn().mockResolvedValue(""),
+    };
+  }
+
+  function makeRegistryWith(tracker: Tracker): PluginRegistry {
+    return {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "workspace") return mockWorkspaceForScope;
+        if (slot === "tracker") return tracker;
+        return null;
+      }),
+    };
+  }
+
+  it("persists scope to metadata.scopeGlobs when issue has scope", async () => {
+    const tracker = makeTrackerWithScope(["src/sports/**"]);
+    const sm = createSessionManager({ config, registry: makeRegistryWith(tracker) });
+
+    await sm.spawn({ projectId: "my-app", issueId: "INT-1" });
+
+    const meta = readMetadata(sessionsDir, "app-1");
+    expect(meta).not.toBeNull();
+    expect(meta!.scopeGlobs).toBe("src/sports/**");
+  });
+
+  it("falls back to project.scope.defaultAllow when issue has no scope", async () => {
+    const tracker = makeTrackerWithScope(undefined);
+    const configWithScope = {
+      ...config,
+      projects: {
+        "my-app": {
+          ...config.projects["my-app"],
+          scope: { defaultAllow: ["src/**"], onViolation: "ask-agent-to-revert" as const },
+        },
+      },
+    };
+    const sm = createSessionManager({ config: configWithScope, registry: makeRegistryWith(tracker) });
+
+    await sm.spawn({ projectId: "my-app", issueId: "INT-1" });
+
+    const meta = readMetadata(sessionsDir, "app-1");
+    expect(meta).not.toBeNull();
+    expect(meta!.scopeGlobs).toBe("src/**");
+  });
+
+  it("leaves scopeGlobs unset when neither issue nor project specifies scope", async () => {
+    const tracker = makeTrackerWithScope(undefined);
+    // config.projects["my-app"] has no scope field
+    const sm = createSessionManager({ config, registry: makeRegistryWith(tracker) });
+
+    await sm.spawn({ projectId: "my-app", issueId: "INT-1" });
+
+    const meta = readMetadata(sessionsDir, "app-1");
+    expect(meta).not.toBeNull();
+    expect(meta!.scopeGlobs).toBeUndefined();
+  });
+
+  it("writes resolved globs to <workspace>/.ao/scope (newline-separated, trailing newline)", async () => {
+    const tracker = makeTrackerWithScope(["src/sports/**", "!src/sports/apis/**"]);
+    const sm = createSessionManager({ config, registry: makeRegistryWith(tracker) });
+
+    await sm.spawn({ projectId: "my-app", issueId: "INT-1" });
+
+    const scopeFile = join(wsPath, ".ao", "scope");
+    expect(existsSync(scopeFile)).toBe(true);
+    const content = readFileSync(scopeFile, "utf8");
+    expect(content).toBe("src/sports/**\n!src/sports/apis/**\n");
+  });
+
+  it("does not write .ao/scope when no scope is resolved", async () => {
+    const tracker = makeTrackerWithScope(undefined);
+    // no project scope either
+    const sm = createSessionManager({ config, registry: makeRegistryWith(tracker) });
+
+    await sm.spawn({ projectId: "my-app", issueId: "INT-1" });
+
+    const scopeFile = join(wsPath, ".ao", "scope");
+    expect(existsSync(scopeFile)).toBe(false);
   });
 });
