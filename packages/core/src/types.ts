@@ -1286,7 +1286,7 @@ export interface SessionMetadata {
   agentExitedAt?: string; // Timestamp (ms) when agent exit was first detected — grace period start
   mergedAt?: string; // ISO timestamp when PR was merged
   worktreeCleanedAt?: string; // ISO timestamp when worktree was cleaned up
-  scopeGlobs?: string; // JSON-serialised string[] of effective scope globs for this session
+  scopeGlobs?: string; // Comma-joined string[] of effective scope globs for this session (flat-file format)
   scopeCheckedSha?: string; // HEAD SHA of the PR branch at last scope check (idempotency key)
   dashboardPort?: number;
   terminalWsPort?: number;
