@@ -476,6 +476,8 @@ export interface Issue {
   labels: string[];
   assignee?: string;
   priority?: number;
+  /** File-glob scope for this issue — restricts which files the agent may change. */
+  scope?: string[];
 }
 
 export interface TrackerComment {
@@ -600,6 +602,9 @@ export interface SCM {
 
   /** Get list of files changed in a PR */
   getChangedFiles?(pr: PRInfo): Promise<string[]>;
+
+  /** Get the current HEAD commit SHA of the PR branch. Used for idempotent scope checks. */
+  getPRHeadSha?(pr: PRInfo): Promise<string | null>;
 }
 
 // --- PR Types ---
@@ -791,6 +796,7 @@ export type EventType =
   | "pr.updated"
   | "pr.merged"
   | "pr.closed"
+  | "pr.scope_violation"
   // CI
   | "ci.passing"
   | "ci.failing"
@@ -991,6 +997,9 @@ export interface ProjectConfig {
   /** Visual verification config for this project */
   verify?: VerifyConfig;
 
+  /** Scope guard config — bounds where agents may make changes */
+  scope?: ScopeConfig;
+
   /** Queue poller config — auto-spawn sessions from tracker issues */
   queuePoller?: QueuePollerConfig;
 
@@ -1059,6 +1068,37 @@ export interface AgentSpecificConfig {
    */
   oauthToken?: string;
   [key: string]: unknown;
+}
+
+// =============================================================================
+// SCOPE GUARD
+// =============================================================================
+
+/** Scope enforcement: bound where agents may make changes. */
+export interface ScopeConfig {
+  /** Globs of files agents may change by default (overridden by issue scope when present). */
+  defaultAllow?: string[];
+  /** Globs always blocked regardless of issue scope (CI configs, lockfiles, infra). */
+  alwaysDeny?: string[];
+  /** What to do on violation. v1 supports "ask-agent-to-revert" only; "block" / "warn" reserved. */
+  onViolation: "block" | "warn" | "ask-agent-to-revert";
+  /** Max changed files; exceed → violation. */
+  maxFiles?: number;
+  /** Max added+removed lines; exceed → violation. */
+  maxLines?: number;
+}
+
+export interface ScopeViolation {
+  /** Files (or counts) that violated scope. */
+  offending: string[];
+  /** Globs that were enforced. */
+  allowed: string[];
+  /** Why this is a violation. */
+  reason: "out-of-scope-files" | "always-denied" | "too-many-files" | "too-many-lines";
+  /** When `reason` is too-many-*, the actual count. */
+  count?: number;
+  /** When `reason` is too-many-*, the limit that was exceeded. */
+  limit?: number;
 }
 
 // =============================================================================
@@ -1246,6 +1286,8 @@ export interface SessionMetadata {
   agentExitedAt?: string; // Timestamp (ms) when agent exit was first detected — grace period start
   mergedAt?: string; // ISO timestamp when PR was merged
   worktreeCleanedAt?: string; // ISO timestamp when worktree was cleaned up
+  scopeGlobs?: string; // JSON-serialised string[] of effective scope globs for this session
+  scopeCheckedSha?: string; // HEAD SHA of the PR branch at last scope check (idempotency key)
   dashboardPort?: number;
   terminalWsPort?: number;
   directTerminalWsPort?: number;
