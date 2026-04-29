@@ -271,29 +271,48 @@ describe("runtime.destroy()", () => {
 });
 
 describe("runtime.sendMessage()", () => {
+  /**
+   * Every sendMessage call begins with a `display-message` query for the
+   * pane's foreground command (the shell-guard). Tests that expect the agent
+   * to be alive should queue a non-shell value (e.g. "node") here first.
+   */
+  function mockForegroundOk(command = "node") {
+    mockTmuxSuccess(command);
+  }
+
   it("sends short text with send-keys -l (literal) + Enter", async () => {
     const runtime = create();
     const handle = makeHandle("msg-short");
 
-    // 1: send-keys C-u (clear), 2: send-keys -l text, 3: send-keys Enter
+    // 1: display-message (foreground), 2: send-keys C-u, 3: send-keys -l text, 4: send-keys Enter
+    mockForegroundOk();
     mockTmuxSuccess();
     mockTmuxSuccess();
     mockTmuxSuccess();
 
     await runtime.sendMessage(handle, "hello world");
 
-    expect(mockExecFileCustom).toHaveBeenCalledTimes(3);
+    expect(mockExecFileCustom).toHaveBeenCalledTimes(4);
 
-    // Call 0: Clear partial input
+    // Call 0: foreground-command probe
     expect(mockExecFileCustom).toHaveBeenNthCalledWith(1, "tmux", [
+      "display-message",
+      "-t",
+      "msg-short",
+      "-p",
+      "#{pane_current_command}",
+    ]);
+
+    // Call 1: Clear partial input
+    expect(mockExecFileCustom).toHaveBeenNthCalledWith(2, "tmux", [
       "send-keys",
       "-t",
       "msg-short",
       "C-u",
     ]);
 
-    // Call 1: Literal text
-    expect(mockExecFileCustom).toHaveBeenNthCalledWith(2, "tmux", [
+    // Call 2: Literal text
+    expect(mockExecFileCustom).toHaveBeenNthCalledWith(3, "tmux", [
       "send-keys",
       "-t",
       "msg-short",
@@ -301,8 +320,8 @@ describe("runtime.sendMessage()", () => {
       "hello world",
     ]);
 
-    // Call 2: Enter
-    expect(mockExecFileCustom).toHaveBeenNthCalledWith(3, "tmux", [
+    // Call 3: Enter
+    expect(mockExecFileCustom).toHaveBeenNthCalledWith(4, "tmux", [
       "send-keys",
       "-t",
       "msg-short",
@@ -310,40 +329,91 @@ describe("runtime.sendMessage()", () => {
     ]);
   });
 
+  it("throws AgentExitedDuringSendError when the pane has fallen back to a shell", async () => {
+    const runtime = create();
+    const handle = makeHandle("msg-shell");
+
+    // Foreground process is zsh — the val-113 failure mode.
+    mockTmuxSuccess("zsh");
+
+    await expect(runtime.sendMessage(handle, "fix the build")).rejects.toThrow(
+      /AgentExitedDuringSendError|foreground process is "zsh"/,
+    );
+
+    // Critically, no send-keys / paste-buffer call must have run after the probe.
+    expect(mockExecFileCustom).toHaveBeenCalledTimes(1);
+    expect(mockExecFileCustom).toHaveBeenNthCalledWith(1, "tmux", [
+      "display-message",
+      "-t",
+      "msg-shell",
+      "-p",
+      "#{pane_current_command}",
+    ]);
+  });
+
+  it("sends anyway when the foreground-command probe fails (best-effort)", async () => {
+    const runtime = create();
+    const handle = makeHandle("msg-probefail");
+
+    // Probe fails (e.g. transient tmux error) — we should NOT block sends.
+    mockTmuxError("display-message: connection lost");
+    mockTmuxSuccess(); // C-u
+    mockTmuxSuccess(); // -l text
+    mockTmuxSuccess(); // Enter
+
+    await runtime.sendMessage(handle, "hello");
+
+    expect(mockExecFileCustom).toHaveBeenCalledTimes(4);
+  });
+
   it("uses load-buffer + paste-buffer for long text (> 200 chars)", async () => {
     const runtime = create();
     const handle = makeHandle("msg-long");
     const longText = "x".repeat(250);
 
-    // 1: C-u, 2: load-buffer, 3: paste-buffer, 4: unlinkSync (sync), 5: delete-buffer, 6: Enter
+    // 1: display-message (foreground probe), 2: C-u, 3: load-buffer,
+    // 4: paste-buffer, 5: delete-buffer (finally), 6: Enter,
+    // 7: capture-pane (post-send verify — returns pane without
+    // a "[Pasted text" marker so the retry loop exits immediately).
+    mockForegroundOk();
     mockTmuxSuccess(); // C-u
     mockTmuxSuccess(); // load-buffer
     mockTmuxSuccess(); // paste-buffer
     mockTmuxSuccess(); // delete-buffer (finally block)
     mockTmuxSuccess(); // Enter
+    mockTmuxSuccess("❯"); // capture-pane — prompt is empty, submission confirmed
 
     await runtime.sendMessage(handle, longText);
 
-    expect(mockExecFileCustom).toHaveBeenCalledTimes(5);
+    expect(mockExecFileCustom).toHaveBeenCalledTimes(7);
 
-    // Call 0: clear
+    // Call 0: foreground probe
     expect(mockExecFileCustom).toHaveBeenNthCalledWith(1, "tmux", [
+      "display-message",
+      "-t",
+      "msg-long",
+      "-p",
+      "#{pane_current_command}",
+    ]);
+
+    // Call 1: clear
+    expect(mockExecFileCustom).toHaveBeenNthCalledWith(2, "tmux", [
       "send-keys",
       "-t",
       "msg-long",
       "C-u",
     ]);
 
-    // Call 1: load-buffer with named buffer
-    expect(mockExecFileCustom).toHaveBeenNthCalledWith(2, "tmux", [
+    // Call 2: load-buffer with named buffer
+    expect(mockExecFileCustom).toHaveBeenNthCalledWith(3, "tmux", [
       "load-buffer",
       "-b",
       "ao-test-uuid-1234",
       expect.stringContaining("ao-send-test-uuid-1234.txt"),
     ]);
 
-    // Call 2: paste-buffer
-    expect(mockExecFileCustom).toHaveBeenNthCalledWith(3, "tmux", [
+    // Call 3: paste-buffer
+    expect(mockExecFileCustom).toHaveBeenNthCalledWith(4, "tmux", [
       "paste-buffer",
       "-b",
       "ao-test-uuid-1234",
@@ -369,16 +439,18 @@ describe("runtime.sendMessage()", () => {
     const runtime = create();
     const handle = makeHandle("msg-multi");
 
+    mockForegroundOk();
     mockTmuxSuccess(); // C-u
     mockTmuxSuccess(); // load-buffer
     mockTmuxSuccess(); // paste-buffer
     mockTmuxSuccess(); // delete-buffer (finally)
     mockTmuxSuccess(); // Enter
+    mockTmuxSuccess("❯"); // capture-pane — submission confirmed
 
     await runtime.sendMessage(handle, "line1\nline2\nline3");
 
     // Should use buffer path, not send-keys -l
-    expect(mockExecFileCustom).toHaveBeenNthCalledWith(2, "tmux", [
+    expect(mockExecFileCustom).toHaveBeenNthCalledWith(3, "tmux", [
       "load-buffer",
       "-b",
       "ao-test-uuid-1234",
@@ -397,6 +469,7 @@ describe("runtime.sendMessage()", () => {
     const handle = makeHandle("msg-fail");
     const longText = "y".repeat(250);
 
+    mockForegroundOk();
     mockTmuxSuccess(); // C-u
     mockTmuxSuccess(); // load-buffer succeeds
     mockTmuxError("paste-buffer failed"); // paste-buffer fails

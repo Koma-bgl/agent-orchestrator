@@ -14,6 +14,7 @@
 import { statSync, existsSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  AgentExitedDuringSendError,
   isIssueNotFoundError,
   isRestorable,
   NON_RESTORABLE_STATUSES,
@@ -1032,6 +1033,62 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       ? (project.agent ?? config.defaults.agent)
       : config.defaults.agent;
     const agentPlugin = registry.get<Agent>("agent", agentPluginName);
+
+    // Wait for the agent to be at an idle prompt before sending. Works for both
+    // already-running sessions (e.g. finishing a previous task or a startup hook)
+    // and freshly restored sessions (resumed agents continue prior work first).
+    //
+    // Sending while the agent is mid-processing — especially during a
+    // SessionStart:resume hook — can cause the paste to land in the prompt
+    // buffer without being submitted, losing the message silently.
+    const waitForIdle = async (timeoutMs: number, pollMs: number): Promise<boolean> => {
+      if (!agentPlugin?.getActivityState) return true;
+      const getActivityState = agentPlugin.getActivityState.bind(agentPlugin);
+      const startTime = Date.now();
+      while (Date.now() - startTime < timeoutMs) {
+        const current = await get(sessionId);
+        if (!current) return false;
+        const activity = await getActivityState(current).catch(() => null);
+        if (activity && (activity.state === "idle" || activity.state === "ready")) {
+          return true;
+        }
+        if (activity?.state === "blocked") {
+          // Auth errors / dead session — don't keep polling
+          console.warn(
+            `[send] Session ${sessionId} is in blocked state; sending anyway`,
+          );
+          return false;
+        }
+        console.log(
+          `[send] Waiting for agent to be idle (state: ${activity?.state ?? "unknown"})…`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+      }
+      return false;
+    };
+
+    // Restore the session, refresh the local handle, and wait for the
+    // resumed agent to become idle. Used both for the upfront liveness
+    // check and as recovery when the runtime detects the pane has fallen
+    // back to a shell (AgentExitedDuringSendError) during send.
+    const restoreAndWait = async (): Promise<void> => {
+      const restored = await restore(sessionId);
+      if (!restored.runtimeHandle) {
+        throw new Error("Restored session has no runtime handle");
+      }
+      handle = restored.runtimeHandle;
+
+      // Resumed agent may continue its previous work — wait up to 2 min for idle.
+      const ready = await waitForIdle(120_000, 5_000);
+      if (!ready) {
+        console.warn(
+          `[send] Agent did not become idle within 120s after restore — sending anyway`,
+        );
+      } else {
+        console.log(`[send] Agent ready for session ${sessionId} after restore`);
+      }
+    };
+
     if (agentPlugin?.isProcessRunning) {
       const agentAlive = await agentPlugin.isProcessRunning(handle).catch(() => false);
       console.log(
@@ -1044,66 +1101,24 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // Agent exited — attempt to restore before sending.
         // restore() destroys the old runtime and creates a new one with a new handle,
         // so we must re-read the handle from metadata afterwards.
-        // After restore, we must wait for the agent to become idle/ready before
-        // sending — a resumed agent may continue its previous work first.
         try {
-          const restored = await restore(sessionId);
-          if (!restored.runtimeHandle) {
-            throw new Error("Restored session has no runtime handle");
-          }
-          handle = restored.runtimeHandle;
-
-          // Wait for the agent to be running AND idle (at the prompt).
-          // A resumed agent may continue its previous work — we must wait
-          // for it to finish before sending a new instruction.
-          const MAX_WAIT_MS = 120_000; // 2 minutes max
-          const POLL_MS = 5_000;
-          const startTime = Date.now();
-          let agentReady = false;
-
-          while (Date.now() - startTime < MAX_WAIT_MS) {
-            await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-
-            const isRunning = await agentPlugin
-              .isProcessRunning(handle)
-              .catch(() => false);
-            if (!isRunning) {
-              // Agent started then exited — might have crashed or finished
-              // Re-check in case it's restarting
-              continue;
-            }
-
-            // Check if agent is at the prompt (idle/ready)
-            if (agentPlugin.getActivityState) {
-              const current = await get(sessionId);
-              if (current) {
-                const activity = await agentPlugin.getActivityState(current);
-                if (activity && (activity.state === "ready" || activity.state === "idle")) {
-                  agentReady = true;
-                  console.log(`[send] Agent ready for session ${sessionId} after restore`);
-                  break;
-                }
-                console.log(
-                  `[send] Waiting for agent to be ready (state: ${activity?.state ?? "unknown"})…`,
-                );
-              }
-            } else {
-              // No getActivityState — fall back to process check only
-              agentReady = true;
-              break;
-            }
-          }
-
-          if (!agentReady) {
-            console.warn(
-              `[send] Agent did not become ready within ${MAX_WAIT_MS / 1000}s — sending anyway`,
-            );
-          }
+          await restoreAndWait();
         } catch (restoreErr) {
           const msg =
             `Cannot send message to session ${sessionId}: agent has exited and restore failed`;
           console.error(`[send] ${msg}`, restoreErr);
           throw new Error(msg, { cause: restoreErr });
+        }
+      } else {
+        // Agent is alive — still wait for idle. This guards against:
+        //   • startup / SessionStart:resume hooks still running
+        //   • agent mid-reply to a previous message
+        // Shorter timeout (30s) since the agent wasn't just restarted.
+        const ready = await waitForIdle(30_000, 2_000);
+        if (!ready) {
+          console.warn(
+            `[send] Agent for session ${sessionId} did not reach idle within 30s — sending anyway`,
+          );
         }
       }
     } else {
@@ -1113,7 +1128,30 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     }
 
     console.log(`[send] Sending message to session ${sessionId} via handle ${handle.id}`);
-    await runtimePlugin.sendMessage(handle, message);
+    try {
+      await runtimePlugin.sendMessage(handle, message);
+    } catch (err) {
+      // Runtime caught the val-113 failure mode (pane foreground is a shell
+      // because the agent exited between the upfront liveness check and the
+      // actual paste). Restore once and retry — but never loop, to avoid
+      // hammering a session that keeps crashing on resume.
+      if (err instanceof AgentExitedDuringSendError) {
+        console.warn(
+          `[send] Runtime detected agent exit for session ${sessionId} (foreground=${err.foregroundCommand}). Restoring and retrying once…`,
+        );
+        try {
+          await restoreAndWait();
+        } catch (restoreErr) {
+          throw new Error(
+            `Cannot send message to session ${sessionId}: agent exited mid-send and restore failed`,
+            { cause: restoreErr },
+          );
+        }
+        await runtimePlugin.sendMessage(handle, message);
+      } else {
+        throw err;
+      }
+    }
     console.log(`[send] Message sent successfully to session ${sessionId}`);
   }
 

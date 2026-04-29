@@ -1403,3 +1403,22 @@ export class WorkspaceMissingError extends Error {
     this.name = "WorkspaceMissingError";
   }
 }
+
+/**
+ * Thrown by a runtime when sendMessage detects that the pane's foreground
+ * process is a shell rather than the agent (i.e. the agent has exited but
+ * the runtime is still alive). Higher layers should catch this and trigger
+ * a restore rather than retrying the same send.
+ */
+export class AgentExitedDuringSendError extends Error {
+  constructor(
+    public readonly handleId: string,
+    public readonly foregroundCommand: string,
+  ) {
+    super(
+      `Pane "${handleId}" foreground process is "${foregroundCommand}" (a shell), ` +
+        `not the expected agent — refusing to send to avoid leaking the prompt to the shell.`,
+    );
+    this.name = "AgentExitedDuringSendError";
+  }
+}

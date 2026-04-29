@@ -5,13 +5,14 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  PluginModule,
-  Runtime,
-  RuntimeCreateConfig,
-  RuntimeHandle,
-  RuntimeMetrics,
-  AttachInfo,
+import {
+  AgentExitedDuringSendError,
+  type PluginModule,
+  type Runtime,
+  type RuntimeCreateConfig,
+  type RuntimeHandle,
+  type RuntimeMetrics,
+  type AttachInfo,
 } from "@composio/ao-core";
 
 const execFileAsync = promisify(execFile);
@@ -36,6 +37,34 @@ function assertValidSessionId(id: string): void {
 async function tmux(...args: string[]): Promise<string> {
   const { stdout } = await execFileAsync("tmux", args);
   return stdout.trimEnd();
+}
+
+/**
+ * Shell program names we recognize as "the agent has exited and the pane
+ * has fallen back to a login shell." If `pane_current_command` is one of
+ * these, refusing to paste prevents leaking the prompt to the shell — the
+ * exact failure mode that left val-113 sending review comments to zsh.
+ */
+const SHELL_COMMANDS = new Set(["zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh", "csh"]);
+
+/**
+ * Returns the foreground command in the (first) pane, or null if it can't
+ * be determined. Best-effort — failure does not block sends.
+ */
+async function getPaneForegroundCommand(handleId: string): Promise<string | null> {
+  try {
+    const out = await tmux(
+      "display-message",
+      "-t",
+      handleId,
+      "-p",
+      "#{pane_current_command}",
+    );
+    const trimmed = out.trim();
+    return trimmed === "" ? null : trimmed;
+  } catch {
+    return null;
+  }
 }
 
 export function create(): Runtime {
@@ -116,12 +145,28 @@ export function create(): Runtime {
     },
 
     async sendMessage(handle: RuntimeHandle, message: string): Promise<void> {
+      // Defense-in-depth: refuse to send if the pane has fallen back to a
+      // shell. The agent plugin's isProcessRunning check (in session-manager)
+      // is the primary guard, but a TOCTOU window remains between that check
+      // and the actual paste — and a buggy plugin could return a false
+      // positive. This check is run inline with the paste, and protects
+      // against the val-113 failure mode where each line of a multi-line
+      // prompt was interpreted by zsh as a separate shell command.
+      //
+      // Best-effort: if we can't determine the foreground command, we send
+      // anyway rather than blocking on transient tmux errors.
+      const foreground = await getPaneForegroundCommand(handle.id);
+      if (foreground !== null && SHELL_COMMANDS.has(foreground)) {
+        throw new AgentExitedDuringSendError(handle.id, foreground);
+      }
+
       // Clear any partial input
       await tmux("send-keys", "-t", handle.id, "C-u");
 
       // For long or multiline messages, use load-buffer + paste-buffer
       // Use randomUUID to avoid temp file collisions on concurrent sends
-      if (message.includes("\n") || message.length > 200) {
+      const isPaste = message.includes("\n") || message.length > 200;
+      if (isPaste) {
         const bufferName = `ao-${randomUUID()}`;
         const tmpPath = join(tmpdir(), `ao-send-${randomUUID()}.txt`);
         writeFileSync(tmpPath, message, { encoding: "utf-8", mode: 0o600 });
@@ -152,6 +197,25 @@ export function create(): Runtime {
       // Without this, Enter can arrive before the text is fully rendered.
       await sleep(300);
       await tmux("send-keys", "-t", handle.id, "Enter");
+
+      // Verify the Enter actually submitted. Claude Code renders a multi-line
+      // paste as `[Pasted text #N +M lines]` on the prompt line; if the TUI
+      // was still initializing (e.g. SessionStart:resume hook running), the
+      // Enter can be swallowed and the paste stays in the input buffer.
+      // Detect that case and retry Enter up to a few times.
+      if (isPaste) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await sleep(500);
+          let pane: string;
+          try {
+            pane = await tmux("capture-pane", "-t", handle.id, "-p", "-S", "-5");
+          } catch {
+            return; // pane gone — best-effort
+          }
+          if (!/\[Pasted text\b/.test(pane)) return;
+          await tmux("send-keys", "-t", handle.id, "Enter");
+        }
+      }
     },
 
     async sendKeys(handle: RuntimeHandle, keys: string): Promise<void> {

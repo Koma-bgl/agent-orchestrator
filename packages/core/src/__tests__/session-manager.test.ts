@@ -863,6 +863,14 @@ describe("cleanup", () => {
 });
 
 describe("send", () => {
+  // send() waits for the agent to be idle before delivering. The default mock
+  // reports "active"; override to "idle" so sends resolve quickly in tests.
+  beforeEach(() => {
+    (mockAgent.getActivityState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state: "idle",
+    });
+  });
+
   it("sends message via runtime.sendMessage", async () => {
     writeMetadata(sessionsDir, "app-1", {
       worktree: "/tmp",
