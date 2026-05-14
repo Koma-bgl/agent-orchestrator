@@ -954,6 +954,22 @@ function createClaudeCodeAgent(): Agent {
         env["AO_ISSUE_ID"] = config.issueId;
       }
 
+      // Forward PATH from the orchestrator process to the spawned shell.
+      // tmux panes don't automatically inherit the parent's PATH, so the agent
+      // can lose access to npx/bun/node and waste turns probing for binaries.
+      // Prepend common tool locations that the orchestrator may not have in PATH
+      // but are typical homes for dev tools across macOS/Linux setups.
+      const home = process.env["HOME"] ?? "";
+      const pathSegments = [
+        `${home}/.bun/bin`,
+        `${home}/.local/bin`,
+        `${home}/bin`,
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        process.env["PATH"] ?? "",
+      ].filter((segment) => segment.length > 0);
+      env["PATH"] = pathSegments.join(":");
+
       // Pass OAuth token for headless/server use (avoids daily re-login).
       // Priority: config oauthToken > existing CLAUDE_CODE_OAUTH_TOKEN env var.
       // Supports ${ENV_VAR} syntax for referencing environment variables.
