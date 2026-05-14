@@ -100,35 +100,24 @@ You MAY verify ONLY when:
 
 If the plan is wrong or stale, STOP and reply to the ticket with \`plan needs revision: <why>\`. Do not improvise beyond the plan's scope.
 
-## Codebase Queries — GitNexus before grep
-If the repo is indexed by GitNexus, prefer it BEFORE grep, find, or full-file Reads. All commands require \`--repo <repo-name>\`.
+## Codebase Queries — Use GitNexus
 
-Decision tree:
-- "What does X do? who calls X?"    → \`gitnexus context <X> --repo <repo>\`
-- "What breaks if I change X?"      → \`gitnexus impact <X> --repo <repo>\`
-- "Find code related to {concept}"  → \`gitnexus query "{concept}" --repo <repo>\`
+**GitNexus is your default search tool.** It's a code knowledge graph that answers structural questions about the codebase ~20× cheaper than grep + Read (~400 tokens vs ~8,000). Use it for ALL of these:
 
-**Availability check (do this ONCE per session, before first use):**
-\`\`\`
-gitnexus status --repo <repo>
-\`\`\`
-If it succeeds with stats → GitNexus is available; use it as the default.
-If it fails for ANY reason → fall back to grep + Read for the rest of the session. Do not retry.
+| Question                               | Command                                                |
+| -------------------------------------- | ------------------------------------------------------ |
+| What does X do? who calls X?           | \`gitnexus context <X> --repo <repo>\`                 |
+| What breaks if I change X?             | \`gitnexus impact <X> --repo <repo>\`                  |
+| Find code related to {concept}         | \`gitnexus query "{concept}" --repo <repo>\`           |
 
-**Fall back to grep + Read silently when:**
-- \`gitnexus\` command not found (\`command not found\`, \`ENOENT\`).
-- \`gitnexus status\` errors or shows the repo is not indexed.
-- A query exits non-zero, throws a stack trace, or returns malformed JSON.
-- The repo isn't in the indexed list (e.g. you're working on a project that GitNexus doesn't know about).
-- GitNexus returns no results / empty arrays for a query — it doesn't model the thing you're looking for (literal strings, configs, error messages, comments).
-- The plan already gave you exact \`file:line\` — skip GitNexus entirely and go straight to Read with offset/limit.
+\`--repo <repo-name>\` is required (e.g. \`--repo valhalla\`). Output is structured JSON — parse the fields you need, don't pipe through head/cat. For ambiguous symbol names, use \`--uid <full-id>\` from the candidate list.
 
-Do NOT block on GitNexus. If a single query fails, run it once more with a simpler argument; if that also fails, abandon GitNexus for the rest of the session and switch to grep. Never report "GitNexus is broken" back to the orchestrator — just use the fallback.
+**Only use grep when GitNexus doesn't fit:**
+- Literal string search (config values, error messages, comments, log output) — GitNexus models symbols, not text content.
+- The plan already gave you exact \`file:line\` — skip search, Read with offset/limit directly.
+- GitNexus errored or returned empty for this specific query — silently fall back to grep for THIS query, then go back to using GitNexus for the next one. Don't abandon it session-wide.
 
-**Other rules:**
-- Output is structured JSON. Parse the fields you need; do NOT pipe through \`head\`/\`cat\` blindly — the relevant fields are short.
-- For ambiguous symbol names, pass \`--uid <full-id>\` from the candidate list.
-- Cost: a GitNexus query is ~300-500 tokens. The equivalent grep + 5 Reads is 5,000-10,000 tokens. Use the cheap path when available.
+Never report tool failures to the orchestrator — just use the fallback and keep working.
 
 ## Context Efficiency
 Your conversation history accumulates with every tool call. Keep it lean.
