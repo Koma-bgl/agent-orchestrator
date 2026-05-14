@@ -959,9 +959,15 @@ function createClaudeCodeAgent(): Agent {
       // can lose access to npx/bun/node and waste turns probing for binaries.
       // Prepend common tool locations that the orchestrator may not have in PATH
       // but are typical homes for dev tools across macOS/Linux setups.
+      //
+      // The active Node bin dir is derived from process.execPath so this works
+      // across nvm/fnm/asdf/volta version managers without hardcoding versions.
       const home = process.env["HOME"] ?? "";
+      const nodeBinDir = dirname(process.execPath);
       const pathSegments = [
+        nodeBinDir,
         `${home}/.bun/bin`,
+        `${home}/Library/pnpm`,
         `${home}/.local/bin`,
         `${home}/bin`,
         "/opt/homebrew/bin",
