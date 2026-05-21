@@ -15,7 +15,11 @@ export function registerDashboard(program: Command): void {
     .option("-p, --port <port>", "Port to listen on")
     .option("--no-open", "Don't open browser automatically")
     .option("--rebuild", "Clean stale build artifacts and rebuild before starting")
-    .action(async (opts: { port?: string; open?: boolean; rebuild?: boolean }) => {
+    .option(
+      "--prod",
+      "Run in production mode (next build + next start) — lighter memory for long-running dashboards",
+    )
+    .action(async (opts: { port?: string; open?: boolean; rebuild?: boolean; prod?: boolean }) => {
       const config = loadConfig();
       const port = opts.port ? parseInt(opts.port, 10) : (config.port ?? 3000);
 
@@ -82,7 +86,20 @@ export function registerDashboard(program: Command): void {
       // Spawn all three processes: Next.js + terminal WebSocket server + direct terminal WebSocket server
       const serverDir = resolve(webDir, "server");
 
-      const nextChild = spawn("npx", ["next", "dev", "-p", String(port)], {
+      if (opts.prod) {
+        console.log(chalk.dim("Building dashboard for production..."));
+        const buildOk = await runNextBuild(webDir, env);
+        if (!buildOk) {
+          console.error(chalk.red("next build failed — aborting."));
+          process.exit(1);
+        }
+      }
+
+      const nextArgs = opts.prod
+        ? ["next", "start", "-p", String(port)]
+        : ["next", "dev", "-p", String(port)];
+
+      const nextChild = spawn("npx", nextArgs, {
         cwd: webDir,
         stdio: ["inherit", "inherit", "pipe"],
         env,
@@ -201,6 +218,22 @@ export function registerDashboard(program: Command): void {
         killAll(code ?? 0);
       });
     });
+}
+
+/**
+ * Run `next build` in the given web dir. Streams output to the user.
+ * Resolves true on exit code 0, false otherwise.
+ */
+function runNextBuild(webDir: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const child = spawn("npx", ["next", "build"], {
+      cwd: webDir,
+      stdio: "inherit",
+      env,
+    });
+    child.once("error", () => resolvePromise(false));
+    child.once("exit", (code) => resolvePromise(code === 0));
+  });
 }
 
 /**
