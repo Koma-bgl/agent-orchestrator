@@ -1,0 +1,11 @@
+# Build context is the repo root (see compose `context: ..`).
+**/node_modules
+**/.next
+**/dist
+**/dist-server
+**/.turbo
+.git
+**/*.log
+deploy/.env
+**/coverage
+**/.vitest
