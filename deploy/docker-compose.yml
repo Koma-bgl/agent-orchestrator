@@ -1,17 +1,22 @@
 services:
   ao:
     build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     image: ao-local:dev
     env_file:
       - .env
-    ports:
-      - "3000:3000"
+    # Defense-in-depth: a tini-equivalent init reaps zombies (agents spawn tmux
+    # children later) and forwards signals. The entrypoint already exec's the
+    # real Go binary as PID 1, so this is belt-and-suspenders, not load-bearing.
+    init: true
+    # NOTE: the daemon binds 127.0.0.1 only, so publishing 3001 to the host would
+    # NOT reach it (and the deployed stack must never expose 3001 anyway — Caddy,
+    # added in M3, is the only public surface). Verify via `docker compose exec`.
     volumes:
-      # Persistent AO state (sessions, worktrees, config) survives restarts/rebuilds.
-      - ao-state:/root/.agent-orchestrator
-      # For gcp source locally: mount your ADC (read-only). Harmless if unused.
+      # Durable daemon state (SQLite + running.json) survives restarts/rebuilds.
+      - ao-state:/root/.ao
+      # For the gcp secret source locally: mount your ADC read-only. Harmless if unused.
       - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
     restart: unless-stopped
 
