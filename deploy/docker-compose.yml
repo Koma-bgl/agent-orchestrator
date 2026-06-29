@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # @aoagents/ao is linux-x64 only; emulated on arm64 dev machines, native on the VM.
+    platform: linux/amd64
     image: ao-local:dev
     env_file:
       - .env

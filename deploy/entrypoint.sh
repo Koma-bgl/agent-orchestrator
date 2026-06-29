@@ -55,6 +55,12 @@ fi
 # would SIGKILL after the timeout instead of shutting down gracefully.
 # Resolve the real platform binary and exec IT directly, so the Go daemon is PID
 # 1 and its own signal.NotifyContext(SIGINT,SIGTERM) handles graceful shutdown.
-AO_BIN="$(node -e 'const path=require("path");const pkg=`@aoagents/ao-${process.platform}-${process.arch}`;const dir=path.dirname(require.resolve(pkg+"/package.json"));process.stdout.write(path.join(dir,"bin","ao"))')"
+#
+# The platform binary (@aoagents/ao-<platform>-<arch>) is a NESTED optional dep of
+# the globally-installed `ao` shim package, so it is NOT resolvable from /app.
+# Resolve it relative to the shim's own directory (follow the PATH symlink to the
+# shim, then require.resolve the platform package with that dir as the search base).
+AO_SHIM_DIR="$(dirname "$(readlink -f "$(command -v ao)")")"
+AO_BIN="$(node -e 'const path=require("path");const pkg=`@aoagents/ao-${process.platform}-${process.arch}`;const pj=require.resolve(pkg+"/package.json",{paths:[process.argv[1]]});process.stdout.write(path.join(path.dirname(pj),"bin","ao"))' "$AO_SHIM_DIR")"
 echo "[entrypoint] starting ao daemon (${AO_BIN}) on 127.0.0.1:${AO_PORT:-3001}"
 exec "${AO_BIN}" daemon "$@"

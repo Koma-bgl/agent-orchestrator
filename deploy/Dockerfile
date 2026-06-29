@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
-FROM node:20-bookworm-slim
+# Pin linux/amd64: @aoagents/ao ships a linux-x64 binary only (no linux-arm64).
+# Native on the x86 GCE VM and CI's ubuntu runner; emulated on arm64 dev machines
+# (e.g. Apple Silicon) — correct everywhere given the x64-only binary.
+FROM --platform=linux/amd64 node:20-bookworm-slim
 
 # OS deps: agent runtime (tmux/git), curl+ca-certificates (Secret Manager fetch
 # + gh apt repo), then the GitHub CLI. No build toolchain — we install a prebuilt
