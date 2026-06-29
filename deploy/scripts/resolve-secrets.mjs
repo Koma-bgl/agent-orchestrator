@@ -3,7 +3,9 @@
 
 export const SECRET_ENV_MAP = {
   "claude-oauth-token": "CLAUDE_CODE_OAUTH_TOKEN",
-  "github-pat": "GH_TOKEN",
+  // GITHUB_TOKEN covers both the Go daemon (AO_GITHUB_TOKEN/GITHUB_TOKEN) and gh.
+  "github-pat": "GITHUB_TOKEN",
+  // Not consumed by the Go build yet (no Linear adapter); mapped for forward-compat.
   "linear-api-key": "LINEAR_API_KEY",
 };
 

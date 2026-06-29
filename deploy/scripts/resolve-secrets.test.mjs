@@ -22,7 +22,11 @@ test("explicit env source overrides project presence", () => {
 test("secret env map covers the three M2 secrets", () => {
   assert.deepEqual(secretNames(), ["claude-oauth-token", "github-pat", "linear-api-key"]);
   assert.equal(SECRET_ENV_MAP["claude-oauth-token"], "CLAUDE_CODE_OAUTH_TOKEN");
-  assert.equal(SECRET_ENV_MAP["github-pat"], "GH_TOKEN");
+  // GITHUB_TOKEN (not GH_TOKEN): the Go daemon reads AO_GITHUB_TOKEN/GITHUB_TOKEN
+  // and gh reads GITHUB_TOKEN — one var covers both.
+  assert.equal(SECRET_ENV_MAP["github-pat"], "GITHUB_TOKEN");
+  // linear-api-key is mapped but NOT yet consumed by the Go build (no Linear
+  // adapter). Kept forward-compatible; safe to export, simply unused for now.
   assert.equal(SECRET_ENV_MAP["linear-api-key"], "LINEAR_API_KEY");
 });
 
