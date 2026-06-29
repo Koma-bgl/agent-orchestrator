@@ -8,6 +8,24 @@
 
 **Tech Stack:** Docker + docker compose, `node:20-bookworm-slim` base, `@aoagents/ao@0.10.0` (linux-x64 binary), `@anthropic-ai/claude-code`, Node's built-in `node:test` for the resolver, GitHub Actions for image publish.
 
+> **Live-verification amendments (applied & committed during M1/M2 execution).**
+> Two real defects surfaced only when the image was actually built/run; both
+> would also break on the x86 VM, so they are folded into the deploy kit:
+> 1. **Pin `linux/amd64`.** `@aoagents/ao` ships a `linux-x64` binary only (no
+>    `linux-arm64`), so the build fails on arm64 dev machines. The Dockerfile uses
+>    `FROM --platform=linux/amd64` and compose sets `platform: linux/amd64` —
+>    native on the GCE VM + CI ubuntu runner, emulated on Apple Silicon.
+> 2. **Resolve the binary from the shim dir.** The platform binary is a *nested*
+>    optional dep of the global `ao` shim package (`.../@aoagents/ao/node_modules/
+>    @aoagents/ao-linux-x64/bin/ao`), not resolvable from `/app`. The entrypoint
+>    follows the PATH symlink to the shim and `require.resolve`s with that dir as
+>    the base, then `exec`s the real binary (PID 1, graceful SIGTERM).
+>
+> Verified end-to-end: healthy container; `/healthz` 200 with `executablePath`
+> = the real Go binary; `/api/v1/sessions` 200; SQLite state on the volume;
+> `docker compose stop` drains in ~0.2s logging `daemon stopped cleanly`;
+> env-source `GITHUB_TOKEN` passthrough + correct resolver plan.
+
 ### Grounding facts (verified against the branch)
 
 - `@aoagents/ao@0.10.0` is published on npm with `bin.ao = bin/ao.js` and a `@aoagents/ao-linux-x64@0.10.0` optional dep → `npm i -g @aoagents/ao@0.10.0` puts `ao` on PATH in a linux-x64 container.
