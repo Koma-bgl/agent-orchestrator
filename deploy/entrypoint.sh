@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Resolve the secret-loading plan (source + name→env mapping) from the pure resolver.
-PLAN="$(node /app/deploy/scripts/resolve-secrets.mjs)"
+# Resolve the secret-loading plan (source + name->env mapping) from the pure resolver.
+PLAN="$(node /app/scripts/resolve-secrets.mjs)"
 SOURCE="$(printf '%s\n' "$PLAN" | sed -n 's/^SOURCE=//p')"
 echo "[entrypoint] secret source: ${SOURCE}"
 
-# Obtain a Secret Manager bearer token only when using gcp.
+# Obtain a Secret Manager bearer token. Precedence:
+#   1. AO_GCP_ACCESS_TOKEN  -> local testing without gcloud-in-container
+#      (host runs: export AO_GCP_ACCESS_TOKEN="$(gcloud auth print-access-token)")
+#   2. gcloud               -> if the SDK happens to be present
+#   3. metadata server      -> on the GCE VM (Phase 2), the attached SA
 get_token() {
-  if command -v gcloud >/dev/null 2>&1 && gcloud auth print-access-token >/dev/null 2>&1; then
+  if [ -n "${AO_GCP_ACCESS_TOKEN:-}" ]; then
+    printf '%s' "${AO_GCP_ACCESS_TOKEN}"
+  elif command -v gcloud >/dev/null 2>&1 && gcloud auth print-access-token >/dev/null 2>&1; then
     gcloud auth print-access-token
   else
-    # VM/metadata fallback (Phase 2): the metadata server issues a token.
     curl -s -H "Metadata-Flavor: Google" \
       "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
       | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).access_token))'
@@ -41,8 +46,15 @@ else
   echo "[entrypoint] using env/.env secrets as-is"
 fi
 
-# Start AO from a git-initialized project dir so autoCreateConfig never trips
-# the "not a git repository" guard. The baked config lives in this dir.
-# --no-restore: a fresh container has no last-stop.json to restore.
-cd "${AO_PROJECT_DIR:-/workspace/sample}"
-exec node /app/packages/cli/dist/index.js start --no-restore "$@"
+# Launch the headless Go daemon. It binds 127.0.0.1:${AO_PORT}, reads state from
+# $HOME/.ao, and blocks until SIGTERM/SIGINT.
+#
+# IMPORTANT: do NOT `exec ao daemon`. The npm `ao` is a Node shim that runs the
+# Go binary via spawnSync (a *child*, not execve). Under `exec ao daemon`, node
+# would be PID 1 and would not forward SIGTERM to the Go child, so `docker stop`
+# would SIGKILL after the timeout instead of shutting down gracefully.
+# Resolve the real platform binary and exec IT directly, so the Go daemon is PID
+# 1 and its own signal.NotifyContext(SIGINT,SIGTERM) handles graceful shutdown.
+AO_BIN="$(node -e 'const path=require("path");const pkg=`@aoagents/ao-${process.platform}-${process.arch}`;const dir=path.dirname(require.resolve(pkg+"/package.json"));process.stdout.write(path.join(dir,"bin","ao"))')"
+echo "[entrypoint] starting ao daemon (${AO_BIN}) on 127.0.0.1:${AO_PORT:-3001}"
+exec "${AO_BIN}" daemon "$@"
