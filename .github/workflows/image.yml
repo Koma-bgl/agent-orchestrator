@@ -1,4 +1,4 @@
-name: Build Image
+name: Publish AO daemon image
 
 on:
   release:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Extra tag to push (e.g. a version). Defaults to 'manual'.
+        description: Image tag to publish (defaults to the release tag or "manual")
         required: false
         type: string
 
@@ -14,44 +14,33 @@ permissions:
   contents: read
   packages: write
 
-concurrency:
-  group: build-image
-  cancel-in-progress: false
-
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@v4
 
-      - name: Log in to GHCR
+      - name: Log in to ghcr.io
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Compute tags
         id: tags
         run: |
-          IMG="ghcr.io/${{ github.repository }}"
-          IMG="$(printf '%s' "$IMG" | tr '[:upper:]' '[:lower:]')"
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VER="${{ github.event.release.tag_name }}"
-            echo "tags=${IMG}:stable,${IMG}:${VER}" >> "$GITHUB_OUTPUT"
-          else
-            EXTRA="${{ inputs.tag }}"; EXTRA="${EXTRA:-manual}"
-            echo "tags=${IMG}:${EXTRA}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - uses: docker/setup-buildx-action@v3
+          REF="${{ inputs.tag || github.event.release.tag_name || 'manual' }}"
+          REPO="ghcr.io/${{ github.repository }}"
+          echo "tags=${REPO}:stable,${REPO}:${REF}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: deploy
           file: deploy/Dockerfile
           push: true
           tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
