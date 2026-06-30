@@ -1,0 +1,69 @@
+{
+	# Local mode: serve TLS on 8443 (Caddy internal cert). M7 removes these two
+	# lines and switches to the bare domain for automatic Let's Encrypt.
+	http_port 8080
+	https_port 8443
+
+	order authenticate before respond
+	order authorize before basicauth
+
+	security {
+		oauth identity provider google {
+			realm google
+			driver google
+			client_id {env.GOOGLE_CLIENT_ID}
+			client_secret {env.GOOGLE_CLIENT_SECRET}
+			scopes openid email profile
+		}
+
+		authentication portal myportal {
+			crypto default token lifetime 3600
+			crypto key sign-verify {env.JWT_SHARED_KEY}
+			enable identity provider google
+			# Conventional role grant; NOT load-bearing for the allowlist below
+			# (the policy gates on the `email` claim directly, not on role).
+			transform user {
+				match realm google
+				action add role authp/user
+			}
+		}
+
+		authorization policy mypolicy {
+			set auth url {$AO_SITE_URL}/auth/oauth2/google
+			crypto key verify {env.JWT_SHARED_KEY}
+
+			# EMAIL ALLOWLIST — acl default is deny-unless-allowed. One rule per
+			# allowed Google email (extend as needed). Trailing deny is explicit.
+			acl rule {
+				comment allowlisted operator 1
+				match email {env.ALLOWED_EMAIL_1}
+				allow stop log info
+			}
+			acl rule {
+				comment default deny
+				match any
+				deny log warn
+			}
+
+			validate bearer header
+			inject headers with claims
+		}
+	}
+}
+
+{$AO_SITE_ADDRESS} {
+	# Local: Caddy internal self-signed cert. M7 removes `tls internal` for ACME.
+	tls internal
+
+	route /auth* {
+		authenticate with myportal
+	}
+
+	route /* {
+		authorize with mypolicy
+		reverse_proxy ao:8080 {
+			# SSE belt-and-suspenders: stream /api/v1/events without buffering.
+			flush_interval -1
+		}
+	}
+}
