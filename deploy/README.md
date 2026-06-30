@@ -1,13 +1,16 @@
-# AO container — local run (M1–M2)
+# AO container — local run (M1–M4)
 
 This directory packages the Agent Orchestrator **Go daemon** as a Docker image
 you can run on your laptop with `docker compose up`. It boots `ao daemon`
-headless, serves the REST API + `/healthz`, and loads agent credentials at
-startup — no cloud VM required.
+headless, serves the REST API + `/healthz`, loads agent credentials at startup,
+puts a Google sign-in + email-allowlist gate (Caddy) in front, and serves a live
+monitoring dashboard — all with no cloud VM required.
 
-> **Scope:** TLS, Google sign-in, the `/admin` UI, Watchtower self-update, and
-> GCP VM provisioning are **not** in this image yet — they are later milestones
-> (M3–M7). This is the "test the setup locally" slice.
+> **Scope:** local run with the daemon (M1–M2), Caddy + Google sign-in (M3), and
+> the monitoring dashboard (M4) all work here. Still later milestones: admin ops
+> (M5), Watchtower self-update (M6), and GCP VM provisioning + the setup skill
+> (M7–M8). Real public TLS arrives with the VM (M7); locally Caddy uses a
+> self-signed internal cert.
 
 ## Prerequisites
 
@@ -149,3 +152,21 @@ docker compose up -d --build
   provisioning passwords. No passwords are stored anywhere.
 - The session is a signed JWT cookie (`JWT_SHARED_KEY`); there is no server-side
   user database to persist.
+
+## M4: monitoring dashboard
+
+Once signed in (M3), `https://localhost:8443/` serves a live, read-only session
+dashboard:
+
+- Sessions grouped by project, each with a derived-status badge (working /
+  needs_input / ci_failed / mergeable / merged …).
+- Updates **live** via the daemon's SSE stream (`/api/v1/events`); the header
+  shows a `live` / `reconnecting…` connection indicator, with a 15s polling
+  fallback if the stream drops.
+- It **observes** the daemon — it does not control it. Acting on sessions
+  (version/update, token rotation, allowlist edits) comes with the M5 admin ops.
+
+The dashboard is a single static file (`deploy/web/index.html`, no build step)
+served by Caddy behind the same Google-auth gate; its `/api/v1/*` calls are
+proxied to the daemon, so an unauthenticated visitor is bounced to sign-in before
+ever loading it.
