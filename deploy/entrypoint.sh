@@ -54,6 +54,12 @@ AO_BRIDGE_PORT="${AO_BRIDGE_PORT:-8080}"
 echo "[entrypoint] starting loopback bridge :${AO_BRIDGE_PORT} -> 127.0.0.1:${AO_PORT:-3001}"
 socat "TCP-LISTEN:${AO_BRIDGE_PORT},fork,reuseaddr" "TCP:127.0.0.1:${AO_PORT:-3001}" &
 
+# Admin backend (version / update-now / secret rotation). Bound to the compose
+# network only; Caddy gates /admin/api/* with Google auth before reaching it.
+AO_ADMIN_PORT="${AO_ADMIN_PORT:-8090}"
+echo "[entrypoint] starting admin backend on :${AO_ADMIN_PORT}"
+node /app/admin/server.mjs &
+
 # Launch the headless Go daemon. It binds 127.0.0.1:${AO_PORT}, reads state from
 # $HOME/.ao, and blocks until SIGTERM/SIGINT.
 #

@@ -25,6 +25,7 @@ RUN npm install -g @aoagents/ao@0.10.0 @anthropic-ai/claude-code \
 WORKDIR /app
 COPY entrypoint.sh /app/entrypoint.sh
 COPY scripts /app/scripts
+COPY admin /app/admin
 RUN chmod +x /app/entrypoint.sh
 
 # Daemon binds 127.0.0.1:AO_PORT; state lives under $HOME/.ao (mounted volume).
