@@ -8,6 +8,13 @@
 
 **Tech Stack:** `containrrr/watchtower` (pinned), docker compose, Docker socket.
 
+> **Live-verification amendment (applied):** Watchtower 1.7.1's Docker client
+> defaults to API v1.25, but modern daemons require ≥ 1.40 (this host: server 1.54,
+> min 1.40) — every operation errored until `DOCKER_API_VERSION: "1.44"` was added
+> to the watchtower service env (and `-e DOCKER_API_VERSION=1.44` to the Task 5
+> run-once command). Verified: schedule set (next run 00:00), label-scoped to
+> ao+caddy, HTTP API enabled, run-once `Scanned=2 Updated=0` gracefully, stack intact.
+
 > **Scope (M6):** scheduled + on-demand image self-update of the running stack. NOT in scope: the admin UI/backend that calls the update API (M5), secret-rotation restarts (M5), the GCP VM (M7), the setup skill (M8).
 
 > **Verification reality:** locally the stack runs `:dev` images that are not in any registry, so Watchtower has nothing to pull — the mechanics tier verifies Watchtower **starts, picks up the schedule, watches exactly the `ao`+`caddy` containers, and a forced `--run-once` completes gracefully** (reporting no update for local images, not crashing). The real "push a new `:stable` → containers swap" is a registry/VM-tier test, documented for M7.
@@ -176,7 +183,7 @@ Expected: logs show it started, the **schedule / next run** time, and that it is
 - [ ] **Step 3: Forced run-once completes gracefully**
 
 ```bash
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+docker run --rm -e DOCKER_API_VERSION=1.44 -v /var/run/docker.sock:/var/run/docker.sock \
   containrrr/watchtower:1.7.1 --run-once --label-enable 2>&1 | tail -20
 ```
 Expected: it inspects the labelled containers and reports **no update / unable to resolve registry for the local `:dev` images** — gracefully (exit without crash). This proves the mechanism runs; the actual pull is a registry-tier behavior. (Acceptable outcomes: "Found 0 containers to update" / "no registry" / "Session done" — what matters is it does not crash and does not tear down the running stack.)
