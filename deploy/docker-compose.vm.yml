@@ -1,0 +1,20 @@
+# VM/public-mode override. Apply ON TOP of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.vm.yml up -d --build
+#
+# Compose merges `ports`/`volumes` lists by APPENDING — so we use the `!override`
+# tag to REPLACE them, otherwise the base's 8443 + local Caddyfile mount would
+# also apply (publishing 8443 and double-mounting /etc/caddy/Caddyfile).
+services:
+  caddy:
+    ports: !override
+      - "80:80"      # Let's Encrypt HTTP-01 challenge + HTTP→HTTPS redirect
+      - "443:443"    # public HTTPS
+    volumes: !override
+      - ./Caddyfile.public:/etc/caddy/Caddyfile:ro   # public-mode config (auto-TLS)
+      - ./web:/srv:ro                                # the monitoring SPA
+      - caddy-data:/data                             # ACME/cert storage (persist!)
+      - caddy-config:/config
+    environment:
+      # The sslip.io host, supplied by deploy-gcp.sh create.
+      AO_SITE_ADDRESS: ${AO_SITE_ADDRESS}
+      AO_SITE_URL: https://${AO_SITE_ADDRESS}
