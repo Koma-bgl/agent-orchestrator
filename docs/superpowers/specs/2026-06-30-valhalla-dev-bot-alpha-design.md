@@ -22,28 +22,48 @@ credentials (not the dummy values used in the M1–M6 mechanics tier).
 
 ## Credential model (the crux)
 
-Two independent planes — they do not substitute for each other:
+Two independent planes, stored in **two different places** by design:
 
 1. **Dashboard access (humans).** Google sign-in at the Caddy gate. A short-lived
    JWT cookie; **nothing stored** but the email allowlist. Who gets in = the
    **allowlist**, not Secret Manager IAM.
-2. **Machine credentials (the daemon/agents).** The daemon runs autonomously 24/7
-   with no human present, so it needs its own stored tokens. These live in
-   **Secret Manager** and are **read** on boot.
+2. **Agent identity (per-user, per-box).** The GitHub/Claude credentials the agents
+   act under are **not** centralized in Secret Manager — they are **per-user and
+   per-VM**, established by the operator logging in **on the box itself** and stored
+   in the box's own persisted volume.
 
-### The five secrets (all read-only at runtime)
+### Secret Manager holds only the THREE shared gate secrets
 
 | Secret | Consumed by |
 |---|---|
 | `google-oauth-client` (id + secret) | Caddy — powers the sign-in gate |
 | `jwt-shared-key` | Caddy — signs the session JWT |
 | `dashboard-allowlist` | Caddy — permitted Google emails |
-| `claude-oauth-token` | daemon/agents — Anthropic API |
-| `github-pat` | daemon/agents — push, PRs, CI |
 
-**Create-once, read-many.** The Google OAuth client is tied to the **domain +
-project**, not a VM instance — recreate the box, it re-reads the same client. A new
-client is only needed for a *separate* deployment on a *different* domain.
+These are **deployment-level, shared, create-once-read-many**. The Google OAuth
+client is tied to the **domain + project**, not a VM instance — recreate the box, it
+re-reads the same client. A new client is only needed for a *separate* deployment on
+a *different* domain.
+
+### Agent credentials live on the box, NOT in Secret Manager
+
+GitHub and Claude tokens are per-user identity creds; centralizing powerful tokens
+gives them a needless blast radius. Instead:
+
+- The operator logs in **on the box**: `docker compose exec ao gh auth login` and
+  `claude setup-token` (or via the M5 admin "connect" flow). `gh` and `claude` use
+  their own on-disk credential storage.
+- AO's agents inherit that login state directly — **no `GITHUB_TOKEN` /
+  `CLAUDE_CODE_OAUTH_TOKEN` injected from Secret Manager.** The secret resolver
+  drops both.
+- This also **resolves the PAT/SSO question** — a normal interactive `gh` login
+  inherits the operator's SSO automatically; no PAT or org-approval dance.
+
+**Required wiring (persistence):** so the logins survive Watchtower recreates, the
+CLI config dirs must live on the persisted volume — e.g. `GH_CONFIG_DIR=/root/.ao/gh`
+and `CLAUDE_CONFIG_DIR=/root/.ao/claude` (only `/root/.ao` is volume-backed today).
+Without this, a nightly update wipes the login. **This is a deploy-kit change to
+make in M7** (not yet implemented).
 
 ### The bootstrap credential (cannot live in Secret Manager)
 
@@ -79,36 +99,40 @@ The GCP identity that *reads* Secret Manager can't itself be stored there
 1. **Preflight** — confirm `docker` is running; resolve a usable GCP credential
    (token → key file → ADC+impersonation → ADC); confirm the project
    (`gcloud config get-value project`, echo it back).
-2. **Check the five secrets exist** — `gcloud secrets describe` (or `versions
-   access` dry probe) for each. Missing → stop with a per-secret message + the exact
-   one-time create command (login-not-paste where possible), e.g.
-   `gh auth token | gcloud secrets create github-pat --data-file=-`. **Read-only.**
-3. **Fetch + materialize** — read the five via the resolved credential; write a
-   **transient, gitignored `deploy/.env`** (values never leave the machine).
+2. **Check the three gate secrets exist** — `gcloud secrets describe` for
+   `google-oauth-client`, `jwt-shared-key`, `dashboard-allowlist`. Missing → stop
+   with a per-secret message + the exact one-time create command. **Read-only.**
+3. **Fetch + materialize** — read the three via the resolved credential; write a
+   **transient, gitignored `deploy/.env`** (values never leave the machine). Agent
+   tokens are left unset — they're established on the box (step 5b).
 4. **Bring up + verify** — `docker compose up -d --build`; run the mechanics suite
    (healthy; `/` → 302 gated; `/api/v1/sessions`; spawn + SSE; Watchtower scheduled;
    `/admin/api/*` responds) and report pass/fail.
 5. **Optional live tier** — offer to open `https://localhost:8443` for a *real*
-   Google sign-in (real client + localhost redirect) → populated dashboard → a real
-   agent session.
+   Google sign-in (real client + localhost redirect) → populated dashboard.
+   - **5b. On-box agent auth:** `docker compose exec ao gh auth login` and
+     `claude setup-token` so agents can do real work — stored on the box's volume,
+     not in Secret Manager.
 6. **Teardown** — `docker compose down` (keep or wipe state).
 
-## Missing-secret guidance (one-time creation)
+## Missing-secret guidance (one-time creation — the 3 gate secrets only)
 
-| Secret | Suggested create (login-not-paste) |
+| Secret | Suggested create |
 |---|---|
-| `github-pat` | `gh auth login` then `gh auth token \| gcloud secrets create github-pat --data-file=-` |
-| `claude-oauth-token` | `claude setup-token` → `gcloud secrets create claude-oauth-token --data-file=-` |
 | `jwt-shared-key` | `openssl rand -hex 32 \| gcloud secrets create jwt-shared-key --data-file=-` |
 | `dashboard-allowlist` | `printf '%s' you@org.com \| gcloud secrets create dashboard-allowlist --data-file=-` |
 | `google-oauth-client` | Console-created OAuth Web client (id+secret); store as JSON/`id\|secret` — the one manual step |
 
+Agent creds (`github-pat`/`claude-oauth-token`) are **not** created here — they're
+on-box auth (`gh auth login` / `claude setup-token`), see the credential model.
+
 ## Verification (acceptance)
 
 - Preflight resolves a GCP credential and the right project.
-- All five secrets are found (or the operator is told exactly which to create).
+- The three gate secrets are found (or the operator is told exactly which to create).
 - Stack comes up healthy; the full mechanics suite passes against **real** secrets.
-- (Optional, operator-driven) a real Google sign-in reaches the populated dashboard.
+- (Optional, operator-driven) a real Google sign-in reaches the populated dashboard,
+  and on-box `gh`/`claude` login lets an agent do real work.
 
 ## Deferred / out of scope
 
