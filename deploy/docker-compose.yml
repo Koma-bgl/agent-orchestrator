@@ -13,8 +13,12 @@ services:
     # real Go binary as PID 1, so this is belt-and-suspenders, not load-bearing.
     init: true
     # NOTE: the daemon binds 127.0.0.1 only, so publishing 3001 to the host would
-    # NOT reach it (and the deployed stack must never expose 3001 anyway — Caddy,
-    # added in M3, is the only public surface). Verify via `docker compose exec`.
+    # NOT reach it (and the deployed stack must never expose 3001 anyway — Caddy
+    # is the only public surface). Verify via `docker compose exec`.
+    # `expose` makes the socat bridge (:8080) reachable as `ao:8080` on the
+    # compose network for Caddy ONLY — it is NOT published to the host.
+    expose:
+      - "8080"
     volumes:
       # Durable daemon state (SQLite + running.json) survives restarts/rebuilds.
       - ao-state:/root/.ao
@@ -22,5 +26,28 @@ services:
       - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
     restart: unless-stopped
 
+  caddy:
+    build:
+      context: ./caddy
+    image: ao-caddy:dev
+    depends_on:
+      - ao
+    env_file:
+      - .env
+    environment:
+      # Local defaults; M7 overrides these with the real domain + drops tls internal.
+      AO_SITE_ADDRESS: ${AO_SITE_ADDRESS:-localhost:8443}
+      AO_SITE_URL: ${AO_SITE_URL:-https://localhost:8443}
+    # Only Caddy is published. Local: HTTPS on 8443 (Caddy internal cert).
+    # M7 switches to "80:80" + "443:443" for the public domain + Let's Encrypt.
+    ports:
+      - "8443:8443"
+    volumes:
+      - caddy-data:/data      # cert/ACME storage; persists the internal CA locally
+      - caddy-config:/config
+    restart: unless-stopped
+
 volumes:
   ao-state:
+  caddy-data:
+  caddy-config:
