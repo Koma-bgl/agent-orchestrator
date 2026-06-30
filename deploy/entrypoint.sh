@@ -46,6 +46,14 @@ else
   echo "[entrypoint] using env/.env secrets as-is"
 fi
 
+# Loopback bridge: the daemon binds 127.0.0.1:${AO_PORT} only, so a sibling
+# container (Caddy) cannot reach it. socat relays 0.0.0.0:8080 -> the loopback
+# daemon (compose-network only; never published to the host). Backgrounded; tini
+# (init: true) reaps it. It is a dumb TCP relay, so SSE passes through untouched.
+AO_BRIDGE_PORT="${AO_BRIDGE_PORT:-8080}"
+echo "[entrypoint] starting loopback bridge :${AO_BRIDGE_PORT} -> 127.0.0.1:${AO_PORT:-3001}"
+socat "TCP-LISTEN:${AO_BRIDGE_PORT},fork,reuseaddr" "TCP:127.0.0.1:${AO_PORT:-3001}" &
+
 # Launch the headless Go daemon. It binds 127.0.0.1:${AO_PORT}, reads state from
 # $HOME/.ao, and blocks until SIGTERM/SIGINT.
 #

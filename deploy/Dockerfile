@@ -8,7 +8,7 @@ FROM --platform=linux/amd64 node:20-bookworm-slim
 # + gh apt repo), then the GitHub CLI. No build toolchain — we install a prebuilt
 # Go binary, not source.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      tmux git curl ca-certificates gnupg \
+      tmux git curl ca-certificates gnupg socat \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
