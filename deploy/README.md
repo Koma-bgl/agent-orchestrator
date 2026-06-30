@@ -192,3 +192,28 @@ where the images are `:stable` from ghcr (M7).
 
 > `containrrr/watchtower` was archived upstream (Dec 2025); `1.7.1` is the final
 > release — the pin is stable but unmaintained. Revisit a maintained fork if needed.
+
+## M5: admin ops (version + token rotation)
+
+Signed-in operators get an **Admin** section at the bottom of the dashboard,
+backed by a small Node service co-located in the `ao` container (Caddy proxies
+`/admin/api/*` to it behind the same Google-auth gate).
+
+- **Version panel** — shows the running AO version (`ao --version`) vs the latest
+  GitHub release, and an **Update now** button that calls Watchtower's on-demand
+  API (M6) to pull `:stable` and recreate the stack.
+- **Token rotation** — paste a new Claude / GitHub / Linear credential; it's written
+  as a **new Secret Manager version**. Requires the `gcp` secret source
+  (`AO_SECRET_SOURCE=gcp` + `AO_GCP_PROJECT`) and a service account / ADC with
+  `roles/secretmanager.secretVersionAdder`. The new value **applies on the next
+  restart** (nightly Watchtower, or a manual `docker compose restart ao`) — there
+  is intentionally no instant restart-from-UI yet.
+
+**Deferred:** the allowlist editor and instant "apply now" restart are not built —
+both would need a new Docker-socket surface on the admin backend or an allowlist
+redesign. Edit the allowlist for now by updating `ALLOWED_EMAIL_*` and restarting.
+
+**Trust note:** like the daemon API bridge (`ao:8080`), the admin backend has no
+auth of its own — it trusts the compose network and relies on Caddy as the sole
+gate. Acceptable for a single-tenant box; don't add other containers to this
+network without re-evaluating.
