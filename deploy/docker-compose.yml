@@ -19,6 +19,7 @@ services:
     # compose network for Caddy ONLY — it is NOT published to the host.
     expose:
       - "8080"
+      - "8090"
     volumes:
       # Durable daemon state (SQLite + running.json) survives restarts/rebuilds.
       - ao-state:/root/.ao

@@ -69,6 +69,13 @@
 		}
 	}
 
+	# Admin backend (version / update / secret rotation) — authorized, proxied
+	# to the co-located admin server in the ao container.
+	handle /admin/api/* {
+		authorize with mypolicy
+		reverse_proxy ao:8090
+	}
+
 	# Everything else: the static monitoring SPA — also behind the auth gate.
 	handle {
 		authorize with mypolicy
