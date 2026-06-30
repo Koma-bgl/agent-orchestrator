@@ -17,6 +17,13 @@ function run(cmd, args, opts = {}) {
   return execFileSync(cmd, args, { encoding: "utf8", ...opts });
 }
 function ok(cmd, args) { try { run(cmd, args, { stdio: "ignore" }); return true; } catch { return false; } }
+function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+// HTTP status of a URL; returns "000" (never throws) when the connection fails —
+// curl exits non-zero on connect/TLS errors but still writes the code to stdout.
+function httpCode(url) {
+  try { return run("curl", ["-sk", "-o", "/dev/null", "-w", "%{http_code}", url]).trim(); }
+  catch (e) { return (e.stdout || "000").toString().trim(); }
+}
 
 function resolveProject() {
   if (process.env.AO_PROJECT) return process.env.AO_PROJECT;
@@ -86,10 +93,13 @@ function up() {
 }
 
 function verify() {
+  // up may have just rebuilt — wait for Caddy to answer before asserting.
+  process.stdout.write("waiting for the stack to answer");
+  for (let i = 0; i < 30; i++) { if (httpCode(`${SITE}/`) !== "000") break; process.stdout.write("."); sleep(2000); }
+  console.log("");
   const checks = [];
-  const code = (url) => run("curl", ["-sk", "-o", "/dev/null", "-w", "%{http_code}", url]).trim();
-  checks.push(["dashboard gated (/ → 302)", code(`${SITE}/`) === "302"]);
-  checks.push(["admin gated (/admin/api/version → 302)", code(`${SITE}/admin/api/version`) === "302"]);
+  checks.push(["dashboard gated (/ → 302)", httpCode(`${SITE}/`) === "302"]);
+  checks.push(["admin gated (/admin/api/version → 302)", httpCode(`${SITE}/admin/api/version`) === "302"]);
   checks.push(["daemon /healthz (in-container)", ok("docker", [...COMPOSE, "exec", "-T", "ao", "curl", "-fsS", "http://127.0.0.1:3001/healthz"])]);
   let realOauth = false;
   try {
