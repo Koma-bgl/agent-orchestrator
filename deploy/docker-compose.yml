@@ -46,6 +46,9 @@ services:
       # Our Caddyfile (read-only). Without this, Caddy runs the stock image
       # default (a file-server welcome page) instead of the auth + proxy config.
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The static monitoring SPA, served by Caddy at /srv (M6/M7: bake into the
+      # image instead of host-mounting so Watchtower updates the UI on pull).
+      - ./web:/srv:ro
       - caddy-data:/data      # cert/ACME storage; persists the internal CA locally
       - caddy-config:/config
     restart: unless-stopped

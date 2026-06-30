@@ -55,15 +55,24 @@
 	# Local: Caddy internal self-signed cert. M7 removes `tls internal` for ACME.
 	tls internal
 
-	route /auth* {
+	# Auth portal (login, OAuth callback) — unauthenticated by definition.
+	handle /auth* {
 		authenticate with myportal
 	}
 
-	route /* {
+	# Daemon API (incl. SSE /api/v1/events) — authorized, proxied to the daemon.
+	handle /api/* {
 		authorize with mypolicy
 		reverse_proxy ao:8080 {
 			# SSE belt-and-suspenders: stream /api/v1/events without buffering.
 			flush_interval -1
 		}
+	}
+
+	# Everything else: the static monitoring SPA — also behind the auth gate.
+	handle {
+		authorize with mypolicy
+		root * /srv
+		file_server
 	}
 }
