@@ -170,3 +170,25 @@ The dashboard is a single static file (`deploy/web/index.html`, no build step)
 served by Caddy behind the same Google-auth gate; its `/api/v1/*` calls are
 proxied to the daemon, so an unauthenticated visitor is bounced to sign-in before
 ever loading it.
+
+## M6: self-update (Watchtower)
+
+A `watchtower` container keeps the stack current with no operator action:
+
+- **Nightly (00:00)** it checks the registry; when a new `:stable` is published it
+  pulls it, **recreates** the `ao`/`caddy` containers, and prunes the old image.
+- It watches **only** the labelled `ao`/`caddy` containers and never updates itself.
+- An **on-demand HTTP API** (token-guarded via `WATCHTOWER_TOKEN`, internal to the
+  compose network — not published) is the hook M5's "update now" will call.
+
+**Trust boundary:** Watchtower mounts the Docker socket (`/var/run/docker.sock`) —
+required to recreate containers, and root-equivalent on the host. Acceptable for a
+single-tenant self-host box; set a real `WATCHTOWER_TOKEN` on the VM since the API
+triggers container recreation.
+
+**Local note:** with locally-built `:dev` images (no registry) Watchtower has
+nothing to pull — it runs but reports no updates. The real swap happens on the VM
+where the images are `:stable` from ghcr (M7).
+
+> `containrrr/watchtower` was archived upstream (Dec 2025); `1.7.1` is the final
+> release — the pin is stable but unmaintained. Revisit a maintained fork if needed.
