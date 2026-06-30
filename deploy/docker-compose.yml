@@ -43,6 +43,9 @@ services:
     ports:
       - "8443:8443"
     volumes:
+      # Our Caddyfile (read-only). Without this, Caddy runs the stock image
+      # default (a file-server welcome page) instead of the auth + proxy config.
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data      # cert/ACME storage; persists the internal CA locally
       - caddy-config:/config
     restart: unless-stopped

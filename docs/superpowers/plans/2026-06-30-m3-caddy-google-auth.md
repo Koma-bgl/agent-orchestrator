@@ -10,6 +10,11 @@
 
 > **⚠️ Top risk — caddy-security DSL drift.** The `security {}` Caddyfile DSL is version-specific. Every Caddyfile change in this plan MUST be validated with `caddy validate` against the pinned custom image before proceeding. If a keyword errors (`crypto key sign-verify`, `transform user`, `acl rule`, `set auth url`, `inject headers with claims`), consult the v1.1.64 docs (authcrunch.com / greenpau/caddy-auth-docs) and adjust — do not guess past a validation failure.
 
+> **Live-verification amendments (applied during execution):**
+> 1. **Caddy version:** `caddy-security@v1.1.64` actually requires **Caddy `v2.11.4`** (+ Go ≥ 1.25.8), not `2.8.4` as the research suggested. The custom image pins `2.11.4` and sets `GOTOOLCHAIN=auto`.
+> 2. **Caddyfile mount:** the compose `caddy` service must mount `./Caddyfile:/etc/caddy/Caddyfile:ro` — without it Caddy runs the stock image's default (file-server welcome page), not our auth+proxy config. Added to Task 4.
+> Both were caught only by the live build/run; verified end-to-end (302→portal, daemon unreachable from host).
+
 > **Scope (M3, local only):** raw daemon API behind the auth gate at `https://localhost:8443`. NOT in scope: the monitoring SPA (M4), admin ops (M5), Watchtower (M6), real domain + Let's Encrypt TLS (M7). The Caddyfile is parameterized by `{$AO_SITE_ADDRESS}` so M7 swaps localhost→domain with minimal change.
 
 ---
