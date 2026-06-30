@@ -24,6 +24,8 @@ services:
       - ao-state:/root/.ao
       # For the gcp secret source locally: mount your ADC read-only. Harmless if unused.
       - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
     restart: unless-stopped
 
   caddy:
@@ -51,7 +53,32 @@ services:
       - ./web:/srv:ro
       - caddy-data:/data      # cert/ACME storage; persists the internal CA locally
       - caddy-config:/config
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
     restart: unless-stopped
+
+  watchtower:
+    image: containrrr/watchtower:1.7.1
+    restart: unless-stopped
+    volumes:
+      # Required: Watchtower recreates sibling containers via the Docker API.
+      # This is root-equivalent on the host — the documented trust boundary.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # 6-field cron (sec min hr dom mon dow) = 00:00:00 daily.
+      WATCHTOWER_SCHEDULE: "0 0 0 * * *"
+      # Only touch containers we labelled; never update Watchtower itself.
+      WATCHTOWER_LABEL_ENABLE: "true"
+      # Remove the old image after a successful update.
+      WATCHTOWER_CLEANUP: "true"
+      # On-demand update API (M5 "update now" calls this); keep the schedule too.
+      WATCHTOWER_HTTP_API_UPDATE: "true"
+      WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_TOKEN:-changeme-local}
+      WATCHTOWER_HTTP_API_PERIODIC_POLLS: "true"
+    # API on container :8080 — exposed to the compose network for M5 only,
+    # NOT published to the host.
+    expose:
+      - "8080"
 
 volumes:
   ao-state:
