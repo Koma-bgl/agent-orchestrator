@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Orchestrator</title>
+<style>
+  :root { color-scheme: light dark; --bg:#0f1115; --card:#181b22; --fg:#e6e8eb; --muted:#9aa3af; --line:#262b35; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  #conn { font-size:12px; color:var(--muted); margin-left:auto; }
+  #conn.live::before { content:"● "; color:#34d399; }
+  #conn.down::before { content:"● "; color:#f87171; }
+  main { padding:20px; max-width:1000px; margin:0 auto; }
+  .project { margin-bottom:24px; }
+  .project h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; }
+  .session { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:8px; display:flex; align-items:center; gap:12px; }
+  .session .id { font-weight:600; }
+  .session .meta { color:var(--muted); font-size:12px; }
+  .session .branch { font-family:ui-monospace,monospace; font-size:12px; color:var(--muted); margin-left:auto; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; text-transform:lowercase; }
+  .b-working,.b-approved,.b-mergeable { background:#064e3b; color:#6ee7b7; }
+  .b-needs_input,.b-changes_requested,.b-ci_failed,.b-merge_conflict { background:#7f1d1d; color:#fca5a5; }
+  .b-pr_open,.b-review_pending,.b-draft,.b-no_signal { background:#1e3a5f; color:#93c5fd; }
+  .b-idle,.b-merged,.b-terminated { background:#33373f; color:var(--muted); }
+  .empty,.error { color:var(--muted); padding:40px 0; text-align:center; }
+  .error { color:#fca5a5; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent Orchestrator</h1>
+  <span id="conn" class="down">connecting…</span>
+</header>
+<main id="app"><div class="empty">Loading…</div></main>
+<script>
+const app = document.getElementById("app");
+const conn = document.getElementById("conn");
+let refetchTimer = null;
+
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+function badge(status) {
+  const s = (status || "no_signal").replace(/[^a-z_]/gi, "");
+  return `<span class="badge b-${s}">${s}</span>`;
+}
+function age(iso) {
+  if (!iso) return "";
+  const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60) return Math.floor(secs) + "s";
+  if (secs < 3600) return Math.floor(secs / 60) + "m";
+  if (secs < 86400) return Math.floor(secs / 3600) + "h";
+  return Math.floor(secs / 86400) + "d";
+}
+function render(sessions) {
+  if (!sessions.length) { app.innerHTML = '<div class="empty">No active sessions.</div>'; return; }
+  const byProject = {};
+  for (const s of sessions) (byProject[s.projectId] ||= []).push(s);
+  app.innerHTML = Object.keys(byProject).sort().map(pid => `
+    <section class="project">
+      <h2>${esc(pid)}</h2>
+      ${byProject[pid].map(s => `
+        <div class="session">
+          <span class="id">${esc(s.id)}</span>
+          ${badge(s.status)}
+          <span class="meta">${esc(s.harness)} · ${esc(s.kind)} · ${age(s.updatedAt || s.createdAt)}</span>
+          <span class="branch">${esc(s.branch)}</span>
+        </div>`).join("")}
+    </section>`).join("");
+}
+async function refetch() {
+  try {
+    const r = await fetch("/api/v1/sessions", { headers: { Accept: "application/json" } });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    render(data.sessions || []);
+  } catch (e) {
+    // A redirect to Google (expired session) surfaces as an opaque/fetch error.
+    app.innerHTML = '<div class="error">Could not load sessions — your session may have expired. <a href="/" style="color:#93c5fd">Reload</a>.</div>';
+  }
+}
+function debouncedRefetch() {
+  clearTimeout(refetchTimer);
+  refetchTimer = setTimeout(refetch, 250);
+}
+function connectSSE() {
+  const es = new EventSource("/api/v1/events");
+  es.onopen = () => { conn.className = "live"; conn.textContent = "live"; };
+  es.onmessage = debouncedRefetch;
+  es.onerror = () => {
+    conn.className = "down"; conn.textContent = "reconnecting…";
+    // EventSource auto-reconnects; nothing else needed.
+  };
+}
+refetch();
+connectSSE();
+// Polling fallback in case SSE is unavailable.
+setInterval(refetch, 15000);
+</script>
+</body>
+</html>
