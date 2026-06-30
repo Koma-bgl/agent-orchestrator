@@ -94,3 +94,58 @@ docker compose down -v
   guard. Wiring your real project(s) comes with the Phase 2 setup skill.
 - The entrypoint resolves and `exec`s the real platform binary so the Go daemon
   is PID 1 and handles `SIGTERM` gracefully (a fast `docker stop`, no SIGKILL).
+
+## M3: authenticated access (Google sign-in, local)
+
+The daemon has **zero auth** and binds loopback only. Caddy (custom image with the
+`caddy-security` plugin) is the security boundary: it terminates TLS, runs a Google
+sign-in portal, enforces an email allowlist, and reverse-proxies authenticated
+traffic to the daemon (via a `socat` bridge inside the `ao` container). Only Caddy
+is published; the daemon's `:3001` and the bridge's `:8080` stay on the compose
+network.
+
+You can exercise the whole flow locally at `https://localhost:8443` — Google
+permits `localhost` redirect URIs, so no domain or public TLS is needed yet.
+
+### 1. Create a Google OAuth client
+
+In Google Cloud Console → APIs & Services → Credentials → **Create OAuth client ID**:
+
+- Application type: **Web application**
+- **Authorized redirect URI** (add this exact value):
+  `https://localhost:8443/auth/oauth2/google/authorization-code-callback`
+  (You can add your production URI to the same client later — Google allows
+  multiple redirect URIs, so one client serves local + prod.)
+
+Copy the generated **Client ID** and **Client secret**.
+
+### 2. Fill `.env`
+
+```bash
+GOOGLE_CLIENT_ID=<your client id>
+GOOGLE_CLIENT_SECRET=<your client secret>
+JWT_SHARED_KEY=$(openssl rand -hex 32)   # paste the result
+ALLOWED_EMAIL_1=you@gmail.com            # the Google account allowed to sign in
+# AO_SITE_ADDRESS / AO_SITE_URL default to localhost:8443 — leave as-is for local
+```
+
+### 3. Run and sign in
+
+```bash
+docker compose up -d --build
+# open https://localhost:8443 in a browser
+```
+
+- The browser will warn about Caddy's **self-signed (internal CA) cert** — expected
+  locally; accept it. Real TLS arrives in the Phase 2 (VM) milestone.
+- You'll be redirected to Google. Sign in with the **allowlisted** account → you
+  land on the daemon API.
+- A **non-allowlisted** Google account is denied (403), even after a successful
+  Google login — the email allowlist is enforced by Caddy, not Google.
+
+### Notes
+
+- Adding/removing operators = editing the `ALLOWED_EMAIL_*` allowlist, not
+  provisioning passwords. No passwords are stored anywhere.
+- The session is a signed JWT cookie (`JWT_SHARED_KEY`); there is no server-side
+  user database to persist.
