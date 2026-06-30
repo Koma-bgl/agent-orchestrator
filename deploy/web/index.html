@@ -27,6 +27,15 @@
   .b-idle,.b-merged,.b-terminated { background:#33373f; color:var(--muted); }
   .empty,.error { color:var(--muted); padding:40px 0; text-align:center; }
   .error { color:#fca5a5; }
+  .admin { margin-top:32px; border-top:1px solid var(--line); padding-top:20px; }
+  .admin h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:12px; }
+  .panel .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .panel select,.panel input,.panel button { font:inherit; padding:6px 10px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  .panel button { cursor:pointer; background:#1e3a5f; color:#cfe3ff; border-color:#1e3a5f; }
+  .panel button:disabled { opacity:.5; cursor:default; }
+  .panel .note { color:var(--muted); font-size:12px; margin-top:8px; }
+  .panel .ok { color:#6ee7b7; } .panel .bad { color:#fca5a5; }
 </style>
 </head>
 <body>
@@ -35,6 +44,31 @@
   <span id="conn" class="down">connecting…</span>
 </header>
 <main id="app"><div class="empty">Loading…</div></main>
+<section class="admin" id="admin">
+  <h2>Admin</h2>
+  <div class="panel" id="version-panel">
+    <div class="row">
+      <span>Version:</span>
+      <strong id="ver-running">…</strong>
+      <span class="note" id="ver-latest"></span>
+      <button id="ver-update" disabled>Update now</button>
+    </div>
+    <div class="note" id="ver-status"></div>
+  </div>
+  <div class="panel" id="tokens-panel">
+    <div class="row">
+      <label for="tok-secret">Rotate credential:</label>
+      <select id="tok-secret">
+        <option value="claude-oauth-token">claude-oauth-token</option>
+        <option value="github-pat">github-pat</option>
+        <option value="linear-api-key">linear-api-key</option>
+      </select>
+      <input id="tok-value" type="password" placeholder="paste new value" autocomplete="off" size="28" />
+      <button id="tok-submit">Save new version</button>
+    </div>
+    <div class="note" id="tok-status">Writes a new Secret Manager version — applies on the next restart.</div>
+  </div>
+</section>
 <script>
 const app = document.getElementById("app");
 const conn = document.getElementById("conn");
@@ -99,6 +133,55 @@ refetch();
 connectSSE();
 // Polling fallback in case SSE is unavailable.
 setInterval(refetch, 15000);
+
+// --- Admin panels ---
+const verRunning = document.getElementById("ver-running");
+const verLatest = document.getElementById("ver-latest");
+const verStatus = document.getElementById("ver-status");
+const verUpdate = document.getElementById("ver-update");
+const tokSecret = document.getElementById("tok-secret");
+const tokValue = document.getElementById("tok-value");
+const tokSubmit = document.getElementById("tok-submit");
+const tokStatus = document.getElementById("tok-status");
+
+async function loadVersion() {
+  try {
+    const r = await fetch("/admin/api/version");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const v = await r.json();
+    verRunning.textContent = v.running || "unknown";
+    verLatest.textContent = v.latest ? `(latest: ${esc(v.latest)})` : "(latest: unknown)";
+    if (v.updateAvailable === true) { verStatus.textContent = "Update available."; verUpdate.disabled = false; }
+    else if (v.updateAvailable === false) { verStatus.textContent = "Up to date."; }
+    else { verStatus.textContent = "Latest version unknown (offline / no release)."; }
+  } catch (e) { verStatus.innerHTML = '<span class="bad">Could not load version.</span>'; }
+}
+verUpdate.onclick = async () => {
+  verUpdate.disabled = true; verStatus.textContent = "Triggering update…";
+  try {
+    const r = await fetch("/admin/api/update", { method: "POST" });
+    const j = await r.json();
+    verStatus.innerHTML = j.ok ? '<span class="ok">Update triggered — applies shortly.</span>'
+      : `<span class="bad">Update call returned ${esc(String(j.status))}.</span>`;
+  } catch (e) { verStatus.innerHTML = '<span class="bad">Update request failed.</span>'; }
+};
+tokSubmit.onclick = async () => {
+  const secret = tokSecret.value, value = tokValue.value;
+  if (!value) { tokStatus.innerHTML = '<span class="bad">Enter a value.</span>'; return; }
+  tokSubmit.disabled = true; tokStatus.textContent = "Saving…";
+  try {
+    const r = await fetch("/admin/api/secrets", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ secret, value }),
+    });
+    const j = await r.json();
+    tokValue.value = "";  // don't keep the secret in the DOM
+    tokStatus.innerHTML = r.ok ? `<span class="ok">Saved ${esc(secret)} — ${esc(j.note || "new version")}.</span>`
+      : `<span class="bad">${esc(j.error || ("HTTP " + r.status))}</span>`;
+  } catch (e) { tokStatus.innerHTML = '<span class="bad">Request failed.</span>'; }
+  finally { tokSubmit.disabled = false; }
+};
+loadVersion();
 </script>
 </body>
 </html>
