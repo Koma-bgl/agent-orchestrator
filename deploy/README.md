@@ -245,11 +245,12 @@ VMs against your quota and refuses at the limit. Quotas live in one central
 Secret Manager doc, `ao-vm-quotas` (create it only when someone needs >1):
 
 ```bash
-printf '%s' '{"default":1,"ky@chaostheory.hk":3}' | \
-  gcloud secrets create ao-vm-quotas --data-file=-      # (or add-version to update)
+printf '%s' '{"default":1,"admin":"ky@chaostheory.hk","some@user.com":3}' | \
+  gcloud secrets versions add ao-vm-quotas --data-file=-   # (create on first use)
 ```
 
-Missing doc → everyone defaults to 1. Additional bots use `--index=N`
+Missing doc → everyone defaults to 1. The `admin` field is who the quota-refusal
+message tells users to contact — keep it current. Additional bots use `--index=N`
 (`init --index=2` reserves its IP, then `create --index=2`). Note this is
 **cooperative** enforcement — a user with compute IAM can bypass the script; real
 enforcement (no direct compute perms + a broker) is the M8 fleet model.

@@ -43,13 +43,12 @@ QUOTA_SECRET="ao-vm-quotas"
 ip_address() { gcloud compute addresses describe "$IP_NAME" --project="$PROJECT" --region="$REGION" --format='value(address)' 2>/dev/null || true; }
 
 # Per-user quota from the central ao-vm-quotas secret (JSON:
-#   {"default":1,"ky@chaostheory.hk":3}). Missing secret → default 1.
+#   {"default":1,"admin":"ky@chaostheory.hk","some@user.com":3}).
+# Missing secret → default 1. The "admin" field is who users ask for more.
 # NOTE: cooperative enforcement — real (non-bypassable) enforcement means taking
 # compute.instances.create away from users and brokering creates (M8).
-user_quota() {
-  local doc; doc="$(gcloud secrets versions access latest --secret="$QUOTA_SECRET" --project="$PROJECT" 2>/dev/null || true)"
-  node "$SCRIPT_DIR/gcp-lib.mjs" quotaFor "$doc" "$ACCOUNT"
-}
+quota_doc() { gcloud secrets versions access latest --secret="$QUOTA_SECRET" --project="$PROJECT" 2>/dev/null || true; }
+user_quota() { node "$SCRIPT_DIR/gcp-lib.mjs" quotaFor "$(quota_doc)" "$ACCOUNT"; }
 
 # Count of the caller's live AO VMs (by ao-owner label).
 owned_count() {
@@ -125,13 +124,24 @@ REMOTE
 
 cmd_create() {
   # Per-user quota (central ao-vm-quotas doc; default 1)
-  local quota count
-  quota="$(user_quota)"; count="$(owned_count)"
+  local doc quota count admin
+  doc="$(quota_doc)"
+  quota="$(node "$SCRIPT_DIR/gcp-lib.mjs" quotaFor "$doc" "$ACCOUNT")"
+  admin="$(node "$SCRIPT_DIR/gcp-lib.mjs" quotaAdmin "$doc")"
+  count="$(owned_count)"
   if [ "$count" -ge "$quota" ]; then
-    echo "Quota reached: you have $count VM(s), quota is $quota."
+    echo "✗ Quota reached: you ($ACCOUNT) have $count of $quota allowed VM(s):"
     gcloud compute instances list --project="$PROJECT" --filter="labels.ao-owner=$OWNER_LABEL" \
       --format='table(name,zone,status)' 2>/dev/null || true
-    echo "Destroy one ('$0 destroy [--index=N]') or ask an admin to raise your quota in the '$QUOTA_SECRET' secret."
+    echo
+    echo "Options:"
+    echo "  • free a slot:      $0 destroy [--index=N]"
+    if [ -n "$admin" ]; then
+      echo "  • request a raise:  ask $admin to bump your entry in the '$QUOTA_SECRET' secret, e.g."
+      echo "                      {\"default\":1,\"admin\":\"$admin\",\"$ACCOUNT\":2}"
+    else
+      echo "  • request a raise:  ask your admin to add \"$ACCOUNT\": N to the '$QUOTA_SECRET' secret"
+    fi
     exit 1
   fi
   # Refuse a name collision for this index (quota may allow more via --index=N)

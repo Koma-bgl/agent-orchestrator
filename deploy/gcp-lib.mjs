@@ -55,8 +55,19 @@ export function redirectUri(host) {
   return `https://${host}/auth/oauth2/google/authorization-code-callback`;
 }
 
+// Admin contact carried inside the quota doc itself, so the quota-refusal
+// message can name exactly who to ask: {"default":1,"admin":"ky@chaostheory.hk"}.
+export function quotaAdmin(quotasJson) {
+  try {
+    const v = JSON.parse(quotasJson)?.admin;
+    return typeof v === "string" ? v : "";
+  } catch {
+    return "";
+  }
+}
+
 // CLI tail: `node gcp-lib.mjs <fn> <arg> [<arg2>]`
-const fns = { vmName, ownerLabel, sslipHost, redirectUri, ipName, quotaFor };
+const fns = { vmName, ownerLabel, sslipHost, redirectUri, ipName, quotaFor, quotaAdmin };
 const [, , fn, arg, arg2] = process.argv;
 if (fn) {
   if (!fns[fn]) { console.error(`unknown fn: ${fn}`); process.exit(2); }

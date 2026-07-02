@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { vmName, ownerLabel, sslipHost, redirectUri, ipName, quotaFor } from "./gcp-lib.mjs";
+import { vmName, ownerLabel, sslipHost, redirectUri, ipName, quotaFor, quotaAdmin } from "./gcp-lib.mjs";
 
 test("vmName sanitizes a gcloud account to a valid GCE name", () => {
   assert.equal(vmName("ky@chaostheory.hk"), "ao-ky-chaostheory-hk");
@@ -48,4 +48,10 @@ test("quotaFor tolerates a missing/invalid doc (default 1)", () => {
   assert.equal(quotaFor("", "x@y"), 1);
   assert.equal(quotaFor("not json", "x@y"), 1);
   assert.equal(quotaFor("{}", "x@y"), 1);
+});
+
+test("quotaAdmin surfaces the admin contact from the doc", () => {
+  assert.equal(quotaAdmin(JSON.stringify({ default: 1, admin: "ky@chaostheory.hk" })), "ky@chaostheory.hk");
+  assert.equal(quotaAdmin("{}"), "");
+  assert.equal(quotaAdmin("not json"), "");
 });
