@@ -239,11 +239,32 @@ cd deploy
 ./deploy-gcp.sh destroy   # delete the VM instance (IP/SA/secrets persist)
 ```
 
-**Max 1 per user.** The VM is named `ao-<your-account>` and labelled `ao-owner`;
-`create` refuses if you already have one. **Delete-often friendly:** `destroy`
-removes only the instance — the reserved IP, service account, and secrets persist,
-so the sslip.io hostname + OAuth redirect never change and `create` is cheap to
-re-run.
+**Per-user quota (default 1, centrally adjustable).** Every VM is named
+`ao-<your-account>[-N]` and labelled `ao-owner=<you>`. `create` counts your live
+VMs against your quota and refuses at the limit. Quotas live in one central
+Secret Manager doc, `ao-vm-quotas` (create it only when someone needs >1):
+
+```bash
+printf '%s' '{"default":1,"ky@chaostheory.hk":3}' | \
+  gcloud secrets create ao-vm-quotas --data-file=-      # (or add-version to update)
+```
+
+Missing doc → everyone defaults to 1. Additional bots use `--index=N`
+(`init --index=2` reserves its IP, then `create --index=2`). Note this is
+**cooperative** enforcement — a user with compute IAM can bypass the script; real
+enforcement (no direct compute perms + a broker) is the M8 fleet model.
+
+**Admin visibility:**
+```bash
+./deploy-gcp.sh admin-list    # every AO bot: name, owner, created, status, IP
+./deploy-gcp.sh admin-audit   # authoritative: who actually created VMs (Cloud
+                              # Audit Logs, immutable — catches label spoofing)
+```
+(Your own usage vs quota shows in `./deploy-gcp.sh status`.)
+
+**Delete-often friendly:** `destroy` removes only the instance — the reserved IP,
+service account, and secrets persist, so the sslip.io hostname + OAuth redirect
+never change and `create` is cheap to re-run.
 
 **Agent auth (on-box, after sign-in):** GitHub/Claude are NOT stored centrally —
 SSH in and log in:

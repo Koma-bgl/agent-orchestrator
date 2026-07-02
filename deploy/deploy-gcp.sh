@@ -26,17 +26,36 @@ MACHINE_TYPE="${AO_MACHINE_TYPE:-e2-standard-4}"
 [ -n "$PROJECT" ] || { echo "no project (pass --project= or set one with gcloud)"; exit 1; }
 [ -n "$ACCOUNT" ] || { echo "no active gcloud account (run: gcloud auth login)"; exit 1; }
 
-VM_NAME="$(node "$SCRIPT_DIR/gcp-lib.mjs" vmName "$ACCOUNT")"
+# Optional --index=N for a user's Nth VM (default 1; quota permitting).
+INDEX=1; for a in "$@"; do case "$a" in --index=*) INDEX="${a#--index=}";; esac; done
+
+VM_NAME="$(node "$SCRIPT_DIR/gcp-lib.mjs" vmName "$ACCOUNT" "$INDEX")"
 OWNER_LABEL="$(node "$SCRIPT_DIR/gcp-lib.mjs" ownerLabel "$ACCOUNT")"
 SA_NAME="ao-deploy"
 SA="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
-IP_NAME="ao-${OWNER_LABEL}-ip"
+IP_NAME="$(node "$SCRIPT_DIR/gcp-lib.mjs" ipName "$ACCOUNT" "$INDEX")"
 FW_RULE="ao-allow-web"
 NET_TAG="ao-bot"
+QUOTA_SECRET="ao-vm-quotas"
 
 # Prints the reserved IP, or nothing if it doesn't exist yet (absence is a valid
 # state — callers check for empty; don't let set -e kill us on describe's exit).
 ip_address() { gcloud compute addresses describe "$IP_NAME" --project="$PROJECT" --region="$REGION" --format='value(address)' 2>/dev/null || true; }
+
+# Per-user quota from the central ao-vm-quotas secret (JSON:
+#   {"default":1,"ky@chaostheory.hk":3}). Missing secret → default 1.
+# NOTE: cooperative enforcement — real (non-bypassable) enforcement means taking
+# compute.instances.create away from users and brokering creates (M8).
+user_quota() {
+  local doc; doc="$(gcloud secrets versions access latest --secret="$QUOTA_SECRET" --project="$PROJECT" 2>/dev/null || true)"
+  node "$SCRIPT_DIR/gcp-lib.mjs" quotaFor "$doc" "$ACCOUNT"
+}
+
+# Count of the caller's live AO VMs (by ao-owner label).
+owned_count() {
+  gcloud compute instances list --project="$PROJECT" \
+    --filter="labels.ao-owner=$OWNER_LABEL" --format='value(name)' 2>/dev/null | grep -c . || true
+}
 
 cmd_init() {
   echo "==> init for $ACCOUNT in project $PROJECT ($REGION/$ZONE)"
@@ -105,14 +124,22 @@ REMOTE
 }
 
 cmd_create() {
-  # Max 1 per user
-  local existing; existing="$(gcloud compute instances list --project="$PROJECT" \
-    --filter="labels.ao-owner=$OWNER_LABEL" --format='value(name)' 2>/dev/null || true)"
-  if [ -n "$existing" ]; then
-    echo "You already have a bot: $existing. Run '$0 destroy' first (max 1 per user)."; exit 1
+  # Per-user quota (central ao-vm-quotas doc; default 1)
+  local quota count
+  quota="$(user_quota)"; count="$(owned_count)"
+  if [ "$count" -ge "$quota" ]; then
+    echo "Quota reached: you have $count VM(s), quota is $quota."
+    gcloud compute instances list --project="$PROJECT" --filter="labels.ao-owner=$OWNER_LABEL" \
+      --format='table(name,zone,status)' 2>/dev/null || true
+    echo "Destroy one ('$0 destroy [--index=N]') or ask an admin to raise your quota in the '$QUOTA_SECRET' secret."
+    exit 1
+  fi
+  # Refuse a name collision for this index (quota may allow more via --index=N)
+  if gcloud compute instances describe "$VM_NAME" --project="$PROJECT" --zone="$ZONE" >/dev/null 2>&1; then
+    echo "VM $VM_NAME already exists — pass --index=N (2..$quota) for an additional bot."; exit 1
   fi
   local ip; ip="$(ip_address)"
-  [ -n "$ip" ] || { echo "no reserved IP — run '$0 init' first."; exit 1; }
+  [ -n "$ip" ] || { echo "no reserved IP ($IP_NAME) — run '$0 init${INDEX:+ --index=$INDEX}' first."; exit 1; }
   local host; host="$(node "$SCRIPT_DIR/gcp-lib.mjs" sslipHost "$ip")"
 
   echo "==> creating VM $VM_NAME ($MACHINE_TYPE) with IP $ip → https://$host"
@@ -156,11 +183,31 @@ cmd_destroy() {
 cmd_status() {
   local ip; ip="$(ip_address)"
   echo "project: $PROJECT  account: $ACCOUNT"
-  echo "reserved IP: ${ip:-<none — run init>}"
+  echo "quota: $(owned_count)/$(user_quota) VM(s) used"
+  echo "reserved IP ($IP_NAME): ${ip:-<none — run init>}"
   [ -n "$ip" ] && echo "URL: https://$(node "$SCRIPT_DIR/gcp-lib.mjs" sslipHost "$ip")"
-  echo "instance:"
+  echo "instances:"
   gcloud compute instances list --project="$PROJECT" --filter="labels.ao-owner=$OWNER_LABEL" \
     --format='table(name,zone,status,EXTERNAL_IP)' 2>/dev/null || echo "  (none)"
+}
+
+# ---- admin commands (read-only; need compute.instances.list / logging.read) ----
+
+# Every AO bot in the project, by owner label (self-reported but convenient).
+cmd_admin_list() {
+  echo "AO bots in $PROJECT (by ao-owner label):"
+  gcloud compute instances list --project="$PROJECT" --filter="labels.ao-owner:*" \
+    --format='table(name, labels.ao-owner, creationTimestamp.date(), status, machineType.basename(), networkInterfaces[0].accessConfigs[0].natIP)'
+}
+
+# Authoritative audit trail: who actually called instances.insert (Cloud Audit
+# Logs, Admin Activity — immutable, cannot be spoofed by labels).
+cmd_admin_audit() {
+  echo "instances.insert calls in $PROJECT (last 30 days, authoritative):"
+  gcloud logging read \
+    'protoPayload.methodName="v1.compute.instances.insert" AND severity>=NOTICE' \
+    --project="$PROJECT" --freshness=30d \
+    --format='table(timestamp.date(), protoPayload.authenticationInfo.principalEmail, protoPayload.resourceName.basename())'
 }
 
 case "${1:-}" in
@@ -168,5 +215,7 @@ case "${1:-}" in
   create) cmd_create;;
   destroy) cmd_destroy;;
   status) cmd_status;;
-  *) echo "usage: $0 {init|create|destroy|status} [--project=ID]"; exit 2;;
+  admin-list) cmd_admin_list;;
+  admin-audit) cmd_admin_audit;;
+  *) echo "usage: $0 {init|create|destroy|status|admin-list|admin-audit} [--project=ID] [--index=N]"; exit 2;;
 esac
