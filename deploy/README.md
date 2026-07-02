@@ -217,3 +217,45 @@ redesign. Edit the allowlist for now by updating `ALLOWED_EMAIL_*` and restartin
 auth of its own — it trusts the compose network and relies on Caddy as the sole
 gate. Acceptable for a single-tenant box; don't add other containers to this
 network without re-evaluating.
+
+## M7: deploy to a GCE VM (single public bot)
+
+`deploy-gcp.sh` provisions the stack as a public, Google-gated bot at
+`https://<reserved-ip>.sslip.io` — no domain needed. Driven from your machine with
+your own `gcloud`. **Costs money** (an `e2-standard-4` VM) while it's running.
+
+**Prerequisites:** `gcloud` authed (`gcloud auth login`), a project selected, and
+the **3 gate secrets** present (`google-oauth-client`, `jwt-shared-key`,
+`dashboard-allowlist`) — check with `valhalla-dev-bot`'s `check`.
+
+```bash
+cd deploy
+./deploy-gcp.sh init      # one-time: reserves a static IP, SA + IAM, firewall.
+                          # Prints a redirect URI — add it to your OAuth client ONCE.
+./deploy-gcp.sh create    # creates the VM (max 1 per user), uploads the kit,
+                          # fetches secrets via the VM's SA, brings the stack up.
+# → open https://<ip>.sslip.io , sign in with an allowlisted Google account
+./deploy-gcp.sh status    # show your bot's VM + URL
+./deploy-gcp.sh destroy   # delete the VM instance (IP/SA/secrets persist)
+```
+
+**Max 1 per user.** The VM is named `ao-<your-account>` and labelled `ao-owner`;
+`create` refuses if you already have one. **Delete-often friendly:** `destroy`
+removes only the instance — the reserved IP, service account, and secrets persist,
+so the sslip.io hostname + OAuth redirect never change and `create` is cheap to
+re-run.
+
+**Agent auth (on-box, after sign-in):** GitHub/Claude are NOT stored centrally —
+SSH in and log in:
+```bash
+gcloud compute ssh ao-<account> --zone=us-central1-a
+sudo docker compose -f /opt/ao/deploy/docker-compose.yml exec ao gh auth login
+sudo docker compose -f /opt/ao/deploy/docker-compose.yml exec ao claude setup-token
+```
+(Until config-dir persistence lands, a VM recreate may drop these — just re-auth.)
+
+**Notes:** the kit is `scp`'d from your local checkout (the deploy branch is
+unpushed); once it's published, the VM can clone or pull `ghcr :stable` instead.
+The first `create` builds the images on the VM (the Caddy xcaddy build is slow,
+a few minutes). sslip.io + Let's Encrypt is fine for occasional recreates; if you
+cycle very frequently you may hit LE rate limits — a real domain (M8) avoids that.
