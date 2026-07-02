@@ -101,6 +101,10 @@ remote_up_script() {
   local host="$1" project="$2"
   cat <<REMOTE
 set -euo pipefail
+# Move the scp'd kit (landed in the SSH user's home — /opt/ao is root-owned)
+sudo mkdir -p /opt/ao
+sudo rm -rf /opt/ao/deploy
+sudo mv "\$HOME/ao-deploy" /opt/ao/deploy
 cd /opt/ao/deploy
 sec() { gcloud secrets versions access latest --secret="\$1" --project="$project"; }
 GOC="\$(sec google-oauth-client)"; GID="\${GOC%%|*}"; GSEC="\${GOC#*|}"
@@ -165,8 +169,11 @@ cmd_create() {
         --command="test -f /opt/ao/.startup-done" >/dev/null 2>&1; do sleep 10; done
 
   echo "==> uploading the deploy kit (excluding local .env)…"
+  # scp to the SSH user's home (writable); the remote script sudo-moves it to
+  # /opt/ao/deploy. Staged copy so the local .env never leaves this machine.
   local stage; stage="$(mktemp -d)"; cp -R "$SCRIPT_DIR/." "$stage/"; rm -f "$stage/.env"
-  gcloud compute scp --recurse --project="$PROJECT" --zone="$ZONE" "$stage/." "$VM_NAME:/opt/ao/deploy/"
+  gcloud compute ssh "$VM_NAME" --project="$PROJECT" --zone="$ZONE" --command="rm -rf ~/ao-deploy && mkdir -p ~/ao-deploy"
+  gcloud compute scp --recurse --project="$PROJECT" --zone="$ZONE" "$stage/." "$VM_NAME:~/ao-deploy/"
   rm -rf "$stage"
 
   echo "==> bringing the stack up on the VM…"
