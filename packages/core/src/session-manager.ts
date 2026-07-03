@@ -1251,6 +1251,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     }
 
     // 5. Check workspace
+    // Sessions cleaned before the worktree path was preserved in metadata have
+    // an empty worktree value. Never fall back to project.path for those — it
+    // relaunches the agent inside the user's primary checkout on the wrong
+    // branch (val-337). The path can be re-added manually to restore.
+    if (!raw["worktree"] && raw["worktreeCleanedAt"]) {
+      throw new WorkspaceMissingError(
+        project.path,
+        `worktree path was cleared by cleanup — add "worktree=<path>" back to the ` +
+          `session metadata (branch: ${raw["branch"] ?? "unknown"}) and retry`,
+      );
+    }
     const workspacePath = raw["worktree"] || project.path;
     const workspaceExists = plugins.workspace?.exists
       ? await plugins.workspace.exists(workspacePath)

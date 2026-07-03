@@ -1437,9 +1437,11 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
       try {
         await workspacePlugin.destroy(worktreePath);
+        // Keep the worktree path in metadata — worktreeCleanedAt marks it as
+        // destroyed. Blanking it made restore() fall back to project.path and
+        // relaunch the agent inside the user's primary checkout (val-337).
         updateMetadata(sessionsDir, session.id, {
           worktreeCleanedAt: new Date().toISOString(),
-          worktree: "",
         });
         console.log(
           `[lifecycle] Cleaned up worktree for ${session.status} session ${session.id}`,
