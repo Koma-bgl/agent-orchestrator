@@ -220,23 +220,24 @@ network without re-evaluating.
 
 ## M7: deploy to a GCE VM (single public bot)
 
-`deploy-gcp.sh` provisions the stack as a public, Google-gated bot at
-`https://<reserved-ip>.sslip.io` — no domain needed. Driven from your machine with
-your own `gcloud`. **Costs money** (an `e2-standard-4` VM) while it's running.
+`deploy-gcp.sh` provisions the stack as a public bot at
+`https://<user>.binary-badger.xyz` (per-bot DNS automated in the `ao-fleet`
+Cloud DNS zone; authentication via the fleet SSO portal — see M8a below). Driven
+from your machine with your own `gcloud`. **Costs money** (an `e2-standard-4` VM)
+while it's running.
 
-**Prerequisites:** `gcloud` authed (`gcloud auth login`), a project selected, and
-the **3 gate secrets** present (`google-oauth-client`, `jwt-shared-key`,
-`dashboard-allowlist`) — check with `valhalla-dev-bot`'s `check`.
+**Prerequisites:** `gcloud` authed (`gcloud auth login`), a project selected, the
+**gate secrets** present (`jwt-shared-key`, `dashboard-allowlist`; the portal owns
+`google-oauth-client`), and the portal deployed (`./deploy-portal.sh`, once).
 
 ```bash
 cd deploy
 ./deploy-gcp.sh init      # one-time: reserves a static IP, SA + IAM, firewall.
-                          # Prints a redirect URI — add it to your OAuth client ONCE.
-./deploy-gcp.sh create    # creates the VM (max 1 per user), uploads the kit,
-                          # fetches secrets via the VM's SA, brings the stack up.
-# → open https://<ip>.sslip.io , sign in with an allowlisted Google account
+./deploy-gcp.sh create    # creates the VM (quota-gated), DNS A-record, uploads
+                          # the kit, fetches secrets via the VM's SA, stack up.
+# → open https://<user>.binary-badger.xyz , sign in (fleet SSO — no OAuth setup)
 ./deploy-gcp.sh status    # show your bot's VM + URL
-./deploy-gcp.sh destroy   # delete the VM instance (IP/SA/secrets persist)
+./deploy-gcp.sh destroy   # delete the VM instance + A-record (IP/SA/secrets persist)
 ```
 
 **Per-user quota (default 1, centrally adjustable).** Every VM is named
@@ -263,9 +264,9 @@ enforcement (no direct compute perms + a broker) is the M8 fleet model.
 ```
 (Your own usage vs quota shows in `./deploy-gcp.sh status`.)
 
-**Delete-often friendly:** `destroy` removes only the instance — the reserved IP,
-service account, and secrets persist, so the sslip.io hostname + OAuth redirect
-never change and `create` is cheap to re-run.
+**Delete-often friendly:** `destroy` removes the instance and its A-record — the
+reserved IP, service account, and secrets persist, so the bot's hostname never
+changes and `create` is cheap to re-run.
 
 **Agent auth (on-box, after sign-in):** GitHub/Claude are NOT stored centrally —
 SSH in and log in:
@@ -279,5 +280,37 @@ sudo docker compose -f /opt/ao/deploy/docker-compose.yml exec ao claude setup-to
 **Notes:** the kit is `scp`'d from your local checkout (the deploy branch is
 unpushed); once it's published, the VM can clone or pull `ghcr :stable` instead.
 The first `create` builds the images on the VM (the Caddy xcaddy build is slow,
-a few minutes). sslip.io + Let's Encrypt is fine for occasional recreates; if you
-cycle very frequently you may hit LE rate limits — a real domain (M8) avoids that.
+a few minutes). Each bot gets its own Let's Encrypt cert for its fleet hostname.
+
+## M8a: fleet SSO (one sign-in, zero per-bot OAuth)
+
+Authentication is centralized at **`https://auth.binary-badger.xyz`** — a
+caddy-security portal on **Cloud Run** (`deploy/portal/`, deployed by
+`./deploy-portal.sh`). It signs users in with Google and mints a **domain-wide
+JWT cookie** (`binary-badger.xyz`, signed with the shared `jwt-shared-key`).
+Bots run **authorize-only**: they validate that cookie statelessly and enforce
+the fleet allowlist — no portal, no OAuth client, no Console steps, ever.
+
+```bash
+./deploy-portal.sh        # deploy/update the portal (Cloud Run, ~$0: scale-to-
+                          # zero, max-instances=1 for the in-memory OAuth dance)
+```
+
+**Two once-ever steps for the whole fleet** (the script prints both):
+1. Search Console domain verification for `binary-badger.xyz` (if domain mapping
+   asks for it).
+2. Register the portal's redirect URI in the OAuth client:
+   `https://auth.binary-badger.xyz/oauth2/google/authorization-code-callback`.
+
+**Allowlist:** the `dashboard-allowlist` secret, now **multi-email**
+(comma/newline/space separated). Any listed account can sign in once and open
+**every** bot (fleet-wide access by design). Update the secret + restart bots to
+change it.
+
+**Hard invariant:** the session cookie is sent to every `*.binary-badger.xyz`
+host — **nothing untrusted may ever be hosted under this domain** (we control
+the `ao-fleet` zone; keep it that way).
+
+**Local dev note:** the localhost stack (`deploy/Caddyfile`, `valhalla-dev-bot`)
+still runs its own portal with the localhost redirect URI — aligning it with the
+fleet portal is an M8c item.
