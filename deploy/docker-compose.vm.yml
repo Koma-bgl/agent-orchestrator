@@ -15,6 +15,10 @@ services:
       - caddy-data:/data                             # ACME/cert storage (persist!)
       - caddy-config:/config
     environment:
-      # The sslip.io host, supplied by deploy-gcp.sh create.
+      # The bot's fleet hostname (<user>.binary-badger.xyz), supplied by
+      # deploy-gcp.sh create, plus the SSO-portal login URL and the fleet
+      # allowlist (space-separated; parse-time splat in Caddyfile.public).
       AO_SITE_ADDRESS: ${AO_SITE_ADDRESS}
       AO_SITE_URL: https://${AO_SITE_ADDRESS}
+      AO_AUTH_URL: ${AO_AUTH_URL}
+      ALLOWED_EMAILS: ${ALLOWED_EMAILS}

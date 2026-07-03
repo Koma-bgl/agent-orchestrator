@@ -1,39 +1,27 @@
 {
-	# PUBLIC mode (M7, on the VM): no http_port/https_port overrides → Caddy uses
-	# 80/443, and no `tls internal` → automatic Let's Encrypt for {$AO_SITE_ADDRESS}
-	# (e.g. <ip>.sslip.io). Otherwise identical to the local Caddyfile.
-	order authenticate before respond
+	# PUBLIC mode (on the VM): Caddy on 80/443, automatic Let's Encrypt for
+	# {$AO_SITE_ADDRESS} (the bot's fleet hostname, e.g. koma.binary-badger.xyz).
+	#
+	# M8a: bots are AUTHORIZE-ONLY. Authentication happens at the fleet SSO
+	# portal (auth.binary-badger.xyz, Cloud Run); it mints a domain-wide JWT
+	# cookie signed with the shared JWT_SHARED_KEY, which the policy below
+	# validates statelessly. No portal, no OAuth client, no per-bot Console steps.
 	order authorize before basicauth
 
 	security {
-		oauth identity provider google {
-			realm google
-			driver google
-			client_id {env.GOOGLE_CLIENT_ID}
-			client_secret {env.GOOGLE_CLIENT_SECRET}
-			scopes openid email profile
-		}
-
-		authentication portal myportal {
-			crypto default token lifetime 3600
-			crypto key sign-verify {env.JWT_SHARED_KEY}
-			enable identity provider google
-			# Conventional role grant; NOT load-bearing for the allowlist below
-			# (the policy gates on the `email` claim directly, not on role).
-			transform user {
-				match realm google
-				action add role authp/user
-			}
-		}
-
 		authorization policy mypolicy {
-			set auth url {$AO_SITE_URL}/auth/oauth2/google
+			# Unauthenticated users are sent straight into the Google flow at the
+			# fleet portal (root mount → /oauth2/google, no /auth prefix).
+			set auth url {$AO_AUTH_URL}
 			crypto key verify {env.JWT_SHARED_KEY}
 
-			# EMAIL ALLOWLIST — acl default is deny-unless-allowed.
+			# EMAIL ALLOWLIST — acl default is deny-unless-allowed. {$ALLOWED_EMAILS}
+			# is PARSE-TIME substitution: a space-separated value splats into a
+			# multi-value match ({env.…} would not). Empty/unset → Caddy fails to
+			# start (acceptable: the VM .env always sets it from dashboard-allowlist).
 			acl rule {
-				comment allowlisted operator 1
-				match email {env.ALLOWED_EMAIL_1}
+				comment fleet allowlist
+				match email {$ALLOWED_EMAILS}
 				allow stop log info
 			}
 			acl rule {
@@ -49,13 +37,8 @@
 }
 
 {$AO_SITE_ADDRESS} {
-	# Public: automatic Let's Encrypt (HTTP-01 needs port 80 reachable — the M7
+	# Public: automatic Let's Encrypt (HTTP-01 needs port 80 reachable — the
 	# firewall opens 80+443).
-
-	# Auth portal (login, OAuth callback) — unauthenticated by definition.
-	handle /auth* {
-		authenticate with myportal
-	}
 
 	# Daemon API (incl. SSE /api/v1/events) — authorized, proxied to the daemon.
 	handle /api/* {
