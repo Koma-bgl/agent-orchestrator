@@ -46,13 +46,18 @@ export function ownerLabel(account) {
   return sanitize(account).slice(0, 63).replace(/-+$/g, "");
 }
 
-// sslip.io resolves a dashed (or dotted) IP hostname back to that IP.
-export function sslipHost(ip) {
-  return `${String(ip).trim().replace(/\./g, "-")}.sslip.io`;
-}
+// The fleet domain (delegated to the ao-fleet Cloud DNS zone) and the SSO portal
+// host. Bots live at <user>[-N].<FLEET_DOMAIN>; auth is centralized at AUTH_HOST.
+export const FLEET_DOMAIN = "binary-badger.xyz";
+export const AUTH_HOST = `auth.${FLEET_DOMAIN}`;
 
-export function redirectUri(host) {
-  return `https://${host}/auth/oauth2/google/authorization-code-callback`;
+// A user's Nth bot hostname. The leftmost DNS label mirrors vmName's indexing
+// and stays within the 63-char label limit.
+export function botHost(account, index = 1) {
+  const idx = Number(index) || 1;
+  const suffix = idx > 1 ? `-${idx}` : "";
+  const label = sanitize(account).slice(0, 63 - suffix.length).replace(/-+$/g, "");
+  return `${label}${suffix}.${FLEET_DOMAIN}`;
 }
 
 // Admin contact carried inside the quota doc itself, so the quota-refusal
@@ -67,7 +72,8 @@ export function quotaAdmin(quotasJson) {
 }
 
 // CLI tail: `node gcp-lib.mjs <fn> <arg> [<arg2>]`
-const fns = { vmName, ownerLabel, sslipHost, redirectUri, ipName, quotaFor, quotaAdmin };
+const authHost = () => AUTH_HOST;
+const fns = { vmName, ownerLabel, ipName, quotaFor, quotaAdmin, botHost, authHost };
 const [, , fn, arg, arg2] = process.argv;
 if (fn) {
   if (!fns[fn]) { console.error(`unknown fn: ${fn}`); process.exit(2); }

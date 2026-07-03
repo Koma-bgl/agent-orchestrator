@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { vmName, ownerLabel, sslipHost, redirectUri, ipName, quotaFor, quotaAdmin } from "./gcp-lib.mjs";
+import { vmName, ownerLabel, ipName, quotaFor, quotaAdmin, botHost, FLEET_DOMAIN, AUTH_HOST } from "./gcp-lib.mjs";
 
 test("vmName sanitizes a gcloud account to a valid GCE name", () => {
   assert.equal(vmName("ky@chaostheory.hk"), "ao-ky-chaostheory-hk");
@@ -18,13 +18,18 @@ test("ownerLabel is gcloud-label-safe", () => {
   assert.match(ownerLabel("ky@chaostheory.hk"), /^[a-z0-9_-]+$/);
 });
 
-test("sslipHost turns an IP into a dashed sslip.io host", () => {
-  assert.equal(sslipHost("34.12.34.56"), "34-12-34-56.sslip.io");
+test("botHost derives the fleet subdomain from the account", () => {
+  assert.equal(botHost("ky@chaostheory.hk"), "ky-chaostheory-hk.binary-badger.xyz");
+  assert.equal(botHost("ky@chaostheory.hk", 2), "ky-chaostheory-hk-2.binary-badger.xyz");
+  assert.match(botHost("A.B+C@x"), /^[a-z0-9-]+\.binary-badger\.xyz$/);
+  // DNS label limit: the leftmost label stays <= 63 chars
+  const label = botHost("a".repeat(100) + "@x", 3).split(".")[0];
+  assert.ok(label.length <= 63);
 });
 
-test("redirectUri builds the OAuth callback for the host", () => {
-  assert.equal(redirectUri("34-12-34-56.sslip.io"),
-    "https://34-12-34-56.sslip.io/auth/oauth2/google/authorization-code-callback");
+test("FLEET_DOMAIN and AUTH_HOST are consistent", () => {
+  assert.equal(FLEET_DOMAIN, "binary-badger.xyz");
+  assert.equal(AUTH_HOST, "auth.binary-badger.xyz");
 });
 
 test("vmName supports an index for multi-VM users (index 1 = no suffix)", () => {
