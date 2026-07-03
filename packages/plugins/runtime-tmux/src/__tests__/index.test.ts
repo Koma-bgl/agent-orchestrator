@@ -55,6 +55,9 @@ import tmuxPlugin, { manifest, create } from "../index.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Speed up the launch-verification loop in runtime.create() tests.
+  process.env["AO_TMUX_LAUNCH_VERIFY_ATTEMPTS"] = "3";
+  process.env["AO_TMUX_LAUNCH_VERIFY_POLL_MS"] = "1";
 });
 
 describe("manifest", () => {
@@ -79,12 +82,23 @@ describe("create()", () => {
 });
 
 describe("runtime.create()", () => {
+  /**
+   * Standard call sequence for a successful short-command create:
+   * 1: new-session, 2: capture-pane (shell-ready probe — return a prompt),
+   * 3: send-keys (launch command + Enter), 4: display-message (launch
+   * verification — return a non-shell foreground command).
+   */
+  function mockCreateSequence() {
+    mockTmuxSuccess(); // new-session
+    mockTmuxSuccess("user@host dir %"); // capture-pane — shell prompt visible
+    mockTmuxSuccess(); // send-keys launch command
+    mockTmuxSuccess("node"); // display-message — agent process running
+  }
+
   it("calls new-session with correct args", async () => {
     const runtime = create();
 
-    // 1: new-session, 2: send-keys (launch command)
-    mockTmuxSuccess();
-    mockTmuxSuccess();
+    mockCreateSequence();
 
     const handle = await runtime.create({
       sessionId: "test-session",
@@ -113,8 +127,7 @@ describe("runtime.create()", () => {
   it("includes -e KEY=VALUE flags for environment variables", async () => {
     const runtime = create();
 
-    mockTmuxSuccess();
-    mockTmuxSuccess();
+    mockCreateSequence();
 
     await runtime.create({
       sessionId: "env-session",
@@ -134,8 +147,7 @@ describe("runtime.create()", () => {
   it("sends launch command via send-keys", async () => {
     const runtime = create();
 
-    mockTmuxSuccess();
-    mockTmuxSuccess();
+    mockCreateSequence();
 
     await runtime.create({
       sessionId: "launch-test",
@@ -144,7 +156,7 @@ describe("runtime.create()", () => {
       environment: {},
     });
 
-    // Second call: send-keys with the launch command
+    // send-keys with the launch command (after the shell-ready probe)
     expect(mockExecFileCustom).toHaveBeenCalledWith("tmux", [
       "send-keys",
       "-t",
@@ -154,14 +166,136 @@ describe("runtime.create()", () => {
     ]);
   });
 
+  it("uses load-buffer + paste-buffer for long launch commands (> 200 chars)", async () => {
+    const runtime = create();
+    const longCommand = "claude -p '" + "x".repeat(250) + "'";
+
+    mockTmuxSuccess(); // new-session
+    mockTmuxSuccess("user@host dir %"); // capture-pane — shell ready
+    mockTmuxSuccess(); // load-buffer
+    mockTmuxSuccess(); // paste-buffer
+    mockTmuxSuccess(); // send-keys Enter
+    mockTmuxSuccess("node"); // display-message — agent running
+
+    await runtime.create({
+      sessionId: "long-launch",
+      workspacePath: "/tmp/ws",
+      launchCommand: longCommand,
+      environment: {},
+    });
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      expect.stringContaining("ao-launch-test-uuid-1234.txt"),
+      longCommand,
+      { encoding: "utf-8", mode: 0o600 },
+    );
+    // Buffer name is ao-launch-<first 8 chars of uuid>
+    expect(mockExecFileCustom).toHaveBeenCalledWith("tmux", [
+      "paste-buffer",
+      "-b",
+      "ao-launch-test-uui",
+      "-t",
+      "long-launch",
+      "-d",
+    ]);
+    expect(mockExecFileCustom).toHaveBeenCalledWith("tmux", [
+      "send-keys",
+      "-t",
+      "long-launch",
+      "Enter",
+    ]);
+  });
+
+  it("waits for a shell prompt before sending the launch command", async () => {
+    const runtime = create();
+
+    mockTmuxSuccess(); // new-session
+    mockTmuxSuccess(""); // capture-pane — shell not ready yet (blank pane)
+    mockTmuxSuccess("Last login: today"); // capture-pane — rc output, no prompt
+    mockTmuxSuccess("user@host dir %"); // capture-pane — prompt appeared
+    mockTmuxSuccess(); // send-keys launch command
+    mockTmuxSuccess("node"); // display-message — agent running
+
+    await runtime.create({
+      sessionId: "wait-ready",
+      workspacePath: "/tmp/ws",
+      launchCommand: "claude go",
+      environment: {},
+    });
+
+    // Three capture-pane probes before the launch command was sent
+    const calls = mockExecFileCustom.mock.calls.map((c) => (c[1] as string[])[0]);
+    expect(calls).toEqual([
+      "new-session",
+      "capture-pane",
+      "capture-pane",
+      "capture-pane",
+      "send-keys",
+      "display-message",
+    ]);
+  });
+
+  it("retries Enter when the pane is still at a shell after launch", async () => {
+    const runtime = create();
+
+    mockTmuxSuccess(); // new-session
+    mockTmuxSuccess("user@host dir %"); // capture-pane — ready
+    mockTmuxSuccess(); // send-keys launch command
+    mockTmuxSuccess("zsh"); // display-message — Enter was swallowed, still at shell
+    mockTmuxSuccess(); // send-keys Enter (retry)
+    mockTmuxSuccess("node"); // display-message — agent started
+
+    await runtime.create({
+      sessionId: "retry-enter",
+      workspacePath: "/tmp/ws",
+      launchCommand: "claude go",
+      environment: {},
+    });
+
+    expect(mockExecFileCustom).toHaveBeenCalledWith("tmux", [
+      "send-keys",
+      "-t",
+      "retry-enter",
+      "Enter",
+    ]);
+  });
+
+  it("kills the session and throws when the launch command never starts", async () => {
+    const runtime = create();
+
+    mockTmuxSuccess(); // new-session
+    mockTmuxSuccess("user@host dir %"); // capture-pane — ready
+    mockTmuxSuccess(); // send-keys launch command
+    // 3 verification attempts (AO_TMUX_LAUNCH_VERIFY_ATTEMPTS=3), each:
+    // display-message says "zsh", then an Enter retry.
+    for (let i = 0; i < 3; i++) {
+      mockTmuxSuccess("zsh");
+      mockTmuxSuccess(); // send-keys Enter
+    }
+    mockTmuxSuccess(); // kill-session (cleanup)
+
+    await expect(
+      runtime.create({
+        sessionId: "never-starts",
+        workspacePath: "/tmp/ws",
+        launchCommand: "claude go",
+        environment: {},
+      }),
+    ).rejects.toThrow("launch command never started");
+
+    expect(mockExecFileCustom).toHaveBeenCalledWith("tmux", ["kill-session", "-t", "never-starts"]);
+  });
+
   it("cleans up session if send-keys fails", async () => {
     const runtime = create();
 
     // 1: new-session succeeds
     mockTmuxSuccess();
-    // 2: send-keys fails
+    // 2: capture-pane — shell ready
+    mockTmuxSuccess("user@host dir %");
+    // 3: send-keys fails
     mockTmuxError("send-keys failed");
-    // 3: kill-session (cleanup attempt)
+    // 4: kill-session (cleanup attempt)
     mockTmuxSuccess();
 
     await expect(
@@ -206,8 +340,7 @@ describe("runtime.create()", () => {
   it("accepts valid session IDs with hyphens and underscores", async () => {
     const runtime = create();
 
-    mockTmuxSuccess();
-    mockTmuxSuccess();
+    mockCreateSequence();
 
     const handle = await runtime.create({
       sessionId: "valid-session_123",
@@ -222,8 +355,7 @@ describe("runtime.create()", () => {
   it("handles no environment (undefined)", async () => {
     const runtime = create();
 
-    mockTmuxSuccess();
-    mockTmuxSuccess();
+    mockCreateSequence();
 
     await runtime.create({
       sessionId: "no-env",

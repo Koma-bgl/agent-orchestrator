@@ -67,6 +67,74 @@ async function getPaneForegroundCommand(handleId: string): Promise<string | null
   }
 }
 
+/** How long to wait for a fresh pane's shell to draw its first prompt. */
+const SHELL_READY_TIMEOUT_MS = 15_000;
+const SHELL_READY_POLL_MS = 250;
+
+/** Common interactive prompt endings: zsh/bash/sh `%` `$` `#`, powerlevel10k/starship `❯`, generic `>`. */
+const SHELL_PROMPT_RE = /[%$#>❯]\s*$/;
+
+/**
+ * Wait for the pane's shell to finish initializing and draw its prompt.
+ * Pasting the launch command into a shell that is still sourcing rc files
+ * races cooked-mode tty input: the command text survives, but the trailing
+ * Enter sent 300ms later can be swallowed, leaving the entire command fully
+ * typed but unexecuted at a zsh `quote>` continuation prompt. The session
+ * then reports `working` while no agent ever started (val-337/338/339).
+ * Best-effort: on timeout we proceed and rely on verifyLaunchStarted() to
+ * recover via Enter retries.
+ */
+async function waitForShellPrompt(sessionName: string): Promise<void> {
+  const deadline = Date.now() + SHELL_READY_TIMEOUT_MS;
+  for (;;) {
+    try {
+      const pane = await tmux("capture-pane", "-t", sessionName, "-p");
+      const lastLine = pane
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .pop();
+      if (lastLine !== undefined && SHELL_PROMPT_RE.test(lastLine)) return;
+    } catch {
+      // Transient capture failure — keep polling until the deadline.
+    }
+    if (Date.now() >= deadline) return;
+    await sleep(SHELL_READY_POLL_MS);
+  }
+}
+
+/** Overridable via env for ops tuning and fast tests. */
+function launchVerifyAttempts(): number {
+  const n = Number(process.env["AO_TMUX_LAUNCH_VERIFY_ATTEMPTS"]);
+  return Number.isInteger(n) && n > 0 ? n : 15;
+}
+function launchVerifyPollMs(): number {
+  const n = Number(process.env["AO_TMUX_LAUNCH_VERIFY_POLL_MS"]);
+  return Number.isInteger(n) && n > 0 ? n : 600;
+}
+
+/**
+ * Verify the launch command actually executed: the pane's foreground process
+ * must stop being a login shell. If the submitting Enter was lost during
+ * shell startup, the command sits fully typed at the prompt — re-sending
+ * Enter is exactly the missing keystroke, and harmless otherwise (an empty
+ * prompt line or the agent's own input box). Throws if the pane never leaves
+ * the shell, so a dead-on-arrival session fails the spawn loudly instead of
+ * sitting in `working` forever.
+ */
+async function verifyLaunchStarted(sessionName: string): Promise<void> {
+  const attempts = launchVerifyAttempts();
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    await sleep(launchVerifyPollMs());
+    const foreground = await getPaneForegroundCommand(sessionName);
+    // null = probe failed; don't block the spawn on transient tmux errors.
+    if (foreground === null || !SHELL_COMMANDS.has(foreground)) return;
+    await tmux("send-keys", "-t", sessionName, "Enter");
+  }
+  throw new Error(
+    `launch command never started (pane still at a shell after ${attempts} Enter retries)`,
+  );
+}
+
 export function create(): Runtime {
   return {
     name: "tmux",
@@ -95,6 +163,9 @@ export function create(): Runtime {
       // Use load-buffer + paste-buffer for long commands to avoid tmux/zsh
       // truncation issues (commands >200 chars get mangled by send-keys).
       try {
+        // Don't type into the pane until the shell has drawn its prompt —
+        // see waitForShellPrompt for the failure mode this prevents.
+        await waitForShellPrompt(sessionName);
         if (config.launchCommand.length > 200) {
           const bufferName = `ao-launch-${randomUUID().slice(0, 8)}`;
           const tmpPath = join(tmpdir(), `ao-launch-${randomUUID()}.txt`);
@@ -114,6 +185,7 @@ export function create(): Runtime {
         } else {
           await tmux("send-keys", "-t", sessionName, config.launchCommand, "Enter");
         }
+        await verifyLaunchStarted(sessionName);
       } catch (err: unknown) {
         try {
           await tmux("kill-session", "-t", sessionName);
