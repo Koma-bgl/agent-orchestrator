@@ -189,12 +189,19 @@ cmd_create() {
   # scp to the SSH user's home (writable); the remote script sudo-moves it to
   # /opt/ao/deploy. Staged copy so the local .env never leaves this machine.
   local stage; stage="$(mktemp -d)"; cp -R "$SCRIPT_DIR/." "$stage/"; rm -f "$stage/.env"
-  gcloud compute ssh "$VM_NAME" --project="$PROJECT" --zone="$ZONE" --command="rm -rf ~/ao-deploy && mkdir -p ~/ao-deploy"
-  gcloud compute scp --recurse --project="$PROJECT" --zone="$ZONE" "$stage/." "$VM_NAME:~/ao-deploy/"
+  # sshd can reset connections in the window right after the startup-script
+  # finishes, so retry the ssh/scp steps rather than aborting the whole create.
+  retry() { local n; for n in 1 2 3 4 5; do "$@" && return 0; echo "  (retry $n/5 after transient SSH error…)"; sleep 10; done; return 1; }
+  # stdin-aware retry: re-feeds $1 to the command on every attempt (a plain pipe
+  # would only feed the first try).
+  retry_stdin() { local input="$1"; shift; local n; for n in 1 2 3 4 5; do printf '%s' "$input" | "$@" && return 0; echo "  (retry $n/5 after transient SSH error…)"; sleep 10; done; return 1; }
+  retry gcloud compute ssh "$VM_NAME" --project="$PROJECT" --zone="$ZONE" --command="rm -rf ~/ao-deploy && mkdir -p ~/ao-deploy"
+  retry gcloud compute scp --recurse --project="$PROJECT" --zone="$ZONE" "$stage/." "$VM_NAME:~/ao-deploy/"
   rm -rf "$stage"
 
   echo "==> bringing the stack up on the VM…"
-  remote_up_script "$host" "$PROJECT" | gcloud compute ssh "$VM_NAME" --project="$PROJECT" --zone="$ZONE" --command="bash -s"
+  retry_stdin "$(remote_up_script "$host" "$PROJECT")" \
+    gcloud compute ssh "$VM_NAME" --project="$PROJECT" --zone="$ZONE" --command="bash -s"
 
   echo
   echo "✓ bot up at: https://$host"
