@@ -1,76 +1,108 @@
 ---
 name: valhalla-dev-bot
-description: Stand up and verify the dockerized self-host AO deploy LOCALLY, reading real secrets from GCP Secret Manager — gated Google sign-in, monitoring dashboard, admin ops, self-update — with no VM. Alpha rehearsal of the cloud setup flow.
-trigger: User wants to test the dockerized self-host deploy locally, run valhalla-dev-bot, or rehearse the deploy/sign-in flow before provisioning a VM.
+description: Create and manage your own dev-bot on the GCP fleet — a Google-gated AO instance at <you>.binary-badger.xyz, provisioned with one command (DNS, TLS, and SSO all automated). Also runs a free local smoke-test of the same stack.
+trigger: User wants to create / spin up / deploy / manage their dev bot, run valhalla-dev-bot, or locally test the AO self-host stack.
 ---
 
-# valhalla-dev-bot (alpha)
+# valhalla-dev-bot
 
-Brings up the committed deploy stack in `deploy/` (the AO Go daemon + Caddy auth
-gate + Watchtower) on **localhost**, reading the real **gate secrets** from your
-GCP Secret Manager, and verifies the whole chain — so you can exercise a real
-gated sign-in and the dashboard **before** any VM. It's the local rehearsal of the
-eventual cloud setup; see the design at
-`docs/superpowers/specs/2026-06-30-valhalla-dev-bot-alpha-design.md`.
+Provision and manage **your own dev-bot** on the shared GCP fleet: a Google-gated
+Agent Orchestrator instance at **`https://<you>.binary-badger.xyz`**, created with
+one command — the VM, per-bot DNS, Let's Encrypt cert, and single-sign-on are all
+automated. Authentication is handled by the always-on fleet portal
+(`auth.binary-badger.xyz`), so **no OAuth / Console steps are ever needed per bot**.
 
-This skill embeds **no secrets** — only a GCP project (default `cloudbet-native`,
-override with `--project=`). It uses **your own** `gcloud` credentials.
+Two modes:
+- **Fleet (default)** — create/manage a real bot on GCP. Costs money while the VM
+  runs (~$0.15/hr for `e2-standard-4`); `destroy` stops it.
+- **Local** — a free docker-compose smoke-test of the same stack on your laptop
+  (its own localhost portal). Use it to rehearse or test changes before deploying.
+
+Uses **your own `gcloud` creds**; embeds no secrets. Default project
+`cloudbet-native` (override `--project=`).
 
 ## Credential model (read this first)
 
-Two planes, two homes — do not try to fetch agent creds from Secret Manager:
+- **Fleet gate secrets (Secret Manager, shared):** `jwt-shared-key`,
+  `dashboard-allowlist` (multi-email). The portal owns `google-oauth-client`. The
+  VM's service account reads them on boot — you never handle them.
+- **Agent creds (per-user, on the box, NEVER centralized):** GitHub + Claude. Set
+  them by logging in *inside the running bot* (SSH step below). The bot boots fine
+  without them; it just can't do agent work until you log in.
 
-- **Gate secrets (shared, in Secret Manager)** — `google-oauth-client`
-  (`CLIENT_ID|CLIENT_SECRET`), `jwt-shared-key`, `dashboard-allowlist`. The skill
-  reads these and writes `deploy/.env` (gitignored).
-- **Agent creds (per-user, on the box, NOT in Secret Manager)** — GitHub and
-  Claude. Set them by logging in *inside the container* (see step 5). The daemon
-  boots fine without them (it just can't do agent work until you log in).
+---
 
-## Run order
+## Mode 1 — Fleet: create & manage your bot (default)
 
-Run from the repo root.
+Run from `deploy/`. Everything is `deploy-gcp.sh <cmd> [--project=<id>] [--index=N]`.
 
-1. **Preflight** — `node skills/valhalla-dev-bot/run.mjs preflight`
-   Confirms docker is up, a GCP credential resolves, and echoes the project.
-2. **Check secrets** — `node skills/valhalla-dev-bot/run.mjs check --project=<id>`
-   Verifies the 3 gate secrets exist. If any are missing it prints the exact
-   one-time `gcloud secrets create …` command (incl. the Console step for
-   `google-oauth-client`). Create the missing ones, then re-run `check`.
-3. **Up** — `node skills/valhalla-dev-bot/run.mjs up --project=<id>`
-   Fetches the gate secrets, writes `deploy/.env`, `docker compose up -d --build`.
-   (Prints only key lengths, never secret values.)
-4. **Verify** — `node skills/valhalla-dev-bot/run.mjs verify`
-   Pass/fail table: dashboard gated (302), admin gated (302), daemon `/healthz`,
-   and a real (non-dummy) Google OAuth initiation. Exits non-zero on failure.
-5. Report the verify table to the user, then offer the live tier below.
+**Prerequisites (one-time, fleet-wide — normally already done):**
+- `gcloud auth login` and a project selected.
+- The fleet portal is deployed (`./deploy-portal.sh`) and `jwt-shared-key` +
+  `dashboard-allowlist` exist in Secret Manager. If unsure, `./deploy-gcp.sh status`
+  and a quick `gcloud secrets describe jwt-shared-key` confirm it.
 
-## Human-guided steps (the agent cannot do these)
+**Create your bot:**
+1. `./deploy-gcp.sh init` — one-time per user: reserves a static IP + SA/IAM/firewall.
+2. `./deploy-gcp.sh create` — provisions the VM (quota-gated, **max 1/user** by
+   default), creates the `<you>.binary-badger.xyz` A-record, fetches gate secrets via
+   the SA, and brings the stack up. ~5–10 min (first build compiles Caddy on the VM).
+   → prints your URL: `https://<you>.binary-badger.xyz`.
+3. **Sign in (human):** open the URL → you're bounced to `auth.binary-badger.xyz` →
+   sign in with an allowlisted Google account → you land back on your bot's dashboard.
+   (Fleet SSO — no per-bot OAuth. `403` after login = your email isn't in
+   `dashboard-allowlist`.)
+4. **Agent auth (human, so agents can work)** — SSH in and log in on the box:
+   ```
+   gcloud compute ssh ao-<you> --zone=us-central1-a
+   sudo docker compose -f /opt/ao/deploy/docker-compose.yml exec ao gh auth login
+   sudo docker compose -f /opt/ao/deploy/docker-compose.yml exec ao claude setup-token
+   ```
+   (On-box by design; a VM recreate may drop these until config-dir persistence
+   lands — just re-auth.)
 
-- **Live sign-in:** open `https://localhost:8443` in a browser, accept Caddy's
-  internal-cert warning, and sign in with an **allowlisted** Google account
-  (whatever is in `dashboard-allowlist`). You land on the gated dashboard.
-  - `redirect_uri_mismatch` → the OAuth client must register exactly
-    `https://localhost:8443/auth/oauth2/google/authorization-code-callback`.
-  - "Access blocked / test user" → the OAuth **consent screen** is in *Testing*
-    (add the email as a test user) or *Internal* (same-Workspace only).
-  - `403` after login → the email isn't in `dashboard-allowlist`.
-- **On-box agent auth** (so agents can do real work):
-  - `docker compose -f deploy/docker-compose.yml exec ao gh auth login`
-  - `docker compose -f deploy/docker-compose.yml exec ao claude setup-token`
-  - These persist on the box; agent creds are intentionally NOT centralized.
-    (Note: until the M7 config-dir persistence wiring lands, a container recreate
-    may drop these — re-auth if so.)
+**Manage:**
+- `./deploy-gcp.sh status` — your bot's URL, VM state, quota usage.
+- `./deploy-gcp.sh destroy` — deletes the VM **and its DNS record**; the reserved
+  IP/SA/secrets persist so recreate is cheap. **Stops the billing.**
+- Quota reached? The message names the admin to ask; more via `--index=N` if your
+  quota allows.
+- Admin (needs perms): `./deploy-gcp.sh admin-list` (all bots by owner) /
+  `admin-audit` (authoritative creator log).
 
-## Teardown
+---
 
-- `node skills/valhalla-dev-bot/run.mjs down` — stop, keep state.
-- `node skills/valhalla-dev-bot/run.mjs down --wipe` — stop and wipe volumes.
+## Mode 2 — Local: free smoke-test
 
-## Notes / known wrinkles
+A docker-compose run of the same stack on `https://localhost:8443` with its **own**
+localhost portal (independent of the fleet). Needs Docker running + the 3 gate
+secrets readable (incl. `google-oauth-client` for the local portal).
 
-- The image is `linux/amd64` (the `ao` binary is x64-only) — on Apple Silicon it
-  runs under emulation; first build is slow.
-- Reading secrets uses a file-redirect (shell `$(gcloud …)` capture was flaky).
-- Scope: this is the **local** alpha. The VM, service-account impersonation, and
-  the guided cloud setup are later milestones (M7/M8).
+```
+node skills/valhalla-dev-bot/run.mjs preflight            # docker + gcloud creds
+node skills/valhalla-dev-bot/run.mjs check --project=<id> # 3 gate secrets present?
+node skills/valhalla-dev-bot/run.mjs up --project=<id>    # fetch secrets, compose up
+node skills/valhalla-dev-bot/run.mjs verify              # gated 302s, healthz, oauth
+# → open https://localhost:8443 (accept the internal-cert warning), sign in
+node skills/valhalla-dev-bot/run.mjs down [--wipe]       # stop (and wipe volumes)
+```
+Local uses the localhost OAuth redirect (`https://localhost:8443/auth/oauth2/google/authorization-code-callback`) — a separate registered URI from the fleet portal's, left intact for local dev.
+
+> **Allowlist caveat (local only):** local mode matches a **single** email
+> (`ALLOWED_EMAIL_1` — the whole `dashboard-allowlist` secret stuffed into one
+> match), *not* the fleet's multi-email splat. If `dashboard-allowlist` holds
+> several emails, local sign-in only works for a single-email secret; the fleet
+> path handles the multi-email list correctly. (Aligning local with the fleet
+> multi-email + shared portal is the M8c cleanup.)
+
+---
+
+## Notes
+
+- Images are `linux/amd64` (the `ao` binary is x64-only) — native on the VM/CI,
+  emulated on Apple Silicon locally (first build slow).
+- Fleet DNS/TLS/SSO are fully automated (Cloud DNS zone `ao-fleet` +
+  the Cloud Run portal). The **only** hard invariant: nothing untrusted may ever be
+  hosted under `binary-badger.xyz` (the SSO cookie is domain-wide).
+- Specs/plans: `docs/superpowers/specs/2026-07-03-m8a-auth-portal-design.md`,
+  `docs/superpowers/plans/2026-06-30-m7-gcp-vm-single-bot.md`.
