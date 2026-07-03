@@ -10,6 +10,24 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-03-m8a-auth-portal-design.md` (reviewer-approved; B1 trusted-redirect + B2 max-instances folded).
 
+> **✅ VERIFIED LIVE (2026-07-03):** one Google sign-in at `auth.binary-badger.xyz`
+> → landed on the bot dashboard at `ky-chaostheory-hk.binary-badger.xyz`, zero
+> per-bot OAuth. Three deploy-only bugs surfaced during the live run (none
+> catchable by the local single-instance test — they only exist when portal and
+> bot are separate services):
+> 1. **caddy-security pinned v1.1.64 → v1.1.31.** v1.1.32+ carries two SSO-fatal
+>    regressions: #471 (portal deletes the `access_token` cookie right after login)
+>    and #481 (`cookie domain` stops scoping the token cookie). 1.1.31 predates
+>    both. NB: v1.1.31 lacks `trust login redirect uri` (a newer directive) — it
+>    was removed; older versions don't need it for same-registrable-domain returns.
+> 2. **`set auth url` must target the portal ROOT**, not `/oauth2/google` (else the
+>    portal skips cookie issuance / redirect_url handling).
+> 3. **JWT-key newline:** `openssl rand | gcloud secrets create` stored a trailing
+>    `\n`; Cloud Run `--set-secrets` injects it raw while bots strip it via shell —
+>    key mismatch → loop. Fixed the secret (64 bytes) + the portal entrypoint now
+>    trims CR/LF from injected secrets.
+>    Also: `create`'s ssh/scp now retries (transient post-boot `Connection reset`).
+
 > **⚠️ DSL-drift guard (from M3, still binding):** every Caddyfile change MUST pass `caddy validate` against the pinned plugin build before proceeding. The two directives most at risk here: the **trusted-redirect rule** in the portal (cross-host return leg) and the **multi-value `match email`** line. If validate rejects a keyword, consult the AuthCrunch v1.1.64 docs and adjust — never guess past a failure.
 
 > **Verification split:** Tasks 1–6 are laptop-verifiable (tests, `bash -n`, `caddy validate`, compose config). Task 7 is the operator-run live tier (portal deploy = pennies; the bot test costs VM time). Two once-ever manual steps live in Task 7: Search Console domain verification (if not already verified) and registering the portal's redirect URI.
