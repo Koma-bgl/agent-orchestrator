@@ -133,7 +133,7 @@ GITHUB_TOKEN=
 CLAUDE_CODE_OAUTH_TOKEN=
 AO_SITE_ADDRESS=$host
 AO_SITE_URL=https://$host
-AO_AUTH_URL=https://auth.binary-badger.xyz/oauth2/google
+AO_AUTH_URL=https://auth.binary-badger.xyz/
 WATCHTOWER_TOKEN=\${WT}
 ENV
 sudo docker compose -f docker-compose.yml -f docker-compose.vm.yml up -d --build

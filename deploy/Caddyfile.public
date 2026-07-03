@@ -10,10 +10,14 @@
 
 	security {
 		authorization policy mypolicy {
-			# Unauthenticated users are sent straight into the Google flow at the
-			# fleet portal (root mount → /oauth2/google, no /auth prefix).
+			# Unauthenticated users are sent to the fleet portal ROOT (AO_AUTH_URL
+			# = https://auth.binary-badger.xyz/) — NOT straight at /oauth2/google,
+			# so the portal issues the token cookie + honors redirect_url.
 			set auth url {$AO_AUTH_URL}
 			crypto key verify {env.JWT_SHARED_KEY}
+			# Read the JWT from the cross-domain COOKIE (a browser only sends a
+			# cookie, never a Bearer header). Explicit + cookie-first.
+			set token sources cookie header query
 
 			# EMAIL ALLOWLIST — acl default is deny-unless-allowed. {$ALLOWED_EMAILS}
 			# is PARSE-TIME substitution: a space-separated value splats into a

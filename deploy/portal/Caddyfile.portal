@@ -19,14 +19,12 @@
 			crypto default token lifetime 3600
 			crypto key sign-verify {env.JWT_SHARED_KEY}
 			enable identity provider google
-			# Fleet-wide session: every *.binary-badger.xyz host receives the
-			# cookie. Invariant: nothing untrusted is ever hosted under the domain.
+			# Fleet-wide session: scope EVERY portal cookie (incl. the access token)
+			# to the parent domain so every *.binary-badger.xyz host receives it.
+			# (v1.1.31: `cookie domain` works — the #481 break is a 1.1.32+ thing;
+			# this version also predates the #471 delete-cookie regression.)
+			# Invariant: nothing untrusted is ever hosted under binary-badger.xyz.
 			cookie domain binary-badger.xyz
-			cookie samesite lax
-			# Return leg: cross-host redirect_url values are IGNORED (open-redirect
-			# guard) unless trusted. Tightly scoped to the fleet domain — never a
-			# permissive wildcard. BOTH clauses (domain AND path) are required.
-			trust login redirect uri domain suffix binary-badger.xyz path prefix /
 			# Conventional role grant; authorization happens bot-side.
 			transform user {
 				match realm google
