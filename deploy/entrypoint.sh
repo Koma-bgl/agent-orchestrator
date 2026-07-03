@@ -46,35 +46,41 @@ else
   echo "[entrypoint] using env/.env secrets as-is"
 fi
 
-# Loopback bridge: the daemon binds 127.0.0.1:${AO_PORT} only, so a sibling
-# container (Caddy) cannot reach it. socat relays 0.0.0.0:8080 -> the loopback
-# daemon (compose-network only; never published to the host). Backgrounded; tini
-# (init: true) reaps it. It is a dumb TCP relay, so SSE passes through untouched.
-AO_BRIDGE_PORT="${AO_BRIDGE_PORT:-8080}"
-echo "[entrypoint] starting loopback bridge :${AO_BRIDGE_PORT} -> 127.0.0.1:${AO_PORT:-3001}"
-socat "TCP-LISTEN:${AO_BRIDGE_PORT},fork,reuseaddr" "TCP:127.0.0.1:${AO_PORT:-3001}" &
+# Ensure a valid config exists so the dashboard boots on a fresh (idle) bot. The
+# schema requires `projects` as a MAP (z.record) — an empty map is valid and
+# `port` defaults to 3000. `projects: []` (array) or a missing key FAIL Zod, so
+# the skeleton must be exactly `projects: {}`. Milestone B's wizard rewrites this
+# with a real project (repo + tracker + queuePoller + reactions).
+mkdir -p "$(dirname "${AO_CONFIG_PATH}")"
+if [ ! -f "${AO_CONFIG_PATH}" ]; then
+  echo "[entrypoint] writing skeleton config -> ${AO_CONFIG_PATH}"
+  printf 'projects: {}\n' > "${AO_CONFIG_PATH}"
+fi
 
-# Admin backend (version / update-now / secret rotation). Bound to the compose
+# A git identity is needed once a project is cloned and worktrees are committed
+# (Milestone B). Set a harmless default now if the operator hasn't configured one.
+git config --global --get user.email >/dev/null 2>&1 || git config --global user.email "bot@binary-badger.xyz"
+git config --global --get user.name  >/dev/null 2>&1 || git config --global user.name  "agent-orchestrator bot"
+
+# Admin backend (version / update-now / setup wizard). Bound to the compose
 # network only; Caddy gates /admin/api/* with Google auth before reaching it.
 AO_ADMIN_PORT="${AO_ADMIN_PORT:-8090}"
 echo "[entrypoint] starting admin backend on :${AO_ADMIN_PORT}"
 node /app/admin/server.mjs &
 
-# Launch the headless Go daemon. It binds 127.0.0.1:${AO_PORT}, reads state from
-# $HOME/.ao, and blocks until SIGTERM/SIGINT.
-#
-# IMPORTANT: do NOT `exec ao daemon`. The npm `ao` is a Node shim that runs the
-# Go binary via spawnSync (a *child*, not execve). Under `exec ao daemon`, node
-# would be PID 1 and would not forward SIGTERM to the Go child, so `docker stop`
-# would SIGKILL after the timeout instead of shutting down gracefully.
-# Resolve the real platform binary and exec IT directly, so the Go daemon is PID
-# 1 and its own signal.NotifyContext(SIGINT,SIGTERM) handles graceful shutdown.
-#
-# The platform binary (@aoagents/ao-<platform>-<arch>) is a NESTED optional dep of
-# the globally-installed `ao` shim package, so it is NOT resolvable from /app.
-# Resolve it relative to the shim's own directory (follow the PATH symlink to the
-# shim, then require.resolve the platform package with that dir as the search base).
-AO_SHIM_DIR="$(dirname "$(readlink -f "$(command -v ao)")")"
-AO_BIN="$(node -e 'const path=require("path");const pkg=`@aoagents/ao-${process.platform}-${process.arch}`;const pj=require.resolve(pkg+"/package.json",{paths:[process.argv[1]]});process.stdout.write(path.join(path.dirname(pj),"bin","ao"))' "$AO_SHIM_DIR")"
-echo "[entrypoint] starting ao daemon (${AO_BIN}) on 127.0.0.1:${AO_PORT:-3001}"
-exec "${AO_BIN}" daemon "$@"
+# Launch the TS agent-orchestrator dashboard (Next.js + terminal servers) via
+# ao-web's production entry `dist-server/start-all.js` — NOT `ao dashboard` (that
+# is dev-only: `next dev` needs app source ao-web does not ship). start-all runs
+# `next start` off the prebuilt .next (no build) + the terminal WS servers, binds
+# 0.0.0.0:${PORT}, boots on the empty `projects: {}` skeleton, and installs its own
+# SIGINT/SIGTERM cleanup. It is PID 1; compose `init: true` reaps ttyd grandchildren.
+# The Linear poller/reactions run as a SEPARATE `ao lifecycle-worker <project>`
+# process, started by Milestone B's wizard once a project is configured.
+# ao-web is a NESTED dep of the globally-installed ao-cli
+# (.../@composio/ao-cli/node_modules/@composio/ao-web), so it is NOT resolvable
+# from /app or the global root. Resolve it relative to the `ao` bin's own dir
+# (follow the PATH symlink, then require.resolve ao-web with that dir as the base).
+AO_SHIM="$(readlink -f "$(command -v ao)")"
+WEBDIR="$(node -e 'const path=require("path");const pj=require.resolve("@composio/ao-web/package.json",{paths:[path.dirname(process.argv[1])]});process.stdout.write(path.dirname(pj))' "$AO_SHIM")"
+echo "[entrypoint] starting dashboard (start-all) on 0.0.0.0:${PORT} (webdir ${WEBDIR})"
+exec node "${WEBDIR}/dist-server/start-all.js"

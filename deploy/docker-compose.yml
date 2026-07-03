@@ -3,23 +3,26 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # @aoagents/ao is linux-x64 only; emulated on arm64 dev machines, native on the VM.
+    # Pinned to match the x86_64 VM + the x86_64 ttyd static binary in the image;
+    # emulated on arm64 dev machines, native on the VM.
     platform: linux/amd64
     image: ao-local:dev
     env_file:
       - .env
-    # Defense-in-depth: a tini-equivalent init reaps zombies (agents spawn tmux
-    # children later) and forwards signals. The entrypoint already exec's the
-    # real Go binary as PID 1, so this is belt-and-suspenders, not load-bearing.
+    # init reaps zombies and forwards signals. LOAD-BEARING now: start-all.js is a
+    # Node PID 1 that spawns next + terminal servers + per-session ttyd children;
+    # init: true ensures ttyd grandchildren are reaped.
     init: true
-    # NOTE: the daemon binds 127.0.0.1 only, so publishing 3001 to the host would
-    # NOT reach it (and the deployed stack must never expose 3001 anyway — Caddy
-    # is the only public surface). Verify via `docker compose exec`.
-    # `expose` makes the socat bridge (:8080) reachable as `ao:8080` on the
-    # compose network for Caddy ONLY — it is NOT published to the host.
+    # `expose` makes these reachable as `ao:<port>` on the compose network for
+    # Caddy ONLY — never published to the host. 3000 = dashboard (Next.js), 8090 =
+    # admin/setup backend, 14800/14801 = terminal WS servers, 7800-7900 = per-session
+    # ttyd instances (terminal gating through Caddy is finalized in the live test).
     expose:
-      - "8080"
+      - "3000"
       - "8090"
+      - "14800"
+      - "14801"
+      - "7800-7900"
     volumes:
       # Durable daemon state (SQLite + running.json) survives restarts/rebuilds.
       - ao-state:/root/.ao
@@ -49,9 +52,8 @@ services:
       # Our Caddyfile (read-only). Without this, Caddy runs the stock image
       # default (a file-server welcome page) instead of the auth + proxy config.
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # The static monitoring SPA, served by Caddy at /srv (M6/M7: bake into the
-      # image instead of host-mounting so Watchtower updates the UI on pull).
-      - ./web:/srv:ro
+      # (The old static monitoring SPA mount `./web:/srv` is gone — the TS
+      #  dashboard on :3000 is now the UI; Caddy only reverse-proxies.)
       - caddy-data:/data      # cert/ACME storage; persists the internal CA locally
       - caddy-config:/config
     labels:

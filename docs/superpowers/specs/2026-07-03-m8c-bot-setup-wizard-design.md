@@ -1,7 +1,14 @@
 # M8c — Bot Setup wizard (idle → working) — Design
 
+> ⚠️ **SUPERSEDED (2026-07-03)** by
+> [`2026-07-03-ts-ao-bot-swap-design.md`](2026-07-03-ts-ao-bot-swap-design.md).
+> This spec targeted the **Go daemon** (`@aoagents/ao`, `ao project add`, no yaml),
+> which has no Linear tracker/reactions. The fleet bot now runs the **TS AO**
+> (`@composio/ao-cli`), where "setup the yaml" is a real `agent-orchestrator.yaml`.
+> Kept for history; do not build against this.
+
 **Date:** 2026-07-03
-**Status:** Draft for spec review
+**Status:** Superseded
 **Builds on:** M8a (fleet SSO, live-verified). Solves the gap surfaced on the live
 bot: a freshly-created bot runs the daemon but has **no repo, no GitHub/Claude
 auth, no registered project** → "No active sessions" forever.

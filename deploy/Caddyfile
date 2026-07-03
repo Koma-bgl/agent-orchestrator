@@ -60,26 +60,22 @@
 		authenticate with myportal
 	}
 
-	# Daemon API (incl. SSE /api/v1/events) — authorized, proxied to the daemon.
-	handle /api/* {
-		authorize with mypolicy
-		reverse_proxy ao:8080 {
-			# SSE belt-and-suspenders: stream /api/v1/events without buffering.
-			flush_interval -1
-		}
-	}
-
-	# Admin backend (version / update / secret rotation) — authorized, proxied
-	# to the co-located admin server in the ao container.
+	# Admin/setup-wizard backend — authorized, proxied to the co-located admin
+	# server. Distinct /admin/api/* prefix; no collision with the dashboard's /api/*.
 	handle /admin/api/* {
 		authorize with mypolicy
 		reverse_proxy ao:8090
 	}
 
-	# Everything else: the static monitoring SPA — also behind the auth gate.
+	# Everything else: the TS agent-orchestrator dashboard (Next.js on :3000) —
+	# serves the UI + its own /api/* (SSE via flush_interval -1). Next binds
+	# 0.0.0.0 so Caddy reaches it directly (no socat bridge).
 	handle {
 		authorize with mypolicy
-		root * /srv
-		file_server
+		reverse_proxy ao:3000 {
+			flush_interval -1
+		}
 	}
+
+	# TERMINALS (ttyd) — see Caddyfile.public: deferred to the Task 6 live test.
 }

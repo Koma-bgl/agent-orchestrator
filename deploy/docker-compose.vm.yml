@@ -11,7 +11,6 @@ services:
       - "443:443"    # public HTTPS
     volumes: !override
       - ./Caddyfile.public:/etc/caddy/Caddyfile:ro   # public-mode config (auto-TLS)
-      - ./web:/srv:ro                                # the monitoring SPA
       - caddy-data:/data                             # ACME/cert storage (persist!)
       - caddy-config:/config
     environment:

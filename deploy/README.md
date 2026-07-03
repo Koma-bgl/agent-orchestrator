@@ -1,10 +1,22 @@
 # AO container — local run (M1–M4)
 
-This directory packages the Agent Orchestrator **Go daemon** as a Docker image
-you can run on your laptop with `docker compose up`. It boots `ao daemon`
-headless, serves the REST API + `/healthz`, loads agent credentials at startup,
-puts a Google sign-in + email-allowlist gate (Caddy) in front, and serves a live
-monitoring dashboard — all with no cloud VM required.
+> ⚠️ **ENGINE SWAPPED (2026-07-03): Go daemon → TS agent-orchestrator.** The bot
+> now runs `@composio/ao-cli` (the TS AO: Linear tracker + queue-poller + reactions)
+> instead of the Go daemon. Concretely: the dashboard is **Next.js on :3000**
+> (launched via ao-web's `dist-server/start-all.js`, **not** `ao daemon` or
+> `ao dashboard`), there is **no `/healthz`** (liveness = `GET /` on :3000), the
+> **socat loopback bridge is gone** (Next binds `0.0.0.0`), and the automation runs
+> as a separate `ao lifecycle-worker <project>` process. See
+> `docs/superpowers/specs/2026-07-03-ts-ao-bot-swap-design.md`. **Milestone A**
+> (this change) boots the dashboard idle behind the SSO gate; **Milestone B** (next)
+> adds the setup wizard that writes `agent-orchestrator.yaml` + starts the worker.
+> Sections below still describe Go-daemon mechanics (3001/`/healthz`/socat) and are
+> being updated section-by-section as each is re-verified against the TS AO.
+
+This directory packages the Agent Orchestrator engine as a Docker image you can run
+on your laptop with `docker compose up`. It boots the dashboard headless, puts a
+Google sign-in + email-allowlist gate (Caddy) in front, and (once a project is
+configured) drives Linear tickets → agent sessions → PRs — with no cloud VM required.
 
 > **Scope:** local run with the daemon (M1–M2), Caddy + Google sign-in (M3), and
 > the monitoring dashboard (M4) all work here. Still later milestones: admin ops

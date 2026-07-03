@@ -44,26 +44,31 @@
 	# Public: automatic Let's Encrypt (HTTP-01 needs port 80 reachable — the
 	# firewall opens 80+443).
 
-	# Daemon API (incl. SSE /api/v1/events) — authorized, proxied to the daemon.
-	handle /api/* {
-		authorize with mypolicy
-		reverse_proxy ao:8080 {
-			# SSE belt-and-suspenders: stream /api/v1/events without buffering.
-			flush_interval -1
-		}
-	}
-
-	# Admin backend (version / update / secret rotation) — authorized, proxied
-	# to the co-located admin server in the ao container.
+	# Admin/setup-wizard backend — authorized, proxied to the co-located admin
+	# server in the ao container. Distinct /admin/api/* prefix, so it never
+	# collides with the TS dashboard's own /api/* routes (handled below).
 	handle /admin/api/* {
 		authorize with mypolicy
 		reverse_proxy ao:8090
 	}
 
-	# Everything else: the static monitoring SPA — also behind the auth gate.
+	# Everything else: the TS agent-orchestrator dashboard (Next.js on :3000) —
+	# it serves the UI AND its own /api/* (projects, sessions, spawn, events…).
+	# Behind the auth gate; flush_interval -1 keeps the /api/events SSE stream
+	# unbuffered. Next.js binds 0.0.0.0 so the sibling Caddy reaches it directly
+	# (the old Go-daemon socat bridge is gone).
 	handle {
 		authorize with mypolicy
-		root * /srv
-		file_server
+		reverse_proxy ao:3000 {
+			flush_interval -1
+		}
 	}
+
+	# TERMINALS (ttyd) — DEFERRED to the Task 6 live test. The browser builds
+	# terminal URLs from NEXT_PUBLIC_TERMINAL_PORT (ws://<host>:14800), a raw
+	# cross-port hop that bypasses this TLS+JWT gate. Gating it cleanly (publish
+	# 14800/14801 with their own TLS+authorize, or patch the client to a
+	# same-origin path here) is resolved live; until then the dashboard +
+	# Linear automation work, terminals may not. Do NOT guess a rule that fails
+	# `caddy validate` — add the verified route once the live test settles it.
 }

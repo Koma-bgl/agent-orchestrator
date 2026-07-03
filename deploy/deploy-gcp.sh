@@ -129,7 +129,13 @@ cat > .env <<ENV
 AO_SECRET_SOURCE=env
 JWT_SHARED_KEY=\${JWT}
 ALLOWED_EMAILS=\${ALLOW}
+# Agent creds — left EMPTY on purpose. The bot boots idle; each user fills these
+# on-box via the setup wizard (Milestone B), so the admin who runs create never
+# handles anyone's tokens. gh reads GITHUB_TOKEN; the Linear tracker reads
+# LINEAR_API_KEY; claude-code reads ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN).
 GITHUB_TOKEN=
+LINEAR_API_KEY=
+ANTHROPIC_API_KEY=
 CLAUDE_CODE_OAUTH_TOKEN=
 AO_SITE_ADDRESS=$host
 AO_SITE_URL=https://$host
