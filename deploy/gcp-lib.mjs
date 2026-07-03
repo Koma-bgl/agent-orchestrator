@@ -1,5 +1,6 @@
-// Pure helpers for deploy-gcp.sh. No I/O. Also runnable as a CLI so bash can call:
-//   node gcp-lib.mjs sslipHost 34.12.34.56   →   34-12-34-56.sslip.io
+// Pure helpers for deploy-gcp.sh / deploy-portal.sh. No I/O. Also runnable as a
+// CLI so bash can call:
+//   node gcp-lib.mjs botHost ky@chaostheory.hk   →   ky-chaostheory-hk.binary-badger.xyz
 // Unit-tested in gcp-lib.test.mjs.
 
 function sanitize(account) {

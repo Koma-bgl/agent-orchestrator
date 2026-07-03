@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# deploy-gcp.sh — provision the AO stack as a single public Google-gated bot on a
-# GCE VM at https://<reserved-ip>.sslip.io.  Operator-run; uses YOUR gcloud creds.
+# deploy-gcp.sh — provision the AO stack as a public bot on a GCE VM at
+# https://<user>.binary-badger.xyz, authenticated by the fleet SSO portal
+# (auth.binary-badger.xyz — see deploy-portal.sh). Operator-run; YOUR gcloud creds.
+# No per-bot OAuth/Console steps: DNS A-records are automated in the ao-fleet zone.
 #
-#   init     one-time: reserve static IP, create SA + IAM, firewall; print the
-#            OAuth redirect URI to add to your Google client (once).
-#   create   create the VM (max 1 per user), scp the deploy kit, bring the stack up.
-#   destroy  delete the VM instance only (IP/SA/secrets persist — recreate is cheap).
+#   init     one-time: reserve static IP, create SA + IAM, firewall.
+#   create   create the VM (quota-gated), DNS A-record, scp the kit, stack up.
+#   destroy  delete the VM instance + its A-record (IP/SA/secrets persist).
 #   status   show your bot's VM + URL.
 #
 # Env/flags: --project=ID | $AO_PROJECT (else active gcloud project);
@@ -41,6 +42,24 @@ QUOTA_SECRET="ao-vm-quotas"
 # Prints the reserved IP, or nothing if it doesn't exist yet (absence is a valid
 # state — callers check for empty; don't let set -e kill us on describe's exit).
 ip_address() { gcloud compute addresses describe "$IP_NAME" --project="$PROJECT" --region="$REGION" --format='value(address)' 2>/dev/null || true; }
+
+DNS_ZONE="ao-fleet"
+
+# Upsert an A-record (describe → update-else-create: `create` fails if present,
+# `update` fails if absent, and delete-then-create opens an NXDOMAIN window that
+# resolvers negative-cache).
+dns_upsert_a() {
+  local fqdn="$1." ip="$2"
+  if gcloud dns record-sets describe "$fqdn" --type=A --zone="$DNS_ZONE" --project="$PROJECT" >/dev/null 2>&1; then
+    gcloud dns record-sets update "$fqdn" --type=A --zone="$DNS_ZONE" --project="$PROJECT" --ttl=300 --rrdatas="$ip" >/dev/null
+  else
+    gcloud dns record-sets create "$fqdn" --type=A --zone="$DNS_ZONE" --project="$PROJECT" --ttl=300 --rrdatas="$ip" >/dev/null
+  fi
+}
+
+dns_delete_a() {
+  gcloud dns record-sets delete "$1." --type=A --zone="$DNS_ZONE" --project="$PROJECT" >/dev/null 2>&1 || true
+}
 
 # Per-user quota from the central ao-vm-quotas secret (JSON:
 #   {"default":1,"admin":"ky@chaostheory.hk","some@user.com":3}).
@@ -86,14 +105,9 @@ cmd_init() {
          --allow=tcp:80,tcp:443 --direction=INGRESS --target-tags="$NET_TAG"
   echo "  ✓ firewall $FW_RULE (tcp:80,443 → tag:$NET_TAG)"
 
-  local host redirect
-  host="$(node "$SCRIPT_DIR/gcp-lib.mjs" sslipHost "$ip")"
-  redirect="$(node "$SCRIPT_DIR/gcp-lib.mjs" redirectUri "$host")"
   echo
-  echo "ONE-TIME: add this Authorized redirect URI to your OAuth client:"
-  echo "    $redirect"
-  echo "  Console: https://console.cloud.google.com/apis/credentials?project=$PROJECT"
-  echo "Then run: $0 create"
+  echo "Auth is fleet-wide (deploy-portal.sh) — no per-bot OAuth steps."
+  echo "Next: $0 create   → your bot at https://$(node "$SCRIPT_DIR/gcp-lib.mjs" botHost "$ACCOUNT" "$INDEX")"
 }
 
 # Build the remote bring-up script (runs on the VM; fetches secrets via the SA).
@@ -107,19 +121,19 @@ sudo rm -rf /opt/ao/deploy
 sudo mv "\$HOME/ao-deploy" /opt/ao/deploy
 cd /opt/ao/deploy
 sec() { gcloud secrets versions access latest --secret="\$1" --project="$project"; }
-GOC="\$(sec google-oauth-client)"; GID="\${GOC%%|*}"; GSEC="\${GOC#*|}"
-JWT="\$(sec jwt-shared-key)"; ALLOW="\$(sec dashboard-allowlist)"
+JWT="\$(sec jwt-shared-key)"
+# Fleet allowlist: normalize commas/newlines to spaces (parse-time splat in Caddy).
+ALLOW="\$(sec dashboard-allowlist | tr ',\n' '  ')"
 WT="\$(openssl rand -hex 24 2>/dev/null || head -c24 /dev/urandom | xxd -p)"
 cat > .env <<ENV
 AO_SECRET_SOURCE=env
-GOOGLE_CLIENT_ID=\${GID}
-GOOGLE_CLIENT_SECRET=\${GSEC}
 JWT_SHARED_KEY=\${JWT}
-ALLOWED_EMAIL_1=\${ALLOW}
+ALLOWED_EMAILS=\${ALLOW}
 GITHUB_TOKEN=
 CLAUDE_CODE_OAUTH_TOKEN=
 AO_SITE_ADDRESS=$host
 AO_SITE_URL=https://$host
+AO_AUTH_URL=https://auth.binary-badger.xyz/oauth2/google
 WATCHTOWER_TOKEN=\${WT}
 ENV
 sudo docker compose -f docker-compose.yml -f docker-compose.vm.yml up -d --build
@@ -154,7 +168,10 @@ cmd_create() {
   fi
   local ip; ip="$(ip_address)"
   [ -n "$ip" ] || { echo "no reserved IP ($IP_NAME) — run '$0 init${INDEX:+ --index=$INDEX}' first."; exit 1; }
-  local host; host="$(node "$SCRIPT_DIR/gcp-lib.mjs" sslipHost "$ip")"
+  local host; host="$(node "$SCRIPT_DIR/gcp-lib.mjs" botHost "$ACCOUNT" "$INDEX")"
+
+  echo "==> DNS: $host → $ip (ao-fleet zone)"
+  dns_upsert_a "$host" "$ip"
 
   echo "==> creating VM $VM_NAME ($MACHINE_TYPE) with IP $ip → https://$host"
   gcloud compute instances create "$VM_NAME" --project="$PROJECT" --zone="$ZONE" \
@@ -181,19 +198,19 @@ cmd_create() {
 
   echo
   echo "✓ bot up at: https://$host"
-  echo "  - if you haven't: add the redirect URI from '$0 init' to the OAuth client."
-  echo "  - sign in with an allowlisted Google account."
+  echo "  - sign in with an allowlisted Google account (fleet SSO — no OAuth setup needed)."
   echo "  - agent auth (on-box): gcloud compute ssh $VM_NAME --zone=$ZONE then:"
   echo "      sudo docker compose -f /opt/ao/deploy/docker-compose.yml exec ao gh auth login"
   echo "      sudo docker compose -f /opt/ao/deploy/docker-compose.yml exec ao claude setup-token"
 }
 
 cmd_destroy() {
+  dns_delete_a "$(node "$SCRIPT_DIR/gcp-lib.mjs" botHost "$ACCOUNT" "$INDEX")"
   if gcloud compute instances describe "$VM_NAME" --project="$PROJECT" --zone="$ZONE" >/dev/null 2>&1; then
     gcloud compute instances delete "$VM_NAME" --project="$PROJECT" --zone="$ZONE" --quiet
-    echo "✓ deleted instance $VM_NAME. Reserved IP, SA, and secrets kept — recreate with '$0 create'."
+    echo "✓ deleted instance $VM_NAME (+ its A-record). Reserved IP, SA, and secrets kept — recreate with '$0 create'."
   else
-    echo "no instance $VM_NAME (already gone). IP/SA/secrets untouched."
+    echo "no instance $VM_NAME (already gone; A-record cleaned). IP/SA/secrets untouched."
   fi
 }
 
@@ -202,7 +219,7 @@ cmd_status() {
   echo "project: $PROJECT  account: $ACCOUNT"
   echo "quota: $(owned_count)/$(user_quota) VM(s) used"
   echo "reserved IP ($IP_NAME): ${ip:-<none — run init>}"
-  [ -n "$ip" ] && echo "URL: https://$(node "$SCRIPT_DIR/gcp-lib.mjs" sslipHost "$ip")"
+  [ -n "$ip" ] && echo "URL: https://$(node "$SCRIPT_DIR/gcp-lib.mjs" botHost "$ACCOUNT" "$INDEX")"
   echo "instances:"
   gcloud compute instances list --project="$PROJECT" --filter="labels.ao-owner=$OWNER_LABEL" \
     --format='table(name,zone,status,EXTERNAL_IP)' 2>/dev/null || echo "  (none)"
