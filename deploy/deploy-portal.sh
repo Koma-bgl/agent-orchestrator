@@ -25,6 +25,10 @@ echo "==> enabling required APIs (idempotent)"
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
   --project="$PROJECT"
 
+# domain-mappings lives in the beta component; install non-interactively if absent
+# (a missing component otherwise dies on an unanswerable prompt in this script).
+gcloud beta run --help >/dev/null 2>&1 || gcloud components install beta --quiet
+
 echo "==> deploying $SERVICE to Cloud Run ($REGION) from source"
 # --max-instances=1 is LOAD-BEARING: the OAuth handshake state (state/nonce/PKCE)
 # lives in a per-process in-memory map; a callback landing on a second instance
