@@ -8,6 +8,15 @@ set -eu
 : "${GOOGLE_OAUTH_CLIENT:?GOOGLE_OAUTH_CLIENT is required (ID|SECRET)}"
 : "${JWT_SHARED_KEY:?JWT_SHARED_KEY is required}"
 
+# Trim CR/LF from injected secrets. Cloud Run's --set-secrets injects raw bytes
+# (a secret created via `openssl … | gcloud secrets create` carries a trailing
+# newline), whereas the bots read the same secrets through shell command-
+# substitution, which strips it. Untrimmed, the portal would sign JWTs with a
+# key the bots can't verify → cross-service login loop. Trim so both sides agree.
+GOOGLE_OAUTH_CLIENT="$(printf '%s' "$GOOGLE_OAUTH_CLIENT" | tr -d '\r\n')"
+JWT_SHARED_KEY="$(printf '%s' "$JWT_SHARED_KEY" | tr -d '\r\n')"
+export JWT_SHARED_KEY
+
 GOOGLE_CLIENT_ID="${GOOGLE_OAUTH_CLIENT%%|*}"
 GOOGLE_CLIENT_SECRET="${GOOGLE_OAUTH_CLIENT#*|}"
 export GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
