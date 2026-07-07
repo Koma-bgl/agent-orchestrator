@@ -111,6 +111,81 @@ async function syncStatuses(teamId, sessions, qp) {
   }
 }
 
+// --- Stuck-session watchdog --------------------------------------------------
+// ao@0.2.2 delivers the task prompt by typing it into the fresh claude pane AFTER
+// launch; that send races claude's startup and is occasionally lost, leaving the
+// agent idle at an empty prompt forever (status needs_input, and — since nothing was
+// ever processed — no transcript, so activity is null). This is the "handshake before
+// payload" fix: once a session has sat stuck past a grace window (claude is provably
+// ready by then), re-deliver the task by pasting it into the pane. Nudge each session
+// at most once. Only the exact "never got its prompt" shape qualifies: a genuinely
+// waiting agent has a transcript, so its activity would be ready/idle, not null.
+// A successful delivery flips the session to working within a poll cycle (claude
+// writes a transcript the instant it receives the prompt → activity null→active), so
+// 90s cleanly separates "genuinely stuck" from "mid-delivery". The `esc to interrupt`
+// pane guard below makes double-delivery impossible even inside that window.
+const STUCK_AGE_MS = 90_000;
+const nudged = new Set();
+
+async function fetchIssueForPrompt(identifier) {
+  try {
+    const data = await linearGraphQL("query($id:String!){ issue(id:$id){ identifier title description } }", { id: identifier });
+    return data?.issue || null;
+  } catch { return null; }
+}
+
+function buildNudgePrompt(issue, identifier) {
+  const title = issue?.title || "";
+  const desc = (issue?.description || "").replace(/\s+/g, " ").trim();
+  // Single line on purpose: newlines in a tmux paste would submit the prompt early.
+  return `Please work on Linear ticket ${identifier}: ${title}. ${desc} Follow your standard workflow: create a feature branch, implement the change, run the fast local checks (type-check + lint), commit, push, and open a PR — CI runs the full build + tests on the PR.`
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function paneText(tmuxName) {
+  try {
+    const { stdout } = await execFileAsync("tmux", ["capture-pane", "-t", tmuxName, "-p"], { timeout: 10_000 });
+    return stdout;
+  } catch { return ""; }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function recoverStuck(sessions) {
+  for (const s of sessions) {
+    const tmuxName = s.metadata?.tmuxName;
+    if (!s.issueId || !tmuxName) continue;
+    if (s.status !== "needs_input" || s.activity != null) continue; // only the "never got prompt" shape
+    if (nudged.has(s.id)) continue;
+    const createdMs = Date.parse(s.createdAt || s.metadata?.createdAt || "");
+    if (!Number.isFinite(createdMs) || Date.now() - createdMs < STUCK_AGE_MS) continue;
+    const pane = await paneText(tmuxName);
+    if (!/bypass permissions|❯/.test(pane)) continue; // claude UI not up yet — wait for a later tick
+    if (/esc to interrupt/.test(pane)) continue; // claude has an active turn (processing) — not stuck; never double-deliver
+    try {
+      if (/\[Pasted text/.test(pane)) {
+        // Failure mode A: ao pasted the prompt but the submit Enter was lost — the box
+        // already holds the real task, so just press Enter. Do NOT re-paste (that would
+        // concatenate a second prompt onto the first).
+        console.log(`[queue-poller] watchdog: ${s.id} (${s.issueId}) has an unsubmitted prompt — submitting`);
+        await execFileAsync("tmux", ["send-keys", "-t", tmuxName, "Enter"], { timeout: 10_000 });
+      } else {
+        // Failure mode B: nothing landed (empty box / placeholder) — re-deliver the task.
+        console.log(`[queue-poller] watchdog: ${s.id} (${s.issueId}) stuck with no prompt — re-delivering`);
+        const prompt = buildNudgePrompt(await fetchIssueForPrompt(s.issueId), s.issueId);
+        await execFileAsync("tmux", ["set-buffer", "-b", "aonudge", prompt], { timeout: 10_000 });
+        await execFileAsync("tmux", ["paste-buffer", "-d", "-b", "aonudge", "-t", tmuxName], { timeout: 10_000 });
+        await sleep(800);
+        await execFileAsync("tmux", ["send-keys", "-t", tmuxName, "Enter"], { timeout: 10_000 });
+      }
+      nudged.add(s.id);
+    } catch (e) {
+      console.log(`[queue-poller] watchdog: recover failed for ${s.id}: ${e.message}`);
+    }
+  }
+}
+
 async function listSessions() {
   try { const r = await fetch(DASH + "/api/sessions"); return (await r.json()).sessions || []; }
   catch { return []; }
@@ -127,6 +202,7 @@ async function pollProject(pid, p) {
   // session list, which is independent of whether anything new is waiting to spawn.
   const sessions = await listSessions();
   await syncStatuses(p.tracker.teamId, sessions, qp);
+  await recoverStuck(sessions); // re-deliver the prompt to any session ao left stuck at launch
 
   let issues;
   try { issues = await linearIssues(p.tracker.teamId, qp.filters?.labels, qp.filters?.statusName); }
