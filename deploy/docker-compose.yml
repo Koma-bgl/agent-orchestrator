@@ -38,6 +38,10 @@ services:
       # needs_input). Persisting them also keeps git worktree records coherent across
       # a container recreate so `ao spawn` isn't wedged by an orphaned checkout.
       - ao-worktrees:/root/.worktrees
+      # Persistent npm cache (npm_config_cache=/root/.npm in the Dockerfile). Each fresh
+      # worktree runs `npm ci`; a shared cache across sessions/recreates keeps it mostly
+      # offline (~2 min → seconds warm) instead of re-fetching the whole tree each time.
+      - ao-npm-cache:/root/.npm
       # For the gcp secret source locally: mount your ADC read-only. Harmless if unused.
       - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
     labels:
@@ -101,5 +105,6 @@ services:
 volumes:
   ao-state:
   ao-worktrees:
+  ao-npm-cache:
   caddy-data:
   caddy-config:

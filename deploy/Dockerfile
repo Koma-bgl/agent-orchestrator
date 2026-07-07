@@ -97,8 +97,18 @@ RUN chmod +x /app/entrypoint.sh \
 # IS_SANDBOX=1: the container runs as root, and `claude --dangerously-skip-permissions`
 # (what the agent plugin uses) refuses to run as root UNLESS this sandbox flag is set.
 # The container is an isolated sandbox, so this is the intended escape hatch.
+# HUSKY=0 disables the repo's git hooks for the bot. The valhalla pre-commit
+# (format+lint+types) and pre-push (FULL test suite via `turbo test-ci` + a full Next
+# `build:local`) hooks re-run exactly what the PR's CI (pr-checks.yml) already runs,
+# and blocked every push for 7-15 min while the session sat idle. The agent still runs
+# its own fast checks for self-correction; CI is the authoritative gate (a failing PR
+# never merges). It also no-ops `husky install` (npm ci's prepare step), so
+# core.hooksPath is never set. npm_config_cache pins npm's cache to the mounted
+# ao-npm-cache volume so `npm ci --prefer-offline` survives worktrees + recreates.
 ENV AO_CONFIG_PATH=/root/.agent-orchestrator/agent-orchestrator.yaml \
     IS_SANDBOX=1 \
+    HUSKY=0 \
+    npm_config_cache=/root/.npm \
     GH_CONFIG_DIR=/root/.agent-orchestrator/gh \
     CLAUDE_CONFIG_DIR=/root/.agent-orchestrator/claude \
     NEXT_PUBLIC_TERMINAL_WS_PATH=/terminal-ws \

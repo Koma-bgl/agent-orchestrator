@@ -94,6 +94,35 @@ if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "${CLAUDE_CONFIG_DIR}" != "/root/.claude
   ln -sfn "${CLAUDE_CONFIG_DIR}/projects" /root/.claude/projects
 fi
 
+# Standing local-verification policy for every agent session. claude-code reads user
+# memory from ~/.claude/CLAUDE.md (HOME-based; verified against the binary — NOT
+# CLAUDE_CONFIG_DIR). ao@0.2.2 exposes no per-session systemPrompt for normal spawns, so
+# this file is how we steer the fleet agent: keep local verification to the FAST checks
+# and let the PR's CI run the heavy build + test suite (it does anyway), instead of the
+# agent re-running them locally and blocking the session. Rewritten every boot (this dir
+# is ephemeral), so it stays in sync with the image.
+mkdir -p /root/.claude
+cat > /root/.claude/CLAUDE.md <<'AOCLAUDE'
+# Fleet agent — local verification policy
+
+You run as an automated fleet agent. Every PR you open is validated by the repository's
+CI (GitHub Actions, e.g. `pr-checks.yml`) plus a preview deploy. **CI is the authoritative
+gate** — it runs the full type-check, lint, build, and test suite on your PR.
+
+Keep LOCAL verification to the fast checks only:
+- Run type-check and lint (e.g. `npm run check-types`, `npm run lint`) to catch obvious
+  breakage before pushing.
+- Do NOT run the full production build (`npm run build` / `build:local`) or the full test
+  suite (`turbo test-ci` / `vitest run`) locally. They take many minutes and CI runs them
+  on your PR regardless — running them locally only slows your session, it does not add a
+  gate.
+- Git hooks are intentionally disabled for this bot (`HUSKY=0`). Do not re-enable or work
+  around them.
+
+When your change is ready: commit, push, and open the PR — then STOP. Do not sit waiting
+for CI to finish. The orchestrator monitors CI and will send you any failures to fix.
+AOCLAUDE
+
 # Worktrees: @composio/ao-cli@0.2.2 creates them at $HOME/.worktrees — OUTSIDE the
 # data dir — which compose backs with its own persistent ao-worktrees volume (a REAL
 # mount, so claude's realpath cwd == the recorded workspacePath and transcript-path
@@ -103,9 +132,19 @@ fi
 # an orphaned checkout never wedges `ao spawn` with "already checked out". Idempotent —
 # prune only drops records whose working dir is gone; it never touches a live worktree
 # or a branch.
+# Hard-disable git hooks for the bot. HUSKY=0 (Dockerfile env) skips husky at run +
+# install time, but an EXISTING clone still carries core.hooksPath=.husky in its
+# .git/config from a pre-HUSKY=0 `npm ci`, and a committed hook that doesn't honor
+# HUSKY=0 would silently re-run the 7-15 min pre-push build+test. Point core.hooksPath
+# (global + per existing repo, which overrides the local .husky) at an empty dir so git
+# finds NO hooks regardless of husky version/state. CI (pr-checks.yml) is the gate.
+mkdir -p /root/.no-git-hooks
+git config --global core.hooksPath /root/.no-git-hooks
 for gitdir in "$(dirname "${AO_CONFIG_PATH}")"/projects/*/.git; do
   [ -e "${gitdir}" ] || continue
-  git -C "$(dirname "${gitdir}")" worktree prune 2>/dev/null || true
+  repo="$(dirname "${gitdir}")"
+  git -C "${repo}" config --local core.hooksPath /root/.no-git-hooks 2>/dev/null || true
+  git -C "${repo}" worktree prune 2>/dev/null || true
 done
 
 # Resolve the `ao` bin + ao-web (a NESTED dep of the global ao-cli, so not
