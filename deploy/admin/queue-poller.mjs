@@ -100,6 +100,10 @@ async function moveIssue(teamId, identifier, statusName) {
 function targetStatusFor(sessionStatus, qp) {
   if (sessionStatus === "working") return qp.onStartStatus || "In Progress";
   if (sessionStatus === "pr_open" || sessionStatus === "review_pending") return qp.onReviewStatus || "Ready for review";
+  // Deliberately NO merged → Done move: a merged PR leaves the ticket at "Ready for
+  // review" so a human owns the final Done/QA/release call. It's opt-in — a user can
+  // set queuePoller.onDoneStatus later (e.g. via setup) to auto-close on merge.
+  if (sessionStatus === "merged" && qp.onDoneStatus) return qp.onDoneStatus;
   return null;
 }
 
@@ -108,6 +112,86 @@ async function syncStatuses(teamId, sessions, qp) {
     if (!s.issueId) continue;
     const target = targetStatusFor(s.status, qp);
     if (target) await moveIssue(teamId, String(s.issueId), target);
+  }
+}
+
+// --- Auto-merge (fully autonomous) -------------------------------------------
+// ao's own auto-merge is a reaction keyed to the TRANSITION into approved-and-green,
+// which its dual-poller setup misses (the worker adopts the session at "mergeable"
+// without firing, then flips it to "stuck" — so the merge trigger never runs). Merge
+// from the poller instead: robust + idempotent. For a bot session's PR that GitHub
+// reports APPROVED + MERGEABLE + CLEAN, squash-merge it directly via gh. gh is authed
+// via GH_CONFIG_DIR (inherited). Gated on queuePoller.autoMerge. NOTE: with CodeRabbit
+// auto-approving, this merges to the default branch with no human review — intended
+// per the operator's "fully autonomous" choice.
+const mergedPRs = new Set();
+
+// Backstop: never let the poller's GitHub writes push us over the API limit. The
+// /rate_limit endpoint is itself exempt, so checking is free. Returns remaining
+// GraphQL points, or null if the check fails (in which case we proceed — don't block
+// on a flaky check).
+async function graphqlRemaining() {
+  try {
+    const { stdout } = await execFileAsync("gh", ["api", "rate_limit", "--jq", ".resources.graphql.remaining"], { env: process.env, timeout: 15_000 });
+    const n = parseInt(stdout.trim(), 10);
+    return Number.isFinite(n) ? n : null;
+  } catch { return null; }
+}
+
+const prVerifiedAt = new Map(); // pr.url -> last direct gh-check ms (throttle orphan re-checks)
+
+async function autoMergePRs(pid, p, qp, sessions) {
+  if (!qp.autoMerge || !p.repo) return;
+  // A container recreate (redeploy / nightly) kills live sessions, so a session with an
+  // open PR ends up "killed" with STALE cached PR data the lifecycle no longer refreshes.
+  // Its PR must still merge once approved — else it's orphaned. So:
+  //   • alive sessions: trust the fresh /api/sessions PR data (free, no GitHub read);
+  //   • terminal (killed/exited/…) sessions with an open PR: re-check directly via gh,
+  //     throttled to once/2min per PR (matches ao's own review cadence).
+  const ready = []; // {issueId, url, prNum} — confirmed mergeable
+  const verify = []; // terminal sessions whose PR needs a fresh direct check
+  for (const s of sessions) {
+    if (s.projectId !== pid) continue;
+    const pr = s.pr;
+    if (!pr || typeof pr !== "object" || !pr.url || mergedPRs.has(pr.url)) continue;
+    const m = pr.url.match(/\/pull\/(\d+)/);
+    const prNum = pr.number || (m && m[1]);
+    if (!prNum) continue;
+    const entry = { issueId: s.issueId, url: pr.url, prNum };
+    const mg = pr.mergeability || {};
+    const cachedReady = pr.reviewDecision === "approved" && mg.mergeable && mg.ciPassing && mg.approved && mg.noConflicts && (mg.blockers?.length ?? 0) === 0;
+    if (cachedReady) ready.push(entry);
+    else if (DEAD.has(s.status) && s.status !== "merged" && s.status !== "cleanup") {
+      const last = prVerifiedAt.get(pr.url) ?? 0;
+      if (Date.now() - last >= 120_000) verify.push(entry); // orphaned PR — re-check
+    }
+  }
+  if (!ready.length && !verify.length) return; // nothing to do — zero GitHub API this tick
+  // Gate all GitHub work on the rate-limit backstop (the /rate_limit check is exempt).
+  const floor = qp.rateLimitFloor ?? 500;
+  const remaining = await graphqlRemaining();
+  if (remaining != null && remaining < floor) {
+    console.log(`[queue-poller] skipping auto-merge — GitHub GraphQL remaining ${remaining} < ${floor}`);
+    return;
+  }
+  // Fresh-check orphaned PRs (killed sessions); promote to `ready` if now mergeable.
+  for (const e of verify) {
+    prVerifiedAt.set(e.url, Date.now());
+    try {
+      const { stdout } = await execFileAsync("gh", ["pr", "view", String(e.prNum), "--repo", p.repo, "--json", "state,reviewDecision,mergeable,mergeStateStatus"], { env: process.env, timeout: 30_000 });
+      const i = JSON.parse(stdout);
+      if (i.state === "MERGED") { mergedPRs.add(e.url); continue; }
+      if (i.state === "OPEN" && i.reviewDecision === "APPROVED" && i.mergeable === "MERGEABLE" && i.mergeStateStatus === "CLEAN") ready.push(e);
+    } catch { /* transient — retry next window */ }
+  }
+  for (const r of ready) {
+    try {
+      console.log(`[queue-poller] auto-merge: ${r.issueId} PR #${r.prNum} (approved+green+clean) — squash merging`);
+      await execFileAsync("gh", ["pr", "merge", String(r.prNum), "--repo", p.repo, "--squash"], { env: process.env, timeout: 60_000 });
+      mergedPRs.add(r.url);
+    } catch (e) {
+      console.log(`[queue-poller] auto-merge failed for #${r.prNum}: ${String(e.stderr || e.message).slice(0, 300)}`);
+    }
   }
 }
 
@@ -203,6 +287,7 @@ async function pollProject(pid, p) {
   const sessions = await listSessions();
   await syncStatuses(p.tracker.teamId, sessions, qp);
   await recoverStuck(sessions); // re-deliver the prompt to any session ao left stuck at launch
+  await autoMergePRs(pid, p, qp, sessions); // squash-merge approved+green+clean PRs (if autoMerge)
 
   let issues;
   try { issues = await linearIssues(p.tracker.teamId, qp.filters?.labels, qp.filters?.statusName); }

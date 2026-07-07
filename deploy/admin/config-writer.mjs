@@ -51,9 +51,17 @@ export function addProject(configPath, { id, repo, path, teamId, labels, statusN
   // to when its agent starts working / opens a PR (0.2.2 ships no status sync, so the
   // poller does it — see deploy/admin/queue-poller.mjs). Names are per-team; these
   // defaults match a standard board and are overridable here or in the yaml.
+  // autoMerge: fully autonomous — the poller squash-merges a PR once GitHub reports it
+  // approved + green + clean (readiness read from /api/sessions, no extra API). With
+  // CodeRabbit auto-approve this merges to the default branch with no human review
+  // (operator's explicit choice). ao's own reaction-based auto-merge is unreliable here
+  // (misses the transition), so the poller owns it — see deploy/admin/queue-poller.mjs.
+  // NOTE: no onDoneStatus by default — a merged PR intentionally leaves the ticket at
+  // onReviewStatus so a human owns the final Done call. Set onDoneStatus later to opt in.
   const queuePoller = {
     enabled: true,
     maxSessions: 1,
+    autoMerge: true,
     onStartStatus: (startStatusName && String(startStatusName).trim()) || "In Progress",
     onReviewStatus: (reviewStatusName && String(reviewStatusName).trim()) || "Ready for review",
   };

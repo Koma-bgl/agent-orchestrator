@@ -46,6 +46,14 @@ test("addProject: writes default onStart/onReview status names for write-back", 
   assert.equal(qp.onReviewStatus, "Ready for review");
 });
 
+test("addProject: enables autoMerge but does NOT set onDoneStatus (stay at review)", () => {
+  const { configPath } = scratch();
+  addProject(configPath, { id: "myrepo", repo: "owner/myrepo", path: "/data/projects/myrepo", teamId: "T1" });
+  const qp = readConfig(configPath).projects.myrepo.queuePoller;
+  assert.equal(qp.autoMerge, true);
+  assert.equal(qp.onDoneStatus, undefined); // merged PRs stay at onReviewStatus; Done is human-owned
+});
+
 test("addProject: onStart/onReview status names are overridable", () => {
   const { configPath } = scratch();
   addProject(configPath, { id: "myrepo", repo: "owner/myrepo", path: "/data/projects/myrepo", teamId: "T1", startStatusName: "Doing", reviewStatusName: "In Review" });
