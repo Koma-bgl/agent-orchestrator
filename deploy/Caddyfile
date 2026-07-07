@@ -87,10 +87,16 @@
 		reverse_proxy ao:7990
 	}
 
-	# Terminal WebSocket (same-origin /terminal-ws → :14800), behind the gate.
+	# Terminal WebSocket: the browser opens same-origin wss://<host>/terminal-ws?session=<id>
+	# (NEXT_PUBLIC_TERMINAL_WS_PATH). The real node-pty WS server is direct-terminal-ws.js on
+	# :14801 and only completes the upgrade on the exact path /ws, so rewrite the path
+	# (preserving ?session=) before proxying. :14800 is the ttyd HTTP manager with NO upgrade
+	# handler — proxying there left the socket hanging forever ("connecting"). Caddy handles
+	# the WS Upgrade automatically; the JWT cookie rides the handshake.
 	handle /terminal-ws* {
 		authorize with mypolicy
-		reverse_proxy ao:14800
+		rewrite * /ws?{query}
+		reverse_proxy ao:14801
 	}
 
 	# Everything else: the TS agent-orchestrator dashboard (Next.js on :3000) —

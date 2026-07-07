@@ -38,6 +38,22 @@ test("addProject: writes a schema-valid linear project with queuePoller enabled"
   assert.equal(p.queuePoller.enabled, true);
 });
 
+test("addProject: writes default onStart/onReview status names for write-back", () => {
+  const { configPath } = scratch();
+  addProject(configPath, { id: "myrepo", repo: "owner/myrepo", path: "/data/projects/myrepo", teamId: "T1" });
+  const qp = readConfig(configPath).projects.myrepo.queuePoller;
+  assert.equal(qp.onStartStatus, "In Progress");
+  assert.equal(qp.onReviewStatus, "Ready for review");
+});
+
+test("addProject: onStart/onReview status names are overridable", () => {
+  const { configPath } = scratch();
+  addProject(configPath, { id: "myrepo", repo: "owner/myrepo", path: "/data/projects/myrepo", teamId: "T1", startStatusName: "Doing", reviewStatusName: "In Review" });
+  const qp = readConfig(configPath).projects.myrepo.queuePoller;
+  assert.equal(qp.onStartStatus, "Doing");
+  assert.equal(qp.onReviewStatus, "In Review");
+});
+
 test("addProject: writes queuePoller.filters.labels when a trigger tag is given", () => {
   const { configPath } = scratch();
   addProject(configPath, { id: "myrepo", repo: "owner/myrepo", path: "/data/projects/myrepo", teamId: "T1", labels: ["agent", " "] });

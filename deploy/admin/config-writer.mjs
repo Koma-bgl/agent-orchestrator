@@ -34,7 +34,7 @@ export function getFirstProject(configPath) {
  * load-time defaults, so we don't write them. Idempotent — re-apply overwrites.
  * Uses parseDocument so any surrounding structure/comments are preserved.
  */
-export function addProject(configPath, { id, repo, path, teamId, labels, statusName }) {
+export function addProject(configPath, { id, repo, path, teamId, labels, statusName, startStatusName, reviewStatusName }) {
   if (!id || !repo || !path || !teamId) {
     throw new Error("addProject requires id, repo, path, teamId");
   }
@@ -47,7 +47,16 @@ export function addProject(configPath, { id, repo, path, teamId, labels, statusN
   // session (esp. one running `npm run build`) can use 5-7GB RAM + all cores, so
   // concurrent builds would OOM the default e2-standard-4 (16GB) VM. Raise only
   // after sizing the VM (RAM is the binding constraint) + boot disk accordingly.
-  const queuePoller = { enabled: true, maxSessions: 1 };
+  // onStartStatus / onReviewStatus are the Linear columns the poller moves a ticket
+  // to when its agent starts working / opens a PR (0.2.2 ships no status sync, so the
+  // poller does it — see deploy/admin/queue-poller.mjs). Names are per-team; these
+  // defaults match a standard board and are overridable here or in the yaml.
+  const queuePoller = {
+    enabled: true,
+    maxSessions: 1,
+    onStartStatus: (startStatusName && String(startStatusName).trim()) || "In Progress",
+    onReviewStatus: (reviewStatusName && String(reviewStatusName).trim()) || "Ready for review",
+  };
   const filters = {};
   const labelList = (labels || []).map((l) => String(l).trim()).filter(Boolean);
   if (labelList.length) filters.labels = labelList;
