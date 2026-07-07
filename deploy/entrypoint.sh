@@ -94,22 +94,15 @@ if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "${CLAUDE_CONFIG_DIR}" != "/root/.claude
   ln -sfn "${CLAUDE_CONFIG_DIR}/projects" /root/.claude/projects
 fi
 
-# Worktrees: @composio/ao-cli@0.2.2 creates them under $HOME/.worktrees, which is
-# OUTSIDE the persisted volume (only /root/.agent-orchestrator is mounted). A
-# container recreate — restart, rebuild, or a nightly Watchtower update — wipes the
-# worktree working dirs while the repo on the volume keeps their records + branch
-# checkouts, leaving orphaned "prunable" worktrees whose stuck branch then wedges
-# every `ao spawn` with "already checked out". Redirect the base onto the volume so
-# worktrees survive recreates, and prune stale records on boot so nothing wedges.
-WORKTREES_STORE="$(dirname "${AO_CONFIG_PATH}")/worktrees"
-mkdir -p "${WORKTREES_STORE}"
-if [ ! -L "${HOME}/.worktrees" ]; then
-  rm -rf "${HOME}/.worktrees" 2>/dev/null || true
-  ln -sfn "${WORKTREES_STORE}" "${HOME}/.worktrees"
-fi
-# Self-heal worktree records left prunable by an earlier ephemeral layout so a stale
-# checkout never blocks re-spawn. Idempotent: prune only drops records whose working
-# dir is already gone — it never removes a live worktree or deletes a branch.
+# Worktrees: @composio/ao-cli@0.2.2 creates them at $HOME/.worktrees — OUTSIDE the
+# data dir — which compose backs with its own persistent ao-worktrees volume (a REAL
+# mount, so claude's realpath cwd == the recorded workspacePath and transcript-path
+# encoding stays consistent; a symlink here misreads activity as needs_input). A
+# container recreate still kills live tmux sessions and can leave a worktree record
+# pointing at a now-missing dir, so self-heal on boot: prune stale records per repo so
+# an orphaned checkout never wedges `ao spawn` with "already checked out". Idempotent —
+# prune only drops records whose working dir is gone; it never touches a live worktree
+# or a branch.
 for gitdir in "$(dirname "${AO_CONFIG_PATH}")"/projects/*/.git; do
   [ -e "${gitdir}" ] || continue
   git -C "$(dirname "${gitdir}")" worktree prune 2>/dev/null || true

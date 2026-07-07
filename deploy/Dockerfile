@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # Pin linux/amd64: the GCE fleet VM is x86_64 and the ttyd static binary below is
-# x86_64. ao-cli itself is portable Node (its only native dep, node-pty, is optional
-# and we don't build it), so the pin is about matching the VM + ttyd, not a hard
-# requirement of the npm package. Native on the x86 VM + CI; emulated on arm64 dev.
+# x86_64. ao-cli is portable Node, but its native dep node-pty (which powers the
+# in-dashboard terminal) IS compiled below, so the pin also fixes the ABI target.
+# Native on the x86 VM + CI; emulated on arm64 dev.
 FROM --platform=linux/amd64 node:20-bookworm-slim
 
 # Node 20 is deliberate: @composio/ao-web bakes "requires Node 20.x" and node-pty
@@ -36,6 +36,20 @@ RUN npm install -g @composio/ao-cli@0.2.2 @anthropic-ai/claude-code \
  && AO_SHIM="$(readlink -f "$(command -v ao)")" \
  && WEBDIR="$(node -e 'const p=require("path");process.stdout.write(p.dirname(require.resolve("@composio/ao-web/package.json",{paths:[p.dirname(process.argv[1])]})))' "$AO_SHIM")" \
  && test -f "$WEBDIR/dist-server/start-all.js"
+
+# node-pty powers the in-dashboard terminal (direct-terminal-ws.js on :14801). It's an
+# OPTIONAL dep of ao-web with no prebuilt binary for this platform, so the global
+# install skips it silently — then the WS server boots "node-pty not available" and
+# closes every /ws upgrade with 1011, which the browser shows as a connect→"connecting"
+# flap. Compile it into ao-web's OWN node_modules (where import("node-pty") resolves),
+# assert the binary exists (do NOT execute it — node-pty load can SIGILL under arm64
+# qemu at build time), then drop the toolchain so it doesn't bloat the image.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+ && AO_SHIM="$(readlink -f "$(command -v ao)")" \
+ && WEBDIR="$(node -e 'const p=require("path");process.stdout.write(p.dirname(require.resolve("@composio/ao-web/package.json",{paths:[p.dirname(process.argv[1])]})))' "$AO_SHIM")" \
+ && npm install --prefix "$WEBDIR" --no-save --no-audit --no-fund node-pty@1.1.0 \
+ && test -f "$WEBDIR/node_modules/node-pty/build/Release/pty.node" \
+ && apt-get purge -y python3 make g++ && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 # Secret-loading entrypoint + the pure resolver it shells out to.
 WORKDIR /app
@@ -71,11 +85,13 @@ RUN chmod +x /app/entrypoint.sh \
  && ! grep -q "Headless claude shim" /usr/local/libexec/claude
 
 # The dashboard (Next.js) binds 0.0.0.0:3000; the terminal WS servers bind
-# 0.0.0.0:14800/14801 and ttyd 7800+. ALL state consolidates under
-# /root/.agent-orchestrator (where ao-core hardcodes its data/worktree/worker dirs —
-# AO_DATA_DIR is not honored as an override), which is the mounted volume. Config,
-# the gh config dir, cloned repos, and the on-box secrets all live there so they
-# survive restarts + Watchtower recreate. Only Caddy is ever the public surface.
+# 0.0.0.0:14800/14801 and ttyd 7800+. State consolidates under /root/.agent-orchestrator
+# (config, gh config dir, cloned repos, on-box secrets, session metadata), the mounted
+# ao-state volume, so it survives restarts + Watchtower recreate. NOTE: ao-cli@0.2.2
+# puts session WORKTREES at $HOME/.worktrees (NOT under the data dir), so compose mounts
+# a SEPARATE ao-worktrees volume there — otherwise a recreate orphans them and wedges
+# `ao spawn`, and a symlink would break claude's transcript-path encoding (activity
+# misread as needs_input). Only Caddy is ever the public surface.
 # NEXT_PUBLIC_TERMINAL_WS_PATH makes the terminal client build a same-origin
 # wss://<host>/terminal-ws URL (gateable by Caddy) instead of a raw :14800 hop.
 # IS_SANDBOX=1: the container runs as root, and `claude --dangerously-skip-permissions`

@@ -31,6 +31,13 @@ services:
       # /root/.agent-orchestrator — mount the volume there so all of it survives
       # restarts/rebuilds/Watchtower recreate.
       - ao-state:/root/.agent-orchestrator
+      # ao-cli@0.2.2 creates session worktrees at $HOME/.worktrees — OUTSIDE the data
+      # dir above — so give them their own persistent volume (as a REAL mount, not a
+      # symlink: a symlink would make claude's realpath cwd differ from the recorded
+      # workspacePath, breaking transcript-path encoding → activity misread as
+      # needs_input). Persisting them also keeps git worktree records coherent across
+      # a container recreate so `ao spawn` isn't wedged by an orphaned checkout.
+      - ao-worktrees:/root/.worktrees
       # For the gcp secret source locally: mount your ADC read-only. Harmless if unused.
       - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
     labels:
@@ -93,5 +100,6 @@ services:
 
 volumes:
   ao-state:
+  ao-worktrees:
   caddy-data:
   caddy-config:
