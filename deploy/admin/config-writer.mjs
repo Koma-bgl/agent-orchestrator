@@ -71,10 +71,20 @@ export function addProject(configPath, { id, repo, path, teamId, labels, statusN
   const status = statusName && String(statusName).trim();
   if (status) filters.statusName = status;
   if (Object.keys(filters).length) queuePoller.filters = filters;
+  // postCreate runs in each fresh worktree after ao creates it. Share the base clone's
+  // node_modules via a SYMLINK (worktrees live on a different volume than the base, so a
+  // hardlink copy can't span filesystems) — but only when the lockfiles match, so a
+  // branch that changed deps falls back to its own `npm ci`. Turns a ~2min install into
+  // an instant symlink for the common case. The base install is warmed on boot by
+  // entrypoint.sh. `; true` so a miss never fails worktree creation.
+  const postCreate = [
+    `BASE=${path}; [ -d "$BASE/node_modules" ] && cmp -s "$BASE/package-lock.json" package-lock.json && ln -sfn "$BASE/node_modules" node_modules; true`,
+  ];
   doc.setIn(["projects", id], {
     repo,
     path,
     tracker: { plugin: "linear", teamId },
+    postCreate,
     queuePoller,
   });
   // Force block style: a `projects: {}` skeleton is a flow map, so setIn'd children

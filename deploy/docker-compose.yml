@@ -46,6 +46,12 @@ services:
       - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
     labels:
       com.centurylinklabs.watchtower.enable: "true"
+      # Drain gate: before Watchtower updates this container it runs drain-check.sh
+      # INSIDE it; a non-zero exit aborts the update (retried next poll), so a nightly
+      # update never kills an in-flight coding session — it waits for an idle window.
+      # Requires WATCHTOWER_LIFECYCLE_HOOKS=true (set on watchtower below).
+      com.centurylinklabs.watchtower.lifecycle.pre-update: "/app/scripts/drain-check.sh"
+      com.centurylinklabs.watchtower.lifecycle.pre-update-timeout: "1"
     restart: unless-stopped
 
   caddy:
@@ -91,6 +97,8 @@ services:
       WATCHTOWER_SCHEDULE: "0 0 0 * * *"
       # Only touch containers we labelled; never update Watchtower itself.
       WATCHTOWER_LABEL_ENABLE: "true"
+      # Enable pre/post-update lifecycle hooks so the ao drain-check gate runs.
+      WATCHTOWER_LIFECYCLE_HOOKS: "true"
       # Remove the old image after a successful update.
       WATCHTOWER_CLEANUP: "true"
       # On-demand update API (M5 "update now" calls this); keep the schedule too.

@@ -119,6 +119,14 @@ Keep LOCAL verification to the fast checks only:
 - Git hooks are intentionally disabled for this bot (`HUSKY=0`). Do not re-enable or work
   around them.
 
+## Dependencies
+
+Your worktree's `node_modules` may already be provided (symlinked to a shared install)
+before you start. **Do NOT run `npm ci` / `npm install` if `node_modules` already exists
+and the checks run** — reinstalling wastes minutes. Only install if a check actually fails
+with missing/mismatched dependencies (e.g. after you changed `package.json`), in which
+case `npm ci` is correct (it replaces the shared symlink with a fresh, isolated install).
+
 When your change is ready: commit, push, and open the PR — then STOP. Do not sit waiting
 for CI to finish. The orchestrator monitors CI and will send you any failures to fix.
 AOCLAUDE
@@ -145,6 +153,15 @@ for gitdir in "$(dirname "${AO_CONFIG_PATH}")"/projects/*/.git; do
   repo="$(dirname "${gitdir}")"
   git -C "${repo}" config --local core.hooksPath /root/.no-git-hooks 2>/dev/null || true
   git -C "${repo}" worktree prune 2>/dev/null || true
+  # Warm the base-clone node_modules (in the background) so each new worktree can share
+  # it via a lockfile-guarded symlink (project.postCreate) instead of running a full
+  # `npm ci` itself. Backgrounded so it never blocks boot; a session that spawns before
+  # this finishes (or on a branch whose lockfile differs) just self-installs.
+  if [ -f "${repo}/package.json" ] && [ ! -d "${repo}/node_modules" ]; then
+    ( cd "${repo}" && npm ci --prefer-offline --no-audit --no-fund >/dev/null 2>&1 \
+        && echo "[entrypoint] warmed base node_modules in ${repo}" \
+        || echo "[entrypoint] base npm ci failed in ${repo} (sessions self-install)" ) &
+  fi
 done
 
 # Resolve the `ao` bin + ao-web (a NESTED dep of the global ao-cli, so not

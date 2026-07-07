@@ -54,6 +54,16 @@ test("addProject: enables autoMerge but does NOT set onDoneStatus (stay at revie
   assert.equal(qp.onDoneStatus, undefined); // merged PRs stay at onReviewStatus; Done is human-owned
 });
 
+test("addProject: writes a lockfile-guarded node_modules symlink postCreate", () => {
+  const { configPath } = scratch();
+  addProject(configPath, { id: "myrepo", repo: "owner/myrepo", path: "/data/projects/myrepo", teamId: "T1" });
+  const pc = readConfig(configPath).projects.myrepo.postCreate;
+  assert.ok(Array.isArray(pc) && pc.length === 1);
+  assert.match(pc[0], /BASE=\/data\/projects\/myrepo/); // base path threaded in
+  assert.match(pc[0], /cmp -s .*package-lock\.json/); // lockfile guard
+  assert.match(pc[0], /ln -sfn "\$BASE\/node_modules" node_modules/); // symlink share
+});
+
 test("addProject: onStart/onReview status names are overridable", () => {
   const { configPath } = scratch();
   addProject(configPath, { id: "myrepo", repo: "owner/myrepo", path: "/data/projects/myrepo", teamId: "T1", startStatusName: "Doing", reviewStatusName: "In Review" });
