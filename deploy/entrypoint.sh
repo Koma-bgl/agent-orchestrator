@@ -94,6 +94,27 @@ if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "${CLAUDE_CONFIG_DIR}" != "/root/.claude
   ln -sfn "${CLAUDE_CONFIG_DIR}/projects" /root/.claude/projects
 fi
 
+# Worktrees: @composio/ao-cli@0.2.2 creates them under $HOME/.worktrees, which is
+# OUTSIDE the persisted volume (only /root/.agent-orchestrator is mounted). A
+# container recreate — restart, rebuild, or a nightly Watchtower update — wipes the
+# worktree working dirs while the repo on the volume keeps their records + branch
+# checkouts, leaving orphaned "prunable" worktrees whose stuck branch then wedges
+# every `ao spawn` with "already checked out". Redirect the base onto the volume so
+# worktrees survive recreates, and prune stale records on boot so nothing wedges.
+WORKTREES_STORE="$(dirname "${AO_CONFIG_PATH}")/worktrees"
+mkdir -p "${WORKTREES_STORE}"
+if [ ! -L "${HOME}/.worktrees" ]; then
+  rm -rf "${HOME}/.worktrees" 2>/dev/null || true
+  ln -sfn "${WORKTREES_STORE}" "${HOME}/.worktrees"
+fi
+# Self-heal worktree records left prunable by an earlier ephemeral layout so a stale
+# checkout never blocks re-spawn. Idempotent: prune only drops records whose working
+# dir is already gone — it never removes a live worktree or deletes a branch.
+for gitdir in "$(dirname "${AO_CONFIG_PATH}")"/projects/*/.git; do
+  [ -e "${gitdir}" ] || continue
+  git -C "$(dirname "${gitdir}")" worktree prune 2>/dev/null || true
+done
+
 # Resolve the `ao` bin + ao-web (a NESTED dep of the global ao-cli, so not
 # resolvable from /app or the global root) relative to the bin's own dir.
 AO_SHIM="$(readlink -f "$(command -v ao)")"
