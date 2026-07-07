@@ -11,7 +11,8 @@
 #
 # Env/flags: --project=ID | $AO_PROJECT (else active gcloud project);
 #            $AO_REGION (us-central1), $AO_ZONE (us-central1-a),
-#            $AO_MACHINE_TYPE (e2-standard-4).
+#            $AO_MACHINE_TYPE (e2-standard-4), $AO_DISK_SIZE (50GB — a valhalla
+#            clone + npm ci + .next + the image overflow the 10GB debian default).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -187,6 +188,7 @@ cmd_create() {
   gcloud compute instances create "$VM_NAME" --project="$PROJECT" --zone="$ZONE" \
     --machine-type="$MACHINE_TYPE" \
     --image-family=debian-12 --image-project=debian-cloud \
+    --boot-disk-size="${AO_DISK_SIZE:-50GB}" --boot-disk-type=pd-balanced \
     --address="$ip" --service-account="$SA" --scopes=cloud-platform \
     --tags="$NET_TAG" --labels="ao-owner=$OWNER_LABEL" \
     --metadata-from-file=startup-script="$SCRIPT_DIR/startup-script.sh"
