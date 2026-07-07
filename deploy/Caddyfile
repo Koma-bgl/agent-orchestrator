@@ -36,7 +36,11 @@
 			# allowed Google email (extend as needed). Trailing deny is explicit.
 			acl rule {
 				comment allowlisted operator 1
-				match email {env.ALLOWED_EMAIL_1}
+				# PARSE-TIME substitution ({$VAR}) — caddy-security's acl `match email`
+				# does NOT expand runtime {env.*} placeholders, so {env.ALLOWED_EMAIL_1}
+				# silently never matches (valid login → acl miss → 403). {$…} is
+				# substituted to the literal before caddy-security parses the rule.
+				match email {$ALLOWED_EMAIL_1}
 				allow stop log info
 			}
 			acl rule {
@@ -60,11 +64,33 @@
 		authenticate with myportal
 	}
 
-	# Admin/setup-wizard backend — authorized, proxied to the co-located admin
-	# server. Distinct /admin/api/* prefix; no collision with the dashboard's /api/*.
+	# Admin/setup-wizard backend (JSON) — authorized. Distinct /admin/api/* prefix.
 	handle /admin/api/* {
 		authorize with mypolicy
 		reverse_proxy ao:8090
+	}
+
+	# The setup-wizard PAGE (served by the admin backend at /setup).
+	handle /setup* {
+		authorize with mypolicy
+		reverse_proxy ao:8090
+	}
+
+	# Setup terminal (ttyd on :7990) — operator runs `gh auth login` here; ttyd's
+	# own UI + WS served under /shell, WS Upgrade proxied behind the gate.
+	handle /shell-claude* {
+		authorize with mypolicy
+		reverse_proxy ao:7991
+	}
+	handle /shell* {
+		authorize with mypolicy
+		reverse_proxy ao:7990
+	}
+
+	# Terminal WebSocket (same-origin /terminal-ws → :14800), behind the gate.
+	handle /terminal-ws* {
+		authorize with mypolicy
+		reverse_proxy ao:14800
 	}
 
 	# Everything else: the TS agent-orchestrator dashboard (Next.js on :3000) —
@@ -76,6 +102,4 @@
 			flush_interval -1
 		}
 	}
-
-	# TERMINALS (ttyd) — see Caddyfile.public: deferred to the Task 6 live test.
 }

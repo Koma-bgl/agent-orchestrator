@@ -24,6 +24,30 @@ configured) drives Linear tickets → agent sessions → PRs — with no cloud V
 > (M7–M8). Real public TLS arrives with the VM (M7); locally Caddy uses a
 > self-signed internal cert.
 
+## Setup wizard (turning an idle bot into a working one)
+
+A freshly deployed bot boots **idle** — the dashboard runs on an empty
+`projects: {}` config with no credentials. Configure it entirely from the browser,
+behind the SSO gate, at **`https://<bot-host>/setup`** (locally `https://localhost:8443/setup`):
+
+1. **GitHub** — paste a PAT (repo scope). Stored on-box via `gh` (`--insecure-storage`,
+   `GH_CONFIG_DIR` on the volume) + `gh auth setup-git` so agent `git push` works.
+2. **Repository** — pick from your repos (or type `owner/name`). Cloned to
+   `/root/.agent-orchestrator/projects/<name>`.
+3. **Linear** — paste the API key + pick the team whose tickets this bot picks up.
+4. **Claude** — paste the Anthropic API key.
+5. **Apply** — writes the project into `agent-orchestrator.yaml`, then the bot
+   **restarts** so the dashboard picks up `LINEAR_API_KEY` (it reads it at request
+   time) and the entrypoint starts `ao lifecycle-worker <project>` (the Linear
+   poll → spawn → reactions loop). The page polls until the worker is up.
+
+**Credentials never leave the bot.** Tokens live on the `/root/.agent-orchestrator`
+volume (`agent-secrets.env`, mode 0600; the `gh` config dir), so the admin who runs
+`create` never handles them, and they survive restarts + Watchtower recreate. The
+wizard backend is `deploy/admin/` (`server.mjs` routes, `wizard.mjs` logic,
+`config-writer.mjs` YAML/worker-state, `setup.html` UI); Caddy gates `/setup`,
+`/admin/api/*`, and the terminal `/terminal-ws` (same-origin WS) with the fleet policy.
+
 ## Prerequisites
 
 - Docker + docker compose.

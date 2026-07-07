@@ -44,31 +44,48 @@
 	# Public: automatic Let's Encrypt (HTTP-01 needs port 80 reachable — the
 	# firewall opens 80+443).
 
-	# Admin/setup-wizard backend — authorized, proxied to the co-located admin
-	# server in the ao container. Distinct /admin/api/* prefix, so it never
-	# collides with the TS dashboard's own /api/* routes (handled below).
+	# Admin/setup-wizard backend (JSON) — authorized, proxied to the co-located
+	# admin server. Distinct /admin/api/* prefix, no collision with the dashboard.
 	handle /admin/api/* {
 		authorize with mypolicy
 		reverse_proxy ao:8090
 	}
 
+	# The setup-wizard PAGE (served by the admin backend at /setup).
+	handle /setup* {
+		authorize with mypolicy
+		reverse_proxy ao:8090
+	}
+
+	# Setup terminal (ttyd on :7990) — the operator runs `gh auth login` here. ttyd
+	# serves its own xterm UI + WS under /shell; Caddy proxies the WS Upgrade behind
+	# the gate (the JWT cookie rides the handshake).
+	handle /shell-claude* {
+		authorize with mypolicy
+		reverse_proxy ao:7991
+	}
+	handle /shell* {
+		authorize with mypolicy
+		reverse_proxy ao:7990
+	}
+
+	# Terminal WebSocket — the client builds a same-origin wss://<host>/terminal-ws
+	# URL (NEXT_PUBLIC_TERMINAL_WS_PATH), so we proxy it to the terminal server on
+	# :14800 behind the same gate. Caddy handles the WS Upgrade automatically; the
+	# JWT cookie rides the handshake (verified in the Task 7 live test).
+	handle /terminal-ws* {
+		authorize with mypolicy
+		reverse_proxy ao:14800
+	}
+
 	# Everything else: the TS agent-orchestrator dashboard (Next.js on :3000) —
 	# it serves the UI AND its own /api/* (projects, sessions, spawn, events…).
-	# Behind the auth gate; flush_interval -1 keeps the /api/events SSE stream
-	# unbuffered. Next.js binds 0.0.0.0 so the sibling Caddy reaches it directly
-	# (the old Go-daemon socat bridge is gone).
+	# flush_interval -1 keeps the /api/events SSE stream unbuffered. Next.js binds
+	# 0.0.0.0 so the sibling Caddy reaches it directly (no socat bridge).
 	handle {
 		authorize with mypolicy
 		reverse_proxy ao:3000 {
 			flush_interval -1
 		}
 	}
-
-	# TERMINALS (ttyd) — DEFERRED to the Task 6 live test. The browser builds
-	# terminal URLs from NEXT_PUBLIC_TERMINAL_PORT (ws://<host>:14800), a raw
-	# cross-port hop that bypasses this TLS+JWT gate. Gating it cleanly (publish
-	# 14800/14801 with their own TLS+authorize, or patch the client to a
-	# same-origin path here) is resolved live; until then the dashboard +
-	# Linear automation work, terminals may not. Do NOT guess a rule that fails
-	# `caddy validate` — add the verified route once the live test settles it.
 }

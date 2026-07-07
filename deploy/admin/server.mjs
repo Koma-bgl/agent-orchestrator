@@ -3,8 +3,17 @@
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { chooseSource, secretNames } from "../scripts/resolve-secrets.mjs";
 import { buildAddVersionRequest, isValidSecret } from "./secrets-writer.mjs";
+import {
+  setupState, githubConnect, githubRepos, githubOwners, githubDeviceStart, githubDevicePoll, shellStart,
+  linearTeams, linearLabels, linearStatuses, writeTokens, saveDraft, startBot,
+} from "./wizard.mjs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.AO_ADMIN_PORT || 8090);
@@ -68,14 +77,66 @@ async function rotateSecret(body) {
   return { secret, version: j.name || null, note: "applies on next restart" };
 }
 
+// After a successful project apply we bounce the container: `ao start`'s dashboard
+// (start-all, PID 1) reads LINEAR_API_KEY at request time and the entrypoint starts
+// the lifecycle-worker on boot, so a restart is how new config+tokens take effect.
+// restart: unless-stopped brings the container back. Delay so the HTTP response
+// flushes first. SIGTERM PID 1 → start-all's own cleanup → clean exit → restart.
+function scheduleRestart() {
+  setTimeout(() => { try { process.kill(1, "SIGTERM"); } catch {} }, 750);
+}
+
+function serveSetupPage(res) {
+  try {
+    const html = readFileSync(join(__dirname, "setup.html"), "utf8");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
+  } catch {
+    send(res, 500, { error: "setup page missing" });
+  }
+}
+
 createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://x");
-    if (req.method === "GET" && url.pathname === "/admin/api/version") return send(res, 200, await getVersion());
-    if (req.method === "POST" && url.pathname === "/admin/api/update") return send(res, 200, await triggerUpdate());
-    if (req.method === "POST" && url.pathname === "/admin/api/secrets") return send(res, 200, await rotateSecret(await readBody(req)));
+    const { pathname } = url;
+    const GET = req.method === "GET", POST = req.method === "POST";
+
+    // --- ops (M5) ---
+    if (GET && pathname === "/admin/api/version") return send(res, 200, await getVersion());
+    if (POST && pathname === "/admin/api/update") return send(res, 200, await triggerUpdate());
+    if (POST && pathname === "/admin/api/secrets") return send(res, 200, await rotateSecret(await readBody(req)));
+
+    // --- setup wizard (M-B) ---
+    if (GET && pathname === "/admin/api/setup") return send(res, 200, await setupState());
+    if (POST && pathname === "/admin/api/github/connect") return send(res, 200, await githubConnect(await readBody(req)));
+    if (POST && pathname === "/admin/api/github/device/start") return send(res, 200, await githubDeviceStart());
+    if (POST && pathname === "/admin/api/github/device/poll") return send(res, 200, await githubDevicePoll());
+    if (POST && pathname === "/admin/api/shell/start") return send(res, 200, shellStart(await readBody(req)));
+    if (GET && pathname === "/admin/api/github/owners") return send(res, 200, await githubOwners());
+    if (GET && pathname === "/admin/api/github/repos") return send(res, 200, await githubRepos({ search: url.searchParams.get("search") || undefined, owner: url.searchParams.get("owner") || undefined }));
+    if (POST && pathname === "/admin/api/linear/teams") return send(res, 200, await linearTeams(await readBody(req)));
+    if (POST && pathname === "/admin/api/linear/labels") return send(res, 200, await linearLabels(await readBody(req)));
+    if (POST && pathname === "/admin/api/linear/statuses") return send(res, 200, await linearStatuses(await readBody(req)));
+    if (POST && pathname === "/admin/api/tokens") return send(res, 200, writeTokens(await readBody(req)));
+    if (POST && pathname === "/admin/api/draft") return send(res, 200, saveDraft(await readBody(req)));
+    // Save & start: validate everything, write tokens + yaml + clone, THEN restart.
+    // scheduleRestart runs only after a 200 — a failed pre-flight throws → no restart.
+    if (POST && pathname === "/admin/api/start") {
+      const result = await startBot(await readBody(req));
+      send(res, 200, { ...result, restarting: true });
+      return scheduleRestart();
+    }
+
+    // --- the wizard page itself (Caddy routes /setup* here, gated) ---
+    if (GET && (pathname === "/setup" || pathname === "/setup/")) return serveSetupPage(res);
+
     return send(res, 404, { error: "not found" });
   } catch (e) {
-    return send(res, e.code || 500, { error: String(e.message || e) });
+    // e.code may be a subprocess EXIT code (e.g. git=128) or a string (ENOENT) —
+    // never a valid HTTP status. Only honor a real 4xx/5xx; else 500. (An invalid
+    // status made res.writeHead emit a broken response → Caddy 502 "unexpected EOF".)
+    const code = Number.isInteger(e.code) && e.code >= 400 && e.code <= 599 ? e.code : 500;
+    return send(res, code, { error: String(e.message || e) });
   }
 }).listen(PORT, "0.0.0.0", () => console.log(`[admin] listening on :${PORT}`));

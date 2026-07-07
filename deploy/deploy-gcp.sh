@@ -140,6 +140,10 @@ CLAUDE_CODE_OAUTH_TOKEN=
 AO_SITE_ADDRESS=$host
 AO_SITE_URL=https://$host
 AO_AUTH_URL=https://auth.binary-badger.xyz/
+# Fleet-wide GitHub OAuth App client id (device-flow login). PUBLIC, not a secret;
+# same for every bot. Set GH_OAUTH_CLIENT_ID in the deploy env (or hardcode here)
+# once the OAuth App is registered. Empty → the wizard's GitHub login is disabled.
+GITHUB_OAUTH_CLIENT_ID=${GH_OAUTH_CLIENT_ID:-}
 WATCHTOWER_TOKEN=\${WT}
 ENV
 sudo docker compose -f docker-compose.yml -f docker-compose.vm.yml up -d --build

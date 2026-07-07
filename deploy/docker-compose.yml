@@ -23,9 +23,14 @@ services:
       - "14800"
       - "14801"
       - "7800-7900"
+      - "7990"    # setup terminal (ttyd for `gh auth login`)
+      - "7991"    # setup terminal (ttyd for `claude auth login`)
     volumes:
-      # Durable daemon state (SQLite + running.json) survives restarts/rebuilds.
-      - ao-state:/root/.ao
+      # Durable state: ao-core writes config, sessions, worktrees, the worker PID,
+      # the gh config dir, cloned repos, and on-box secrets under
+      # /root/.agent-orchestrator — mount the volume there so all of it survives
+      # restarts/rebuilds/Watchtower recreate.
+      - ao-state:/root/.agent-orchestrator
       # For the gcp secret source locally: mount your ADC read-only. Harmless if unused.
       - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
     labels:
