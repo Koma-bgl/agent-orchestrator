@@ -129,6 +129,16 @@ case `npm ci` is correct (it replaces the shared symlink with a fresh, isolated 
 
 When your change is ready: commit, push, and open the PR — then STOP. Do not sit waiting
 for CI to finish. The orchestrator monitors CI and will send you any failures to fix.
+
+## Ticket context & follow-ups
+
+Your initial prompt can be truncated for long tickets, so a file `./.ao-task.md` may be
+present in your worktree with the **complete** ticket description and **all** comments
+(newest first). When it exists, treat it as the source of truth — read it fully. The
+orchestrator also appends new follow-up comments there and pings you; re-read it when
+nudged. **Before concluding a ticket is "already resolved," re-read every comment,
+especially the newest** — QA posts follow-up rounds, and the latest comment supersedes
+earlier ones. Never commit `.ao-task.md` (it's orchestration context, not code).
 AOCLAUDE
 
 # Worktrees: @composio/ao-cli@0.2.2 creates them at $HOME/.worktrees — OUTSIDE the
@@ -153,6 +163,11 @@ for gitdir in "$(dirname "${AO_CONFIG_PATH}")"/projects/*/.git; do
   repo="$(dirname "${gitdir}")"
   git -C "${repo}" config --local core.hooksPath /root/.no-git-hooks 2>/dev/null || true
   git -C "${repo}" worktree prune 2>/dev/null || true
+  # The poller writes <worktree>/.ao-task.md (full ticket + comments) as orchestration
+  # context; exclude it repo-wide (shared across worktrees) so agents never commit it.
+  if [ -f "${repo}/.git/info/exclude" ] && ! grep -qx ".ao-task.md" "${repo}/.git/info/exclude" 2>/dev/null; then
+    printf '.ao-task.md\n' >> "${repo}/.git/info/exclude"
+  fi
   # Warm the base-clone node_modules (in the background) so each new worktree can share
   # it via a lockfile-guarded symlink (project.postCreate) instead of running a full
   # `npm ci` itself. Backgrounded so it never blocks boot; a session that spawns before

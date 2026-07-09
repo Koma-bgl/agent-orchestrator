@@ -7,6 +7,7 @@
 // sessions, respect maxSessions, and `ao spawn <issueId>` the new ones. The reaction
 // engine (CI/review) is still handled by `ao lifecycle-worker`; this only spawns.
 import { execFile } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { readConfig } from "./config-writer.mjs";
 
@@ -124,6 +125,83 @@ async function syncStatuses(teamId, sessions, qp) {
 // via GH_CONFIG_DIR (inherited). Gated on queuePoller.autoMerge. NOTE: with CodeRabbit
 // auto-approving, this merges to the default branch with no human review — intended
 // per the operator's "fully autonomous" choice.
+// --- Task-file delivery + comment sync ---------------------------------------
+// ao inlines the ticket + ALL comments into the initial prompt and delivers it over
+// tmux, which TRUNCATES long prompts — dropping the newest, most-actionable comments
+// (a QA follow-up round gets lost and the agent wrongly concludes "already resolved").
+// And ao's reaction engine (which should relay post-spawn comments) isn't firing. So
+// the poller owns feedback delivery: keep a complete <worktree>/.ao-task.md (ticket +
+// all comments, NEWEST FIRST) and nudge the agent with a SHORT pointer (never truncates)
+// on first sight and whenever a new comment lands.
+const CONTEXT_CHECK_MS = 120_000;
+const lastContextCheck = new Map(); // sessionId -> ms (throttle Linear getComments)
+const deliveredComments = new Map(); // sessionId -> Set(commentId) already surfaced to the agent
+
+async function fetchIssueContext(identifier) {
+  try {
+    const data = await linearGraphQL(
+      "query($id:String!){ issue(id:$id){ identifier title description comments{ nodes { id body createdAt user{ displayName name } } } } }",
+      { id: identifier },
+    );
+    const iss = data?.issue;
+    if (!iss) return null;
+    const comments = (iss.comments?.nodes || [])
+      .map((c) => ({ id: c.id, body: c.body || "", createdAt: c.createdAt, author: (c.user && (c.user.displayName || c.user.name)) || "Unknown" }))
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)); // newest first
+    return { identifier: iss.identifier, title: iss.title || "", description: iss.description || "", comments };
+  } catch { return null; }
+}
+
+function renderTaskFile(iss) {
+  const out = [`# ${iss.identifier}: ${iss.title}`, "", "## Description", "", iss.description || "(none)", ""];
+  if (iss.comments.length) {
+    out.push("## Comments — NEWEST FIRST (the latest comment supersedes earlier rounds)", "");
+    for (const c of iss.comments) out.push(`### @${c.author} (${String(c.createdAt).split("T")[0]})`, "", c.body, "");
+  }
+  return out.join("\n");
+}
+
+async function nudge(tmuxName, message) {
+  try {
+    await execFileAsync("tmux", ["set-buffer", "-b", "aoctx", message], { timeout: 10_000 });
+    await execFileAsync("tmux", ["paste-buffer", "-d", "-b", "aoctx", "-t", tmuxName], { timeout: 10_000 });
+    await sleep(800);
+    await execFileAsync("tmux", ["send-keys", "-t", tmuxName, "Enter"], { timeout: 10_000 });
+    return true;
+  } catch { return false; }
+}
+
+async function syncContext(sessions) {
+  for (const s of sessions) {
+    const tmuxName = s.metadata?.tmuxName;
+    const worktree = s.metadata?.worktree;
+    if (!s.issueId || !tmuxName || !worktree || DEAD.has(s.status)) continue; // live sessions only
+    if (Date.now() - (lastContextCheck.get(s.id) ?? 0) < CONTEXT_CHECK_MS) continue;
+    lastContextCheck.set(s.id, Date.now());
+
+    const iss = await fetchIssueContext(s.issueId);
+    if (!iss || !iss.comments.length) continue; // no comments → no truncation risk → nothing to sync
+
+    try { writeFileSync(`${worktree}/.ao-task.md`, renderTaskFile(iss)); } catch { continue; } // keep it current
+
+    const seen = deliveredComments.get(s.id) ?? new Set();
+    const firstSight = !deliveredComments.has(s.id);
+    const fresh = iss.comments.filter((c) => !seen.has(c.id));
+    if (!fresh.length) continue; // agent already knows everything
+
+    const pane = await paneText(tmuxName);
+    if (!/bypass permissions|❯/.test(pane)) continue; // UI not up yet — retry next window (comments stay fresh)
+
+    const msg = firstSight
+      ? `Your complete task and ALL ticket comments (including the newest) are in ./.ao-task.md — your initial prompt may have been truncated. Read ./.ao-task.md in full before implementing and address the NEWEST comment. Do NOT conclude "already resolved" without handling the latest follow-up. Do not commit .ao-task.md.`
+      : `New follow-up comment(s) added to ./.ao-task.md — re-read it (newest first) and address the latest feedback for ${s.issueId}.`;
+    if (await nudge(tmuxName, msg)) {
+      fresh.forEach((c) => seen.add(c.id));
+      deliveredComments.set(s.id, seen);
+    }
+  }
+}
+
 const mergedPRs = new Set();
 
 // Backstop: never let the poller's GitHub writes push us over the API limit. The
@@ -287,6 +365,7 @@ async function pollProject(pid, p) {
   const sessions = await listSessions();
   await syncStatuses(p.tracker.teamId, sessions, qp);
   await recoverStuck(sessions); // re-deliver the prompt to any session ao left stuck at launch
+  await syncContext(sessions); // keep .ao-task.md current + surface new/truncated comments to the agent
   await autoMergePRs(pid, p, qp, sessions); // squash-merge approved+green+clean PRs (if autoMerge)
 
   let issues;
