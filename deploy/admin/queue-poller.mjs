@@ -7,7 +7,7 @@
 // sessions, respect maxSessions, and `ao spawn <issueId>` the new ones. The reaction
 // engine (CI/review) is still handled by `ao lifecycle-worker`; this only spawns.
 import { execFile } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readdirSync } from "node:fs";
 import { promisify } from "node:util";
 import { readConfig } from "./config-writer.mjs";
 
@@ -314,14 +314,32 @@ async function paneText(tmuxName) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || "/root/.agent-orchestrator/claude";
+// claude-code encodes a workspace path to its transcript dir by replacing / and . with -.
+function hasTranscript(worktree) {
+  try {
+    const dir = `${CLAUDE_DIR}/projects/${worktree.replace(/[/.]/g, "-")}`;
+    return readdirSync(dir).some((f) => f.endsWith(".jsonl") && !f.startsWith("agent-"));
+  } catch { return false; }
+}
+async function tmuxAlive(tmuxName) {
+  try { await execFileAsync("tmux", ["has-session", "-t", tmuxName], { timeout: 10_000 }); return true; }
+  catch { return false; }
+}
+
 async function recoverStuck(sessions) {
   for (const s of sessions) {
     const tmuxName = s.metadata?.tmuxName;
-    if (!s.issueId || !tmuxName) continue;
-    if (s.status !== "needs_input" || s.activity != null) continue; // only the "never got prompt" shape
-    if (nudged.has(s.id)) continue;
+    const worktree = s.metadata?.worktree;
+    if (!s.issueId || !tmuxName || !worktree || nudged.has(s.id)) continue;
     const createdMs = Date.parse(s.createdAt || s.metadata?.createdAt || "");
     if (!Number.isFinite(createdMs) || Date.now() - createdMs < STUCK_AGE_MS) continue;
+    // Status-AGNOSTIC: ao often MISCLASSIFIES a launch-stuck session as killed/exited/stuck
+    // even though claude is alive at an unsubmitted/empty prompt, so keying off s.status
+    // misses those. The real signal for "stuck at launch" is: tmux alive + NO transcript
+    // (claude never processed anything). A session that got going has a transcript → skip.
+    if (!(await tmuxAlive(tmuxName))) continue; // genuinely gone — can't recover via tmux
+    if (hasTranscript(worktree)) continue; // it processed something — working/done/waiting; leave it
     const pane = await paneText(tmuxName);
     if (!/bypass permissions|❯/.test(pane)) continue; // claude UI not up yet — wait for a later tick
     if (/esc to interrupt/.test(pane)) continue; // claude has an active turn (processing) — not stuck; never double-deliver
