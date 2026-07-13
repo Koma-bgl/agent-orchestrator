@@ -356,6 +356,51 @@ async function autoMergePRs(pid, p, qp, sessions) {
   }
 }
 
+// --- CI-failure relay ----------------------------------------------------------
+// Agents are told to STOP after opening their PR and rely on the orchestrator to
+// forward CI failures. ao's lifecycle-manager does detect the review_pending →
+// ci_failed transition (it logs it), but the reaction that should deliver the failure
+// to the agent's pane never dispatches in this deploy (same dead reaction engine as
+// auto-merge / comment relay). Net effect: the agent idles at its prompt forever while
+// its PR sits red. So the poller relays it: on ci_failed, fetch the failing check
+// names and paste a fix-it prompt into the pane — once per head SHA, so a re-push that
+// fails differently gets a fresh nudge but the same failure is never repeated.
+const ciNudged = new Map(); // pr.url -> head SHA already relayed
+
+async function relayCiFailures(p, qp, sessions) {
+  if (!p.repo) return;
+  const failed = sessions.filter((s) => s.status === "ci_failed" && s.pr?.url && s.metadata?.tmuxName);
+  if (!failed.length) return;
+  const remaining = await graphqlRemaining();
+  if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) return; // never add pressure while throttled
+  for (const s of failed) {
+    const m = s.pr.url.match(/\/pull\/(\d+)/);
+    const prNum = s.pr.number || (m && m[1]);
+    if (!prNum) continue;
+    try {
+      const { stdout } = await execFileAsync("gh", ["pr", "view", String(prNum), "--repo", p.repo, "--json", "headRefOid,statusCheckRollup"], { env: process.env, timeout: 30_000 });
+      const info = JSON.parse(stdout);
+      if (ciNudged.get(s.pr.url) === info.headRefOid) continue; // this SHA's failure already relayed
+      const failing = (info.statusCheckRollup || [])
+        .filter((c) => ["FAILURE", "ERROR", "TIMED_OUT"].includes(String(c.conclusion || "").toUpperCase()))
+        .map((c) => c.name);
+      if (!failing.length) continue; // rollup lagging the status (e.g. checks re-running) — retry next tick
+      const pane = await paneText(s.metadata.tmuxName);
+      if (pane.includes("esc to interrupt")) continue; // agent mid-task — retry next tick
+      const ok = await nudge(
+        s.metadata.tmuxName,
+        `CI failed on your PR #${prNum} — failing checks: ${failing.join(", ")}. In this worktree: run \`gh pr checks ${prNum}\` and \`gh run view --log-failed\` on the failing run to see why, fix it, run the fast local checks, then commit and push to the same branch. After pushing, stop again — the orchestrator keeps monitoring CI.`,
+      );
+      if (ok) {
+        ciNudged.set(s.pr.url, info.headRefOid);
+        console.log(`[queue-poller] relayed CI failure to ${s.id} (PR #${prNum}: ${failing.join(", ")})`);
+      }
+    } catch (e) {
+      console.log(`[queue-poller] CI relay failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
+    }
+  }
+}
+
 // --- Merged-session reclaim --------------------------------------------------
 // Nothing retires a session after its PR merges in this deploy (the ao reaction that
 // should do it isn't firing; the poller only merged the PR). So merged sessions pile
@@ -568,6 +613,7 @@ async function pollProject(pid, p) {
   await syncContext(sessions); // keep .ao-task.md current + surface new/truncated comments to the agent
   await normalizePrTitles(p, qp, sessions); // enforce [Type][TICKET] title before it can merge
   await autoMergePRs(pid, p, qp, sessions); // squash-merge approved+green+clean PRs (if autoMerge)
+  await relayCiFailures(p, qp, sessions); // ao's ci_failed reaction never dispatches — tell the agent ourselves
   await cleanupMerged(pid, p, sessions); // retire merged sessions: free the worktree + stop enrichment
 
   let issues;
