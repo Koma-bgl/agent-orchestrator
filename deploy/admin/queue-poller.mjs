@@ -7,9 +7,10 @@
 // sessions, respect maxSessions, and `ao spawn <issueId>` the new ones. The reaction
 // engine (CI/review) is still handled by `ao lifecycle-worker`; this only spawns.
 import { execFile } from "node:child_process";
-import { writeFileSync, readdirSync } from "node:fs";
+import { writeFileSync, readdirSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
-import { readConfig } from "./config-writer.mjs";
+import { readConfig, projectBaseDir, generateConfigHash } from "./config-writer.mjs";
 
 const execFileAsync = promisify(execFile);
 const CONFIG_PATH = process.env.AO_CONFIG_PATH || "/root/.agent-orchestrator/agent-orchestrator.yaml";
@@ -218,6 +219,88 @@ async function graphqlRemaining() {
 
 const prVerifiedAt = new Map(); // pr.url -> last direct gh-check ms (throttle orphan re-checks)
 
+// --- PR title format ---------------------------------------------------------
+// The repo convention is `[Type][TICKET-ID] Description` (e.g. "[Bugfix][SPOR-3272]
+// …"). The agent writes conventional-commit titles ("fix(sports): …"), so we rewrite
+// them deterministically. This matters twice: reviewers/Linear see the right title on
+// the open PR, and `gh pr merge --squash` uses the PR title as the squashed commit
+// subject — so a correct title fixes the merge commit too.
+const TYPE_MAP = {
+  feat: "Feat", feature: "Feat", fix: "Bugfix", bugfix: "Bugfix", bug: "Bugfix",
+  perf: "Perf", chore: "Chore", refactor: "Refactor", docs: "Docs", doc: "Docs",
+  test: "Test", tests: "Test", build: "Build", ci: "CI", style: "Style", revert: "Revert",
+};
+
+/**
+ * Normalize a PR title to `[Type][TICKET] Description`. Pure + exported for tests.
+ * Returns the corrected title, or null when no change is needed / no ticket to key on.
+ */
+export function formatPrTitle(title, ticket) {
+  const tk = String(ticket || "").trim().toUpperCase();
+  if (!tk) return null; // without a ticket we can't (and shouldn't) reformat
+  let body = String(title || "").trim();
+  // Already `[Anything][TICKET] …`? Leave it — don't churn a hand-correct title.
+  if (new RegExp(`^\\[[^\\]]+\\]\\[${tk}\\]\\s*\\S`, "i").test(body)) return null;
+  // Drop a trailing " [TICKET]" suffix (the conventional-with-suffix style we also emit).
+  body = body.replace(new RegExp(`\\s*\\[${tk}\\]\\s*$`, "i"), "").trim();
+  let type = null;
+  // Prefer a conventional-commit prefix: type(scope)?!?: desc
+  const cc = body.match(/^([a-zA-Z]+)(?:\([^)]*\))?!?:\s*(.*)$/);
+  if (cc && TYPE_MAP[cc[1].toLowerCase()]) { type = TYPE_MAP[cc[1].toLowerCase()]; body = cc[2].trim(); }
+  // Else an existing leading [Type] bracket (already-tagged but missing the ticket) —
+  // but not when that leading bracket is the ticket itself.
+  if (!type) {
+    const lead = body.match(/^\[([^\]]+)\]\s*(.*)$/);
+    if (lead && lead[1].trim().toUpperCase() !== tk) { type = TYPE_MAP[lead[1].toLowerCase()] || lead[1].trim(); body = lead[2].trim(); }
+  }
+  // Strip a leftover leading [TICKET] if the title led with it.
+  body = body.replace(new RegExp(`^\\[${tk}\\]\\s*`, "i"), "").trim();
+  const desc = body ? body.charAt(0).toUpperCase() + body.slice(1) : "";
+  return `[${type || "Chore"}][${tk}] ${desc}`.trim();
+}
+
+const titledPRs = new Set(); // pr.url -> normalized (or confirmed-correct) once; dedup edits
+
+// Rewrite non-conforming PR titles to `[Type][TICKET] …`, once per PR. Uses the PR
+// title from /api/sessions when present (free); falls back to one `gh pr view` read.
+async function normalizePrTitles(p, qp, sessions) {
+  if (!p.repo) return;
+  // Only PRs we haven't handled and that carry a ticket are candidates. If none need a
+  // (possible) GitHub read, do nothing — and never add GitHub pressure while the budget
+  // is low (the /rate_limit probe itself is exempt).
+  const candidates = sessions.filter((s) => s.pr?.url && s.issueId && !titledPRs.has(s.pr.url));
+  if (!candidates.length) return;
+  // A title read (gh pr view) and edit (gh pr edit) are both GraphQL — never add
+  // pressure while the budget is low (the /rate_limit probe itself is exempt).
+  const remaining = await graphqlRemaining();
+  if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) {
+    console.log(`[queue-poller] skipping title normalize — GitHub GraphQL remaining ${remaining} < floor`);
+    return;
+  }
+  for (const s of candidates) {
+    const pr = s.pr;
+    const m = pr.url.match(/\/pull\/(\d+)/);
+    const prNum = pr.number || (m && m[1]);
+    if (!prNum) continue;
+    try {
+      let current = pr.title;
+      if (!current) {
+        const { stdout } = await execFileAsync("gh", ["pr", "view", String(prNum), "--repo", p.repo, "--json", "title", "--jq", ".title"], { env: process.env, timeout: 30_000 });
+        current = stdout.trim();
+      }
+      const fixed = formatPrTitle(current, s.issueId);
+      titledPRs.add(pr.url); // mark handled regardless — one attempt per PR
+      if (fixed && fixed !== current) {
+        await execFileAsync("gh", ["pr", "edit", String(prNum), "--repo", p.repo, "--title", fixed], { env: process.env, timeout: 30_000 });
+        console.log(`[queue-poller] PR #${prNum} title -> "${fixed}"`);
+      }
+    } catch (e) {
+      titledPRs.delete(pr.url); // transient — retry next window
+      console.log(`[queue-poller] title normalize failed for #${prNum}: ${String(e.stderr || e.message).slice(0, 200)}`);
+    }
+  }
+}
+
 async function autoMergePRs(pid, p, qp, sessions) {
   if (!qp.autoMerge || !p.repo) return;
   // A container recreate (redeploy / nightly) kills live sessions, so a session with an
@@ -273,6 +356,105 @@ async function autoMergePRs(pid, p, qp, sessions) {
   }
 }
 
+// --- Merged-session reclaim --------------------------------------------------
+// Nothing retires a session after its PR merges in this deploy (the ao reaction that
+// should do it isn't firing; the poller only merged the PR). So merged sessions pile
+// up: their worktrees eat disk (~1GB each) and ao-web keeps cold-refreshing their PR
+// data every cache-TTL (~6 GraphQL calls / 5 min each) → the GitHub rate-limit banner.
+// Killing them doesn't help — ao-web still enriches terminal sessions on a cold cache,
+// and killing leaves the worktree behind. Only REMOVING the record + worktree does.
+// The store is one line-based `key=value` file per session under <base>/sessions/<id>;
+// there is no index, so deleting the file removes the record cleanly.
+const SESSION_KV = /^([a-zA-Z0-9_]+)=(.*)$/;
+
+/** Parse a session store file (line-based key=value). Pure + exported for tests. */
+export function parseSessionRecord(text) {
+  const rec = {};
+  for (const line of String(text || "").split("\n")) {
+    const m = line.match(SESSION_KV);
+    if (m) rec[m[1]] = m[2].trim();
+  }
+  return rec;
+}
+
+const reclaimed = new Set(); // session id -> already retired (dedup)
+
+// Retire sessions whose PR has merged: remove the git worktree (frees disk) and the
+// store record (stops ao-web enriching it). STRICTLY gated on status===merged from BOTH
+// the live list AND the authoritative store file, so a killed-but-unmerged session
+// (e.g. one whose PR is still open) is never touched.
+async function cleanupMerged(pid, p, sessions) {
+  const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
+  for (const s of sessions) {
+    if (s.projectId !== pid || s.status !== "merged" || reclaimed.has(s.id)) continue;
+    const f = join(sessDir, s.id);
+    try {
+      if (!existsSync(f)) { reclaimed.add(s.id); continue; }
+      const rec = parseSessionRecord(readFileSync(f, "utf8"));
+      if (rec.status !== "merged") continue; // authoritative store must agree — belt + suspenders
+      // Kill the tmux session FIRST. Leaving it running leaks an idle claude (RAM)
+      // and — worse — deadlocks spawning: with the record gone, ao reuses this
+      // session id and `tmux new-session` fails with "duplicate session" forever.
+      const tmuxName = rec.tmuxName || s.tmuxName;
+      if (tmuxName) await execFileAsync("tmux", ["kill-session", "-t", tmuxName], { env: process.env, timeout: 15_000 }).catch(() => {});
+      const wt = rec.worktree;
+      if (wt && existsSync(wt)) {
+        // --force: the branch is merged so nothing is lost; force clears the untracked
+        // .ao-task.md and any build detritus that would otherwise block removal.
+        await execFileAsync("git", ["-C", p.path, "worktree", "remove", "--force", wt], { env: process.env, timeout: 60_000 }).catch(async (e) => {
+          // A worktree git no longer tracks (record drifted) — just delete the dir.
+          if (/not a working tree|is not a working tree/i.test(String(e.stderr || e.message))) rmSync(wt, { recursive: true, force: true });
+          else throw e;
+        });
+      }
+      rmSync(f); // remove the session record → ao-web stops listing/enriching it
+      reclaimed.add(s.id);
+      console.log(`[queue-poller] reclaimed merged session ${s.id} (${s.issueId}) — worktree + record removed`);
+    } catch (e) {
+      console.log(`[queue-poller] reclaim failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
+    }
+  }
+  await execFileAsync("git", ["-C", p.path, "worktree", "prune"], { env: process.env, timeout: 30_000 }).catch(() => {});
+}
+
+// --- Orphan tmux reaper --------------------------------------------------------
+// A tmux session whose store record is gone (reclaimed, or ao lost it) is invisible
+// to ao but still squats its name: ao's next-id picks max(existing records)+1, so a
+// freed id gets reused and `tmux new-session` dies with "duplicate session" — every
+// subsequent spawn deadlocks. It also leaks an idle claude per orphan. Reap tmux
+// sessions that (a) carry this config's hash prefix, (b) match no record's tmuxName
+// across ANY project (the hash is per-config, shared by all its projects), and
+// (c) are >10 min old — `ao spawn` creates tmux moments before the record, so age
+// guards against reaping an in-flight spawn.
+const REAP_MIN_AGE_S = 600;
+
+async function reapOrphanTmux(cfg) {
+  let hash;
+  try { hash = generateConfigHash(CONFIG_PATH); } catch { return; }
+  const known = new Set();
+  for (const p of Object.values(cfg.projects || {})) {
+    const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
+    try {
+      for (const f of readdirSync(sessDir)) {
+        try { known.add(parseSessionRecord(readFileSync(join(sessDir, f), "utf8")).tmuxName || `${hash}-${f}`); } catch { /* unreadable record: skip */ }
+      }
+    } catch { /* project has no sessions dir yet */ }
+  }
+  let out;
+  try { ({ stdout: out } = await execFileAsync("tmux", ["ls", "-F", "#{session_name} #{session_created}"], { env: process.env, timeout: 15_000 })); }
+  catch { return; } // no tmux server running — nothing to reap
+  const now = Math.floor(Date.now() / 1000);
+  for (const line of out.trim().split("\n")) {
+    const [name, created] = line.split(" ");
+    if (!name || !name.startsWith(`${hash}-`) || known.has(name)) continue;
+    if (!(now - parseInt(created, 10) >= REAP_MIN_AGE_S)) continue;
+    try {
+      await execFileAsync("tmux", ["kill-session", "-t", name], { env: process.env, timeout: 15_000 });
+      console.log(`[queue-poller] reaped orphan tmux ${name} (no session record)`);
+    } catch { /* raced with something else killing it — fine */ }
+  }
+}
+
 // --- Stuck-session watchdog --------------------------------------------------
 // ao@0.2.2 delivers the task prompt by typing it into the fresh claude pane AFTER
 // launch; that send races claude's startup and is occasionally lost, leaving the
@@ -300,7 +482,7 @@ function buildNudgePrompt(issue, identifier) {
   const title = issue?.title || "";
   const desc = (issue?.description || "").replace(/\s+/g, " ").trim();
   // Single line on purpose: newlines in a tmux paste would submit the prompt early.
-  return `Please work on Linear ticket ${identifier}: ${title}. ${desc} Follow your standard workflow: create a feature branch, implement the change, run the fast local checks (type-check + lint), commit, push, and open a PR — CI runs the full build + tests on the PR.`
+  return `Please work on Linear ticket ${identifier}: ${title}. ${desc} Follow your standard workflow: create a feature branch, implement the change, run the fast local checks (type-check + lint), commit, push, and open a PR — CI runs the full build + tests on the PR. Title the PR "[Type][${identifier}] Description" where Type is Feat/Bugfix/Perf/Chore/Refactor.`
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -384,7 +566,9 @@ async function pollProject(pid, p) {
   await syncStatuses(p.tracker.teamId, sessions, qp);
   await recoverStuck(sessions); // re-deliver the prompt to any session ao left stuck at launch
   await syncContext(sessions); // keep .ao-task.md current + surface new/truncated comments to the agent
+  await normalizePrTitles(p, qp, sessions); // enforce [Type][TICKET] title before it can merge
   await autoMergePRs(pid, p, qp, sessions); // squash-merge approved+green+clean PRs (if autoMerge)
+  await cleanupMerged(pid, p, sessions); // retire merged sessions: free the worktree + stop enrichment
 
   let issues;
   try { issues = await linearIssues(p.tracker.teamId, qp.filters?.labels, qp.filters?.statusName); }
@@ -417,21 +601,26 @@ async function pollProject(pid, p) {
 
 async function pollOnce() {
   const cfg = readConfig(CONFIG_PATH);
+  await reapOrphanTmux(cfg); // BEFORE spawning: frees squatted session names so `ao spawn` can reuse the id
   for (const [pid, p] of Object.entries(cfg.projects || {})) await pollProject(pid, p);
 }
 
-let interval = 30_000;
-try { const c = readConfig(CONFIG_PATH); const p = c.projects[Object.keys(c.projects)[0]]; interval = parseInterval(p?.queuePoller?.interval); } catch {}
-if (!LINEAR_KEY) console.log("[queue-poller] warning: LINEAR_API_KEY not set — polls will fail until it is");
-console.log(`[queue-poller] starting (interval ${interval}ms)`);
+// Only start the poll loop when run as a script — importing this module (e.g. from a
+// unit test for formatPrTitle) must not spin up polling.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  let interval = 30_000;
+  try { const c = readConfig(CONFIG_PATH); const p = c.projects[Object.keys(c.projects)[0]]; interval = parseInterval(p?.queuePoller?.interval); } catch {}
+  if (!LINEAR_KEY) console.log("[queue-poller] warning: LINEAR_API_KEY not set — polls will fail until it is");
+  console.log(`[queue-poller] starting (interval ${interval}ms)`);
 
-let running = false;
-async function tick() {
-  if (running) return;
-  running = true;
-  try { await pollOnce(); } catch (e) { console.log(`[queue-poller] error: ${e.message}`); } finally { running = false; }
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try { await pollOnce(); } catch (e) { console.log(`[queue-poller] error: ${e.message}`); } finally { running = false; }
+  };
+  tick();
+  setInterval(tick, interval);
+  process.on("SIGTERM", () => process.exit(0));
+  process.on("SIGINT", () => process.exit(0));
 }
-tick();
-setInterval(tick, interval);
-process.on("SIGTERM", () => process.exit(0));
-process.on("SIGINT", () => process.exit(0));

@@ -130,6 +130,13 @@ case `npm ci` is correct (it replaces the shared symlink with a fresh, isolated 
 When your change is ready: commit, push, and open the PR — then STOP. Do not sit waiting
 for CI to finish. The orchestrator monitors CI and will send you any failures to fix.
 
+## PR title format
+
+Title every PR `[Type][TICKET-ID] Description` — e.g. `[Bugfix][SPOR-3272] Stop sidesheet
+toggle re-rendering the SGP grid`. Type is one of Feat / Bugfix / Perf / Chore / Refactor
+(match the change). The TICKET-ID is the Linear identifier of the ticket you're working on.
+This is mandatory — the ticket ID must be in the title so the PR links back to Linear.
+
 ## Ticket context & follow-ups
 
 Your initial prompt can be truncated for long tickets, so a file `./.ao-task.md` may be
