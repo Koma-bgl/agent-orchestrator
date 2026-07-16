@@ -99,6 +99,13 @@
 		reverse_proxy ao:14801
 	}
 
+	# First-run signpost (mirrors Caddyfile.public): exact root → admin backend,
+	# which 302s to /setup until configured, then streams the dashboard root.
+	handle / {
+		authorize with mypolicy
+		reverse_proxy ao:8090
+	}
+
 	# Everything else: the TS agent-orchestrator dashboard (Next.js on :3000) —
 	# serves the UI + its own /api/* (SSE via flush_interval -1). Next binds
 	# 0.0.0.0 so Caddy reaches it directly (no socat bridge).

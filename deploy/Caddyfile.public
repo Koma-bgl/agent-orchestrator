@@ -82,6 +82,15 @@
 	}
 
 	# Everything else: the TS agent-orchestrator dashboard (Next.js on :3000) —
+	# First-run signpost: ONLY the exact root document goes through the admin
+	# backend, which 302s to /setup until the bot is configured, then streams the
+	# dashboard root page through. Assets/API/WS all match other handles and go
+	# direct — this costs one internal hop per hard page-load of "/".
+	handle / {
+		authorize with mypolicy
+		reverse_proxy ao:8090
+	}
+
 	# it serves the UI AND its own /api/* (projects, sessions, spawn, events…).
 	# flush_interval -1 keeps the /api/events SSE stream unbuffered. Next.js binds
 	# 0.0.0.0 so the sibling Caddy reaches it directly (no socat bridge).

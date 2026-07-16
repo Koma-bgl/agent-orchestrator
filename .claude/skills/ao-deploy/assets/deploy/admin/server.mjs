@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { chooseSource, secretNames } from "../scripts/resolve-secrets.mjs";
 import { buildAddVersionRequest, isValidSecret } from "./secrets-writer.mjs";
+import { getFirstProject } from "./config-writer.mjs";
 import {
   setupState, githubConnect, githubRepos, githubOwners, githubDeviceStart, githubDevicePoll, shellStart,
   linearTeams, linearLabels, linearStatuses, writeTokens, saveDraft, startBot,
@@ -18,6 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.AO_ADMIN_PORT || 8090);
 const REPO = process.env.AO_RELEASES_REPO || "ComposioHQ/agent-orchestrator";
+const CONFIG_PATH = process.env.AO_CONFIG_PATH || "/root/.agent-orchestrator/agent-orchestrator.yaml";
 
 function send(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -130,6 +132,27 @@ createServer(async (req, res) => {
 
     // --- the wizard page itself (Caddy routes /setup* here, gated) ---
     if (GET && (pathname === "/setup" || pathname === "/setup/")) return serveSetupPage(res);
+
+    // --- first-run signpost (Caddy routes the EXACT root document here) ---
+    // A fresh bot's dashboard has no link to the wizard, so an unconfigured bot
+    // bounces "/" to /setup. Once configured, stream the dashboard's root page
+    // through (assets/API/WS match other Caddy handles and go direct — this hop
+    // is one internal fetch per hard page-load).
+    if (GET && pathname === "/") {
+      let configured = false;
+      try { configured = !!getFirstProject(CONFIG_PATH); } catch { /* unreadable config = unconfigured */ }
+      if (!configured) { res.writeHead(302, { location: "/setup" }); return res.end(); }
+      try {
+        const up = await fetch(`http://127.0.0.1:${process.env.PORT || 3000}/`);
+        const body = Buffer.from(await up.arrayBuffer());
+        res.writeHead(up.status, { "content-type": up.headers.get("content-type") || "text/html" });
+        return res.end(body);
+      } catch {
+        // dashboard not up (mid-restart) — the wizard page degrades gracefully
+        res.writeHead(302, { location: "/setup" });
+        return res.end();
+      }
+    }
 
     return send(res, 404, { error: "not found" });
   } catch (e) {
