@@ -46,8 +46,9 @@ another VM.
 the named teammate*. Never pass `--for` with someone else's email to work
 around a permission error — it changes whose name goes on the VM, not whose
 credentials are used, so it can't fix permissions and risks colliding with
-that person's real VM. If `create` fails with a GCP permission error, the fix
-is: ask the fleet admin to run `create --for=<your-email>`.
+that person's real VM. If you lack GCP permissions, use the self-service
+vending endpoint (step 2) — it needs none; escalate to the fleet admin only
+if that returns 403 (not allowlisted).
 
 ## 1. Preflight
 
@@ -65,6 +66,24 @@ is: ask the fleet admin to run `create --for=<your-email>`.
   won't be able to sign in to their own dashboard.
 
 ## 2. Create the VM
+
+**Self-service (any operator — no GCP permissions needed).** The fleet vending
+function creates YOUR VM (identity comes from your verified Google token, so it
+can only ever vend for the caller):
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  https://us-central1-cloudbet-native.cloudfunctions.net/ao_vending-create
+```
+
+Responses: `201 provisioning` (VM created; stack self-installs ~10 min — then
+open the returned `url`), `200 exists` (you already have one), `403` (email not
+in the fleet allowlist — ask the admin), `409` (quota reached). After a 201,
+skip to step 3 once `https://<host>` responds.
+
+**Admin path (deploy-gcp.sh — needs GCP permissions).** Also how an admin
+deploys on a teammate's behalf:
 
 ```bash
 ./deploy-gcp.sh init   --project=<gcp-project> [--for=operator@email]  # once: SA, secret IAM, static IP, firewall
