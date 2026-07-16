@@ -87,8 +87,9 @@ curl -sS -X POST \
 ```
 
 Responses: `201 provisioning` (VM created; stack self-installs ~10 min — then
-open the returned `url`), `200 exists` (you already have one), `403` (email not
-in the fleet allowlist — ask the admin), `409` (quota reached). After a 201,
+open the returned `url`), `200 exists` (you already have one), `403` (only
+non-Workspace accounts hit this — chaostheory.hk members are auto-admitted;
+others need the admin to allowlist them), `409` (quota reached). After a 201,
 skip to step 3 once `https://<host>` responds.
 
 **Admin path (deploy-gcp.sh — needs GCP permissions).** Also how an admin

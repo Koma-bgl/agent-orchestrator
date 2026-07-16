@@ -35,7 +35,9 @@ if [ ! -f .env ]; then
   log "generating .env from gate secrets…"
   sec() { gcloud secrets versions access latest --secret="$1" --project="$AO_PROJECT"; }
   JWT="$(sec jwt-shared-key)"
-  ALLOW="$(sec dashboard-allowlist | tr ',\n' '  ')"
+  # Fleet allowlist + this VM's owner: a domain-vended operator (not in the
+  # central secret) must still be able to sign in to their OWN dashboard.
+  ALLOW="$(sec dashboard-allowlist | tr ',\n' '  ') ${AO_OWNER:-}"
   WT="$(openssl rand -hex 24 2>/dev/null || head -c24 /dev/urandom | xxd -p)"
   cat > .env <<ENV
 AO_SECRET_SOURCE=env
