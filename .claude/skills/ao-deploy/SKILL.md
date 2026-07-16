@@ -27,6 +27,22 @@ cd "$DEPLOY_HOME"
 If you ARE inside an agent-orchestrator checkout, prefer its `deploy/` (it's
 fresher than the snapshot). All later steps run from the deploy directory.
 
+## Which VM? (resolve this FIRST — never guess)
+
+Every operator owns exactly the VM named after their **active gcloud
+account**. Derive it — do not search for it:
+
+```bash
+ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)')"
+VM_NAME="$(node gcp-lib.mjs vmName "$ACCOUNT")"        # e.g. nt@chaostheory.hk -> ao-nt-chaostheory-hk
+```
+
+All ssh/verify/update/teardown steps target `$VM_NAME` and nothing else.
+**Never** list `ao-*` VMs and pick one: other operators' bots live in the same
+project, and SSHing into someone else's VM silently adds your key to project
+SSH metadata. If `$VM_NAME` doesn't exist, this operator simply hasn't
+deployed yet — offer to create it (step 2), don't fall back to another VM.
+
 ## 1. Preflight (resolve each ✗ before creating anything)
 
 - `gcloud auth list` — an active account. The VM is named `ao-<account>` from
