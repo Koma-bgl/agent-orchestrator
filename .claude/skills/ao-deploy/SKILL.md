@@ -52,6 +52,15 @@ if that returns 403 (not allowlisted).
 
 ## 1. Preflight
 
+**Self-service create (the default for operators): SKIP this section.** The
+vending endpoint needs only an authed `gcloud` — no project ID, no gate
+secrets, no local `.env`. Don't ask the operator for a GCP project on that
+path. If the vending call returns 403, the ONLY correct move is asking the
+fleet admin to allowlist their email — never partial/manual provisioning
+(reserving IPs by hand, etc.), which leaves half-created resources.
+
+The checks below apply to the **admin path** (`deploy-gcp.sh`) only:
+
 - `gcloud auth list` — an active account with compute + DNS + Secret Manager
   permissions on the target project (the *deployer's* perms; the operator
   needs none — see "Deploying for a teammate").
