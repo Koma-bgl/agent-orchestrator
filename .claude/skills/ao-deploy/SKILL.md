@@ -128,11 +128,12 @@ gcloud. SSH access stays admin-only.
 
 ## 3. Post-create (operator, via dashboard — no GCP access needed)
 
-1. Open the dashboard URL and sign in with the allowlisted Google account.
-2. Run the setup wizard: connect GitHub (`gh auth login`) and Claude
-   (`claude auth login`) in the setup terminals (ports 7990/7991, proxied
-   through Caddy), then configure the project (repo, Linear teamId, trigger
-   label + `Ready to start` status).
+1. Open **`https://<host>/setup`** — NOT the bare dashboard URL: a fresh bot's
+   dashboard is the stock board with no link to the wizard, so `/setup` is the
+   only way in. Sign in with your Google account.
+2. The wizard walks through: connect GitHub (device flow) and Claude (setup
+   terminals, proxied through Caddy), then configure the project (repo, Linear
+   teamId, trigger label + `Ready to start` status) and start the bot.
 3. Tokens are stored on the box only (`agent-secrets.env` on the ao-state
    volume) — they never pass through the admin or the deploy machine.
 
