@@ -22,6 +22,13 @@ GATE_SECRETS=(google-oauth-client jwt-shared-key dashboard-allowlist)
 PROJECT=""; for a in "$@"; do case "$a" in --project=*) PROJECT="${a#--project=}";; esac; done
 PROJECT="${PROJECT:-${AO_PROJECT:-$(gcloud config get-value project 2>/dev/null)}}"
 ACCOUNT="$(gcloud config get-value account 2>/dev/null)"
+# --for=<email>: deploy ON BEHALF OF another operator. The admin's gcloud creds
+# make the GCP resources; the VM's name/owner-label/hostname/quota all follow the
+# operator's email instead. The operator needs NO GCP permissions — their access
+# is the dashboard (Google sign-in via the fleet allowlist) where they run the
+# setup wizard and on-box gh/claude auth themselves; the generated .env ships with
+# agent creds empty by design, so the admin never touches the operator's tokens.
+for a in "$@"; do case "$a" in --for=*) ACCOUNT="${a#--for=}";; esac; done
 REGION="${AO_REGION:-us-central1}"
 ZONE="${AO_ZONE:-us-central1-a}"
 MACHINE_TYPE="${AO_MACHINE_TYPE:-e2-standard-4}"
@@ -270,5 +277,5 @@ case "${1:-}" in
   status) cmd_status;;
   admin-list) cmd_admin_list;;
   admin-audit) cmd_admin_audit;;
-  *) echo "usage: $0 {init|create|destroy|status|admin-list|admin-audit} [--project=ID] [--index=N]"; exit 2;;
+  *) echo "usage: $0 {init|create|destroy|status|admin-list|admin-audit} [--project=ID] [--index=N] [--for=operator@email]"; exit 2;;
 esac

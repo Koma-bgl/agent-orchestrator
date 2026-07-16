@@ -1,20 +1,19 @@
 ---
 name: ao-deploy
-description: Provision, update, verify, or tear down a self-hosted AO fleet VM on GCE. Use when the user wants to create a new bot VM ("new fleet VM", "deploy a bot for <account>"), redeploy/update the stack on an existing VM, verify a deployment is healthy, or tear one down. Self-contained — the deploy sources are embedded in the skill; works from any directory with no repo or GitHub access.
+description: Provision, update, verify, or tear down a self-hosted AO fleet VM on GCE. Use when the user wants to create a new bot VM ("new fleet VM", "deploy a bot for <account>"), deploy on behalf of a teammate, redeploy/update the stack on an existing VM, verify a deployment is healthy, or tear one down. Self-contained — the deploy sources are embedded in the skill; works from any directory with no repo or GitHub access.
 ---
 
 # ao-deploy — fleet VM lifecycle (GCE)
 
 Deploys a bot VM running three containers via docker compose: `ao` (dashboard +
 agents + admin + queue-poller), `caddy` (TLS + auth gateway), `watchtower`
-(nightly updates, drain-gated). Reusable by any operator: it does NOT assume
-you're inside the agent-orchestrator repo.
+(nightly updates, drain-gated). Script verbs: `init | create | destroy | status |
+admin-list | admin-audit`, flags `--project=ID [--index=N] [--for=email]`.
 
 ## 0. Get the deploy sources (skip if `deploy/deploy-gcp.sh` exists in cwd)
 
 The full deploy tree is **embedded in this skill** at `assets/deploy/` — no
-GitHub access needed. Copy it to a writable working dir and run from there
-(`.env` and VM state live in the copy, never in the skill folder):
+GitHub access needed. Copy it to a writable working dir and run from there:
 
 ```bash
 DEPLOY_HOME="$HOME/.ao-fleet/deploy"
@@ -24,78 +23,94 @@ cat <this-skill-directory>/assets/VERSION   # what snapshot you're deploying
 cd "$DEPLOY_HOME"
 ```
 
-If you ARE inside an agent-orchestrator checkout, prefer its `deploy/` (it's
-fresher than the snapshot). All later steps run from the deploy directory.
+If you ARE inside an agent-orchestrator checkout, prefer its `deploy/` (fresher
+than the snapshot). All later steps run from the deploy directory.
 
 ## Which VM? (resolve this FIRST — never guess)
 
-Every operator owns exactly the VM named after their **active gcloud
-account**. Derive it — do not search for it:
+Every VM is owned by an operator email. Default = the **active gcloud
+account**; deploying for a teammate overrides it with `--for=`:
 
 ```bash
-ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)')"
-VM_NAME="$(node gcp-lib.mjs vmName "$ACCOUNT")"        # e.g. nt@chaostheory.hk -> ao-nt-chaostheory-hk
+OPERATOR="${FOR_EMAIL:-$(gcloud auth list --filter=status:ACTIVE --format='value(account)')}"
+VM_NAME="$(node gcp-lib.mjs vmName "$OPERATOR")"   # nt@chaostheory.hk -> ao-nt-chaostheory-hk
 ```
 
-All ssh/verify/update/teardown steps target `$VM_NAME` and nothing else.
-**Never** list `ao-*` VMs and pick one: other operators' bots live in the same
-project, and SSHing into someone else's VM silently adds your key to project
-SSH metadata. If `$VM_NAME` doesn't exist, this operator simply hasn't
-deployed yet — offer to create it (step 2), don't fall back to another VM.
+Target `$VM_NAME` and nothing else. **Never** list `ao-*` VMs and pick one:
+other operators' bots share the project, and SSHing into someone else's VM
+silently adds your key to project SSH metadata. If `$VM_NAME` doesn't exist,
+the operator hasn't deployed yet — offer to create it, don't fall back to
+another VM.
 
-## 1. Preflight (resolve each ✗ before creating anything)
+## 1. Preflight
 
-- `gcloud auth list` — an active account. The VM is named `ao-<account>` from
-  this identity, so each operator gets their own VM namespace.
-- GCP project — there is no default. Ask the operator which project to use and
-  pass it explicitly as `--project=<id>` everywhere.
-- `deploy/.env` — if missing, bootstrap it and have the operator fill it in:
-  ```bash
-  cp .env.example .env
-  # Required: GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (OAuth web client;
-  #   redirect URI is printed by deploy-gcp.sh), ALLOWED_EMAIL_1 (their email),
-  #   JWT_SHARED_KEY (openssl rand -hex 32), WATCHTOWER_TOKEN (openssl rand -hex 24).
-  # Agent credentials (LINEAR_API_KEY etc.) can go here (AO_SECRET_SOURCE=env)
-  # or in GCP Secret Manager (AO_SECRET_SOURCE=gcp + AO_GCP_PROJECT).
-  ```
-  `.env` holds secrets — never commit it, never echo its values.
+- `gcloud auth list` — an active account with compute + DNS + Secret Manager
+  permissions on the target project (the *deployer's* perms; the operator
+  needs none — see "Deploying for a teammate").
+- GCP project — there is no default. Ask which project and pass
+  `--project=<id>` on every command.
+- **Gate secrets** must exist in the project (Secret Manager):
+  `google-oauth-client`, `jwt-shared-key`, `dashboard-allowlist` (and
+  optionally `ao-vm-quotas` for per-user VM quotas). The VM generates its own
+  `.env` from these at bootstrap — **no local `.env` is needed for a VM
+  deploy** (`deploy/.env` is only for running compose locally).
+- The operator's email must be in the `dashboard-allowlist` secret, or they
+  won't be able to sign in to their own dashboard.
 
 ## 2. Create the VM
 
 ```bash
-./deploy-gcp.sh up --project=<gcp-project>            # first bot for this account
-./deploy-gcp.sh up --project=<gcp-project> --index=2  # additional bot (2..quota)
+./deploy-gcp.sh init   --project=<gcp-project> [--for=operator@email]  # once: SA, secret IAM, static IP, firewall
+./deploy-gcp.sh create --project=<gcp-project> [--for=operator@email]  # quota check, VM, DNS, stage, bootstrap
+./deploy-gcp.sh status --project=<gcp-project> [--for=operator@email]  # URL, quota, instance state
 ```
 
-Creates VM `ao-<account>[-N]` (default `e2-standard-4`, `us-central1-a`,
-override zone via `AO_ZONE`), reserves a static IP, writes an A-record in the
-`ao-fleet` DNS zone, waits for SSH, stages `deploy/` onto the VM, bootstraps
-docker compose. Naming/quota logic: `gcp-lib.mjs`.
+Creates VM `ao-<operator>[-N]` (default `e2-standard-4`, `us-central1-a`;
+override `AO_ZONE`/`AO_MACHINE_TYPE`), reserves a static IP, writes the DNS
+A-record (`<operator>.binary-badger.xyz` in the `ao-fleet` zone), stages
+`deploy/` onto the VM, and bootstraps docker compose. Per-operator VM quota
+comes from the `ao-vm-quotas` secret (default 1; `--index=N` for extra VMs).
 
 **Sizing rule**: `maxSessions: 1` per e2-standard-4 (16 GB) — one agent build
 eats 5–7 GB RAM. Size the VM up before raising `maxSessions`.
 
-## 3. Post-create (on-box, per-user auth — tokens never leave the box)
+## Deploying for a teammate (admin model)
 
-The script prints these; walk the operator through them:
-1. `gcloud compute ssh ao-<account> --zone=us-central1-a --project=<gcp-project>`
-2. Inside the container: `gh auth login` and `claude auth login` (or the
-   setup-terminal ttyds on ports 7990/7991 through the dashboard).
-3. Open the dashboard (Caddy URL from the script output) and run the setup
-   wizard: it writes `agent-orchestrator.yaml` (project, repo, teamId, trigger
-   label + `Ready to start` status) via `admin/config-writer.mjs`.
+Teammates usually lack GCP permissions — that's fine and by design:
+
+1. Admin adds the operator's email to the `dashboard-allowlist` secret.
+2. Admin runs `init` + `create` with `--for=teammate@email` using their own
+   gcloud creds. VM name, owner label, hostname, and quota all follow the
+   teammate.
+3. Send the teammate their dashboard URL (from `status`). They sign in with
+   Google, run the setup wizard, and do `gh` / `claude` auth in the wizard's
+   setup terminals themselves.
+
+The generated `.env` ships with agent credentials **empty by design** — the
+admin never handles the operator's tokens, and the operator never needs
+gcloud. SSH access stays admin-only.
+
+## 3. Post-create (operator, via dashboard — no GCP access needed)
+
+1. Open the dashboard URL and sign in with the allowlisted Google account.
+2. Run the setup wizard: connect GitHub (`gh auth login`) and Claude
+   (`claude auth login`) in the setup terminals (ports 7990/7991, proxied
+   through Caddy), then configure the project (repo, Linear teamId, trigger
+   label + `Ready to start` status).
+3. Tokens are stored on the box only (`agent-secrets.env` on the ao-state
+   volume) — they never pass through the admin or the deploy machine.
 
 ## 4. Verify (after any create or update)
 
 ```bash
-gcloud compute ssh ao-<account> --zone=us-central1-a --project=<gcp-project> --command='
+gcloud compute ssh "$VM_NAME" --zone=us-central1-a --project=<gcp-project> --command='
   sudo docker ps --format "{{.Names}} {{.Status}}"
   sudo docker logs --tail 20 deploy-ao-1 2>&1 | grep queue-poller
   sudo docker exec deploy-ao-1 gh api rate_limit --jq .resources.graphql.remaining'
 ```
-Healthy = 3 containers up; poller logging `starting (interval 30000ms)`;
-dashboard reachable over HTTPS; terminal connects (WS is `:14801 /ws` via the
-`/terminal-ws*` Caddy rewrite — NOT `:14800`).
+Healthy = 3 containers up; poller active in logs; dashboard reachable over
+HTTPS; terminal connects (WS is `:14801 /ws` via the `/terminal-ws*` Caddy
+rewrite — NOT `:14800`).
 
 ## 5. Update an existing VM
 
@@ -114,7 +129,7 @@ Pick the lightest path that ships the change:
 ## 6. Tear down
 
 ```bash
-./deploy-gcp.sh down --project=<gcp-project>   # deletes VM + DNS record
+./deploy-gcp.sh destroy --project=<gcp-project> [--for=operator@email] [--index=N]
 ```
 Confirm with the operator first — on-box auth tokens and any un-pushed session
 work are destroyed with the VM.
