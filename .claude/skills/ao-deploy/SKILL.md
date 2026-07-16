@@ -1,6 +1,6 @@
 ---
 name: ao-deploy
-description: Provision, update, verify, or tear down a self-hosted AO fleet VM on GCE. Use when the user wants to create a new bot VM ("new fleet VM", "deploy a bot for <account>"), redeploy/update the stack on an existing VM, verify a deployment is healthy, or tear one down. Works from any directory — it fetches the deploy sources itself.
+description: Provision, update, verify, or tear down a self-hosted AO fleet VM on GCE. Use when the user wants to create a new bot VM ("new fleet VM", "deploy a bot for <account>"), redeploy/update the stack on an existing VM, verify a deployment is healthy, or tear one down. Self-contained — the deploy sources are embedded in the skill; works from any directory with no repo or GitHub access.
 ---
 
 # ao-deploy — fleet VM lifecycle (GCE)
@@ -12,20 +12,20 @@ you're inside the agent-orchestrator repo.
 
 ## 0. Get the deploy sources (skip if `deploy/deploy-gcp.sh` exists in cwd)
 
-The sources live in `Koma-bgl/agent-orchestrator`, branch
-`feat/dockerize-self-host-deploy` (ask Koma for read access to the fork if the
-clone 404s):
+The full deploy tree is **embedded in this skill** at `assets/deploy/` — no
+GitHub access needed. Copy it to a writable working dir and run from there
+(`.env` and VM state live in the copy, never in the skill folder):
 
 ```bash
-DEPLOY_HOME="$HOME/.ao-fleet/agent-orchestrator"
-if [ -d "$DEPLOY_HOME" ]; then git -C "$DEPLOY_HOME" pull --ff-only; else
-  git clone -b feat/dockerize-self-host-deploy \
-    https://github.com/Koma-bgl/agent-orchestrator.git "$DEPLOY_HOME"
-fi
-cd "$DEPLOY_HOME/deploy"
+DEPLOY_HOME="$HOME/.ao-fleet/deploy"
+mkdir -p "$HOME/.ao-fleet"
+rsync -a <this-skill-directory>/assets/deploy/ "$DEPLOY_HOME/"
+cat <this-skill-directory>/assets/VERSION   # what snapshot you're deploying
+cd "$DEPLOY_HOME"
 ```
 
-All later steps run from that `deploy/` directory.
+If you ARE inside an agent-orchestrator checkout, prefer its `deploy/` (it's
+fresher than the snapshot). All later steps run from the deploy directory.
 
 ## 1. Preflight (resolve each ✗ before creating anything)
 
@@ -116,8 +116,12 @@ work are destroyed with the VM.
 - Never `ao spawn` manually on a fleet box — only the poller spawns (tickets
   enter via the Linear trigger column/label).
 
-## Sharing this skill
+## Sharing & maintaining this skill
 
-Copy this directory to `~/.claude/skills/ao-deploy/` to use it from any
-project. Step 0 makes it self-contained — the only prerequisites on a fresh
-machine are `gcloud` (authed) and `git` with access to the fork.
+- **Share**: copy this whole directory (including `assets/`) to a teammate's
+  `~/.claude/skills/ao-deploy/`. Fully self-contained — the only prerequisite
+  on a fresh machine is an authed `gcloud`. No repo or GitHub access needed.
+- **Maintain**: the embedded `assets/deploy/` is a snapshot (provenance in
+  `assets/VERSION`). After changing the repo's `deploy/` tree, run
+  `./sync-assets.sh` (in this skill dir) and commit, so shared copies pick up
+  the current stack on their next update.

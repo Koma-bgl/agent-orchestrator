@@ -1,0 +1,111 @@
+{
+	# Local mode: serve TLS on 8443 (Caddy internal cert). M7 removes these two
+	# lines and switches to the bare domain for automatic Let's Encrypt.
+	http_port 8080
+	https_port 8443
+
+	order authenticate before respond
+	order authorize before basicauth
+
+	security {
+		oauth identity provider google {
+			realm google
+			driver google
+			client_id {env.GOOGLE_CLIENT_ID}
+			client_secret {env.GOOGLE_CLIENT_SECRET}
+			scopes openid email profile
+		}
+
+		authentication portal myportal {
+			crypto default token lifetime 3600
+			crypto key sign-verify {env.JWT_SHARED_KEY}
+			enable identity provider google
+			# Conventional role grant; NOT load-bearing for the allowlist below
+			# (the policy gates on the `email` claim directly, not on role).
+			transform user {
+				match realm google
+				action add role authp/user
+			}
+		}
+
+		authorization policy mypolicy {
+			set auth url {$AO_SITE_URL}/auth/oauth2/google
+			crypto key verify {env.JWT_SHARED_KEY}
+
+			# EMAIL ALLOWLIST — acl default is deny-unless-allowed. One rule per
+			# allowed Google email (extend as needed). Trailing deny is explicit.
+			acl rule {
+				comment allowlisted operator 1
+				# PARSE-TIME substitution ({$VAR}) — caddy-security's acl `match email`
+				# does NOT expand runtime {env.*} placeholders, so {env.ALLOWED_EMAIL_1}
+				# silently never matches (valid login → acl miss → 403). {$…} is
+				# substituted to the literal before caddy-security parses the rule.
+				match email {$ALLOWED_EMAIL_1}
+				allow stop log info
+			}
+			acl rule {
+				comment default deny
+				match any
+				deny log warn
+			}
+
+			validate bearer header
+			inject headers with claims
+		}
+	}
+}
+
+{$AO_SITE_ADDRESS} {
+	# Local: Caddy internal self-signed cert. M7 removes `tls internal` for ACME.
+	tls internal
+
+	# Auth portal (login, OAuth callback) — unauthenticated by definition.
+	handle /auth* {
+		authenticate with myportal
+	}
+
+	# Admin/setup-wizard backend (JSON) — authorized. Distinct /admin/api/* prefix.
+	handle /admin/api/* {
+		authorize with mypolicy
+		reverse_proxy ao:8090
+	}
+
+	# The setup-wizard PAGE (served by the admin backend at /setup).
+	handle /setup* {
+		authorize with mypolicy
+		reverse_proxy ao:8090
+	}
+
+	# Setup terminal (ttyd on :7990) — operator runs `gh auth login` here; ttyd's
+	# own UI + WS served under /shell, WS Upgrade proxied behind the gate.
+	handle /shell-claude* {
+		authorize with mypolicy
+		reverse_proxy ao:7991
+	}
+	handle /shell* {
+		authorize with mypolicy
+		reverse_proxy ao:7990
+	}
+
+	# Terminal WebSocket: the browser opens same-origin wss://<host>/terminal-ws?session=<id>
+	# (NEXT_PUBLIC_TERMINAL_WS_PATH). The real node-pty WS server is direct-terminal-ws.js on
+	# :14801 and only completes the upgrade on the exact path /ws, so rewrite the path
+	# (preserving ?session=) before proxying. :14800 is the ttyd HTTP manager with NO upgrade
+	# handler — proxying there left the socket hanging forever ("connecting"). Caddy handles
+	# the WS Upgrade automatically; the JWT cookie rides the handshake.
+	handle /terminal-ws* {
+		authorize with mypolicy
+		rewrite * /ws?{query}
+		reverse_proxy ao:14801
+	}
+
+	# Everything else: the TS agent-orchestrator dashboard (Next.js on :3000) —
+	# serves the UI + its own /api/* (SSE via flush_interval -1). Next binds
+	# 0.0.0.0 so Caddy reaches it directly (no socat bridge).
+	handle {
+		authorize with mypolicy
+		reverse_proxy ao:3000 {
+			flush_interval -1
+		}
+	}
+}

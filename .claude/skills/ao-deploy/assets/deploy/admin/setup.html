@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bot setup · agent-orchestrator</title>
+<style>
+  :root {
+    --bg:#0b0d12; --panel:#151922; --panel2:#1b2130; --line:#262d3d;
+    --fg:#e6e9ef; --muted:#9aa4b8; --accent:#4f83ff; --ok:#37c281; --warn:#e0a44a; --err:#e56a6a;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:720px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 28px; font-size:14px; }
+  .step { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin:0 0 14px; }
+  .step h2 { font-size:15px; margin:0 0 2px; display:flex; align-items:center; gap:10px; }
+  .step .desc { color:var(--muted); font-size:13px; margin:0 0 14px; }
+  .badge { font-size:11px; font-weight:600; padding:2px 8px; border-radius:20px; border:1px solid var(--line); color:var(--muted); }
+  .badge.done { color:var(--ok); border-color:rgba(55,194,129,.4); background:rgba(55,194,129,.08); }
+  .badge.pend { color:var(--warn); border-color:rgba(224,164,74,.4); background:rgba(224,164,74,.08); }
+  input, select { width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--fg); border-radius:8px; padding:10px 12px; font:inherit; }
+  input:focus, select:focus { outline:none; border-color:var(--accent); }
+  .row { display:flex; gap:10px; align-items:center; margin-top:10px; }
+  .row > input, .row > select { flex:1; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 16px; font:inherit; font-weight:600; cursor:pointer; white-space:nowrap; }
+  button.sec { background:var(--panel2); border:1px solid var(--line); color:var(--fg); }
+  button:disabled { opacity:.5; cursor:default; }
+  .msg { font-size:13px; margin-top:10px; min-height:1em; }
+  .msg.err { color:var(--err); } .msg.ok { color:var(--ok); }
+  .connected { color:var(--ok); font-size:14px; }
+  code { background:var(--panel2); padding:1px 6px; border-radius:5px; font-size:13px; }
+  .applybar { position:sticky; bottom:0; background:linear-gradient(transparent,var(--bg) 40%); padding-top:24px; margin-top:8px; }
+  .apply { width:100%; padding:14px; font-size:16px; }
+  .hint { color:var(--muted); font-size:12px; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Set up this bot</h1>
+  <p class="sub">Connect a repo and your tokens. Everything stays on this bot — nobody else sees your credentials.</p>
+
+  <div class="step" id="s-github">
+    <h2>1 · GitHub <span class="badge pend" id="b-github">…</span></h2>
+    <div class="desc">Opens a terminal on the bot running <code>gh auth login</code>. Choose “Login with a web browser”, then approve the code at github.com/login/device. Token stored on-box for cloning + PRs.</div>
+    <div id="github-connected" style="display:none" class="connected"></div>
+    <div id="github-form">
+      <button id="gh-login-btn">Open terminal &amp; log in</button>
+      <div id="gh-term" style="display:none;margin-top:14px">
+        <iframe id="gh-iframe" src="about:blank" title="gh auth login" style="width:100%;height:440px;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
+        <div class="msg" id="gh-term-status" style="margin-top:8px;color:var(--muted)">Waiting for you to finish logging in…</div>
+      </div>
+    </div>
+    <div class="msg" id="m-github"></div>
+  </div>
+
+  <div class="step" id="s-repo">
+    <h2>2 · Repository <span class="badge pend" id="b-repo">…</span></h2>
+    <div class="desc">Pick the owner (you or an org), then search for the repo this bot works on (cloned + auto-pulled every 30 min). Not saved until “Save &amp; start”.</div>
+    <div class="row">
+      <select id="owner"><option value="">— owner —</option></select>
+      <input id="repo" list="repo-list" placeholder="connect GitHub first" autocomplete="off" style="flex:2" />
+      <datalist id="repo-list"></datalist>
+      <button class="sec" id="repo-refresh">Refresh</button>
+    </div>
+    <div class="hint">Type to filter, or enter <code>owner/name</code> directly. Org missing? Your login may need SSO authorization for it.</div>
+    <div class="msg" id="m-repo"></div>
+  </div>
+
+  <div class="step" id="s-linear">
+    <h2>3 · Linear <span class="badge pend" id="b-linear">…</span></h2>
+    <div class="desc">API key, the team whose tickets this bot watches, and the trigger label (tag) it filters on.</div>
+    <div class="row"><input id="linear-key" type="password" placeholder="lin_api_… (leave blank if already saved)" autocomplete="off" /><button class="sec" id="linear-btn">List teams</button></div>
+    <div class="row"><select id="team"><option value="">— team —</option></select></div>
+    <div class="row"><select id="label"><option value="">— trigger label (pick a team first) —</option></select><select id="status"><option value="">— any status —</option></select></div>
+    <div class="hint">The bot only picks up tickets matching the <b>label</b> and/or <b>status</b>. Leave both to watch <b>all</b> of the team's tickets. Or type a label: <input id="label-manual" placeholder="e.g. agent" style="width:auto;display:inline-block;padding:4px 8px" /></div>
+    <div class="msg" id="m-linear"></div>
+  </div>
+
+  <div class="step" id="s-claude">
+    <h2>4 · Claude <span class="badge pend" id="b-claude">…</span></h2>
+    <div class="desc">Run <code>claude setup-token</code> on your own machine (a browser opens; it prints an <code>sk-ant-oat01-…</code> token), then paste that token below. It's routed to <code>CLAUDE_CODE_OAUTH_TOKEN</code> for the agents.</div>
+    <div id="claude-connected" style="display:none" class="connected"></div>
+    <div id="claude-form">
+      <div class="row"><input id="claude-key" type="password" placeholder="sk-ant-oat01-… (from claude setup-token)" autocomplete="off" /></div>
+      <div class="hint" style="margin-top:10px">Copy the <b>full</b> token — it's long and starts with <code>sk-ant-oat01-</code>. (An <code>sk-ant-api…</code> API key also works and routes to API billing.)</div>
+    </div>
+    <div class="msg" id="m-claude"></div>
+  </div>
+
+  <div class="applybar">
+    <button class="apply" id="apply-btn" disabled>Save &amp; start the bot</button>
+    <div class="msg" id="m-apply"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const api = async (path, opts) => {
+  const r = await fetch("/admin/api" + path, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+};
+const post = (p, body) => api(p, { method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify(body||{}) });
+const setBadge = (id, done) => { const b=$(id); b.textContent = done?"done":"pending"; b.className = "badge "+(done?"done":"pend"); };
+const msg = (id, text, cls) => { const m=$(id); m.textContent=text||""; m.className="msg"+(cls?" "+cls:""); };
+
+let state = {};
+let draft = {};
+// Persist in-progress selections (debounced) so a refresh restores them.
+let draftTimer = null;
+function persistDraft() {
+  draft = {
+    owner: $("owner").value,
+    repo: $("repo").value.trim(),
+    teamId: $("team").value,
+    label: ($("label-manual").value.trim() || $("label").value),
+    statusName: $("status").value,
+  };
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => { post("/draft", draft).catch(() => {}); }, 500);
+}
+function refreshApplyEnabled() {
+  const repo = $("repo").value.trim();
+  const team = $("team").value;
+  // A key counts if it's already saved (state) OR typed now (saved on start).
+  const linearOk = state.linear || !!$("linear-key").value.trim();
+  const claudeOk = state.claude || !!$("claude-key").value.trim();
+  $("apply-btn").disabled = !(state.github?.connected && repo && team && linearOk && claudeOk);
+}
+
+async function load() {
+  state = await api("/setup");
+  draft = state.draft || {};
+  // GitHub
+  setBadge("b-github", state.github.connected);
+  if (state.github.connected) {
+    $("github-connected").style.display=""; $("github-connected").textContent = "Connected as " + state.github.login;
+    $("github-form").style.display="none";
+    loadOwners();
+  }
+  // Linear / Claude
+  setBadge("b-linear", state.linear); setBadge("b-claude", state.claude);
+  // Show a "connected" note but ALWAYS keep the field usable so the token can be
+  // re-entered/replaced (redo auth) without a dead-end.
+  if (state.claude) { $("claude-connected").style.display=""; $("claude-connected").textContent = "Claude token set — paste a new one below to replace it."; }
+  // If the Linear key is already saved, auto-list teams and restore the selections.
+  if (state.linear) { listTeams(true); }
+  // Existing project → prefill + offer the dashboard
+  if (state.project) {
+    setBadge("b-repo", true);
+    if (state.worker?.running) {
+      $("m-apply").className = "msg ok";
+      $("m-apply").innerHTML = 'Bot running (worker pid '+state.worker.pid+'). <a href="/" style="color:var(--accent)">Open the dashboard →</a>';
+    } else {
+      msg("m-apply","Project set; worker not running yet.");
+    }
+  }
+  refreshApplyEnabled();
+}
+
+async function loadOwners() {
+  try {
+    const { owners, login } = await api("/github/owners");
+    const sel = $("owner"); sel.innerHTML = "";
+    for (const o of owners) { const opt=document.createElement("option"); opt.value=o; opt.textContent = o===login ? o+" (you)" : o; sel.appendChild(opt); }
+    // Prefer the draft owner, then an existing project's owner, else you.
+    sel.value = draft.owner || (state.project ? state.project.repo.split("/")[0] : login);
+    await loadRepos(sel.value);
+  } catch (e) { msg("m-repo", e.message, "err"); }
+}
+async function loadRepos(owner) {
+  const dl = $("repo-list"), inp = $("repo");
+  inp.placeholder = "loading…"; dl.innerHTML = "";
+  try {
+    const { repos } = await api("/github/repos" + (owner ? "?owner="+encodeURIComponent(owner) : ""));
+    for (const r of repos) { const o=document.createElement("option"); o.value=r.nameWithOwner; dl.appendChild(o); }
+    inp.placeholder = repos.length ? ("type to search ("+repos.length+" repos)") : "type owner/name";
+    if (!inp.value) inp.value = draft.repo || (state.project ? state.project.repo : "");
+    if (!repos.length) msg("m-repo","No repos for "+owner+" (SSO not authorized? type owner/name directly).","err"); else msg("m-repo","");
+    setBadge("b-repo", !!inp.value.trim());
+  } catch (e) { inp.placeholder="error"; msg("m-repo", e.message, "err"); }
+}
+
+// Open the on-box setup terminal (ttyd → tmux → gh auth login) and poll gh status.
+let ghPoll = null;
+$("gh-login-btn").onclick = async () => {
+  $("gh-login-btn").disabled=true; msg("m-github","Starting terminal…");
+  try {
+    await post("/shell/start", { which: "github" });
+    $("gh-term").style.display="";
+    // ttyd needs a beat to bind before the iframe loads its UI + WS.
+    setTimeout(() => { $("gh-iframe").src = "/shell/"; }, 900);
+    msg("m-github","");
+    if (ghPoll) clearInterval(ghPoll);
+    ghPoll = setInterval(async () => {
+      try {
+        const s = await api("/setup");
+        if (s.github.connected) {
+          clearInterval(ghPoll);
+          $("gh-term-status").textContent = "";
+          await load();
+          msg("m-github","Connected as "+s.github.login+".","ok");
+        }
+      } catch (e) { /* transient — keep polling */ }
+    }, 3000);
+  } catch (e) { msg("m-github", e.message, "err"); $("gh-login-btn").disabled=false; }
+};
+// Claude uses a pasted setup-token (routed to CLAUDE_CODE_OAUTH_TOKEN on save) — the
+// in-bot terminal login was unreliable for pasting, so there's no cl-login button.
+$("owner").onchange = () => { loadRepos($("owner").value); persistDraft(); };
+$("repo-refresh").onclick = () => loadRepos($("owner").value);
+$("repo").oninput = () => { setBadge("b-repo", !!$("repo").value.trim()); refreshApplyEnabled(); persistDraft(); };
+
+// List teams with the typed key (or an already-saved one). When freshly typed, we
+// persist the key so it survives a refresh; then restore team/label/status from the draft.
+async function listTeams(fromLoad) {
+  const key = $("linear-key").value.trim();
+  $("linear-btn").disabled=true; if (!fromLoad) msg("m-linear","Listing teams…");
+  try {
+    const { teams } = await post("/linear/teams", key ? { apiKey:key } : {});
+    const sel = $("team"); sel.innerHTML = '<option value="">— team —</option>';
+    for (const t of teams) { const o=document.createElement("option"); o.value=t.id; o.textContent=t.name+" ("+t.key+")"; sel.appendChild(o); }
+    if (key) { await post("/tokens", { linear: key }); state.linear = true; setBadge("b-linear", true); $("linear-key").value=""; }
+    // Restore the saved team + its label/status.
+    if (draft.teamId) {
+      sel.value = draft.teamId;
+      if (sel.value === draft.teamId) {
+        await loadLabels(draft.teamId); await loadStatuses(draft.teamId);
+        if (draft.label) { $("label").value = draft.label; if ($("label").value !== draft.label) $("label-manual").value = draft.label; }
+        if (draft.statusName) $("status").value = draft.statusName;
+      }
+    }
+    if (!fromLoad) msg("m-linear","Pick a team, then a trigger label/status.","ok");
+    refreshApplyEnabled();
+  } catch (e) { msg("m-linear", e.message, "err"); } finally { $("linear-btn").disabled=false; }
+}
+$("linear-btn").onclick = () => listTeams(false);
+async function loadLabels(teamId) {
+  const sel = $("label");
+  if (!teamId) { sel.innerHTML = '<option value="">— trigger label (pick a team first) —</option>'; return; }
+  sel.innerHTML = '<option value="">— loading labels… —</option>';
+  const key = $("linear-key").value.trim();
+  try {
+    const { labels } = await post("/linear/labels", key ? { teamId, apiKey:key } : { teamId });
+    sel.innerHTML = '<option value="">— any ticket (no label filter) —</option>';
+    for (const name of labels) { const o=document.createElement("option"); o.value=name; o.textContent=name; sel.appendChild(o); }
+  } catch (e) { sel.innerHTML='<option value="">— (couldn\'t load; type one below) —</option>'; msg("m-linear", e.message, "err"); }
+}
+async function loadStatuses(teamId) {
+  const sel = $("status");
+  if (!teamId) { sel.innerHTML = '<option value="">— any status —</option>'; return; }
+  sel.innerHTML = '<option value="">— loading… —</option>';
+  const key = $("linear-key").value.trim();
+  try {
+    const { statuses } = await post("/linear/statuses", key ? { teamId, apiKey:key } : { teamId });
+    sel.innerHTML = '<option value="">— any status —</option>';
+    for (const s of statuses) { const o=document.createElement("option"); o.value=s.name; o.textContent=s.name; sel.appendChild(o); }
+  } catch (e) { sel.innerHTML='<option value="">— any status —</option>'; }
+}
+$("team").onchange = () => { loadLabels($("team").value); loadStatuses($("team").value); refreshApplyEnabled(); persistDraft(); };
+$("status").onchange = () => { refreshApplyEnabled(); persistDraft(); };
+$("label").onchange = () => { refreshApplyEnabled(); persistDraft(); };
+$("label-manual").oninput = () => { refreshApplyEnabled(); persistDraft(); };
+$("linear-key").oninput = refreshApplyEnabled;
+$("claude-key").oninput = refreshApplyEnabled;
+
+$("apply-btn").onclick = async () => {
+  const repo = $("repo").value.trim();
+  const teamId = $("team").value;
+  const label = ($("label-manual").value.trim() || $("label").value);
+  const statusName = $("status").value;
+  const linear = $("linear-key").value.trim();
+  const anthropic = $("claude-key").value.trim();
+  $("apply-btn").disabled=true; msg("m-apply","Checking GitHub, Linear key, team, repo & keys — then starting (bot restarts ~30s)…");
+  try {
+    await post("/start", { repo, teamId, label, statusName, linear, anthropic });
+    // The container restarts; poll /setup until it answers with a running worker.
+    let tries=0;
+    const poll = setInterval(async () => {
+      tries++;
+      try {
+        const s = await api("/setup");
+        if (s.project && s.worker?.running) {
+          clearInterval(poll);
+          msg("m-apply","✓ Bot running — poller active (pid "+s.worker.pid+"). Opening the dashboard…","ok");
+          setTimeout(() => { location.href = "/"; }, 1200); // the AO dashboard is the root
+        }
+        else if (s.project) { msg("m-apply","Restarted; waiting for the worker…"); }
+      } catch { msg("m-apply","Restarting… ("+tries+")"); }
+      if (tries>40) { clearInterval(poll); msg("m-apply","Applied. If the worker isn't up, check the bot logs.","err"); }
+    }, 3000);
+  } catch (e) { msg("m-apply", e.message, "err"); $("apply-btn").disabled=false; }
+};
+
+load().catch((e) => msg("m-apply", "Failed to load state: "+e.message, "err"));
+</script>
+</body>
+</html>
