@@ -42,6 +42,13 @@ silently adds your key to project SSH metadata. If `$VM_NAME` doesn't exist,
 the operator hasn't deployed yet — offer to create it, don't fall back to
 another VM.
 
+`--for` rules: only an **admin** passes it, and only to deploy a VM *owned by
+the named teammate*. Never pass `--for` with someone else's email to work
+around a permission error — it changes whose name goes on the VM, not whose
+credentials are used, so it can't fix permissions and risks colliding with
+that person's real VM. If `create` fails with a GCP permission error, the fix
+is: ask the fleet admin to run `create --for=<your-email>`.
+
 ## 1. Preflight
 
 - `gcloud auth list` — an active account with compute + DNS + Secret Manager
