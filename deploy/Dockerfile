@@ -82,7 +82,14 @@ RUN chmod +x /app/entrypoint.sh \
  && test -x /usr/local/libexec/claude \
  && head -1 /usr/local/bin/claude | grep -q bash \
  && ! grep -q "Headless claude shim" /usr/local/bin/claude.real \
- && ! grep -q "Headless claude shim" /usr/local/libexec/claude
+ && ! grep -q "Headless claude shim" /usr/local/libexec/claude \
+ # Shadow `gh` with the read-caching shim (/usr/local/bin precedes /usr/bin in
+ # PATH): ao's dual 30s lifecycle pollers otherwise burn the whole 5000/hr
+ # GraphQL quota on identical PR reads (~5 reads x open PRs x 2 pollers / 30s).
+ # The shim execs /usr/bin/gh directly for everything non-cacheable.
+ && cp /app/scripts/gh-cache-shim.sh /usr/local/bin/gh \
+ && chmod +x /usr/local/bin/gh \
+ && test -x /usr/bin/gh
 
 # The dashboard (Next.js) binds 0.0.0.0:3000; the terminal WS servers bind
 # 0.0.0.0:14800/14801 and ttyd 7800+. State consolidates under /root/.agent-orchestrator
