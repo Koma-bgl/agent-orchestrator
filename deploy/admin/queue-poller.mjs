@@ -422,7 +422,11 @@ export function parseSessionRecord(text) {
   return rec;
 }
 
-const reclaimed = new Set(); // session id -> already retired (dedup)
+// Dedup key is "id:issueId", NOT the bare session id: ids are RECYCLED (ao's
+// next-id is max(existing records)+1, and reclaim removes records), so a bare-id
+// set would permanently skip the next ticket that lands on a freed id — its
+// merged session then lingers forever (worktree disk + PR enrichment rate burn).
+const reclaimed = new Set();
 
 // Retire sessions whose PR has merged: remove the git worktree (frees disk) and the
 // store record (stops ao-web enriching it). STRICTLY gated on status===merged from BOTH
@@ -431,10 +435,11 @@ const reclaimed = new Set(); // session id -> already retired (dedup)
 async function cleanupMerged(pid, p, sessions) {
   const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
   for (const s of sessions) {
-    if (s.projectId !== pid || s.status !== "merged" || reclaimed.has(s.id)) continue;
+    const key = `${s.id}:${s.issueId}`;
+    if (s.projectId !== pid || s.status !== "merged" || reclaimed.has(key)) continue;
     const f = join(sessDir, s.id);
     try {
-      if (!existsSync(f)) { reclaimed.add(s.id); continue; }
+      if (!existsSync(f)) { reclaimed.add(key); continue; }
       const rec = parseSessionRecord(readFileSync(f, "utf8"));
       if (rec.status !== "merged") continue; // authoritative store must agree — belt + suspenders
       // Kill the tmux session FIRST. Leaving it running leaks an idle claude (RAM)
@@ -453,13 +458,37 @@ async function cleanupMerged(pid, p, sessions) {
         });
       }
       rmSync(f); // remove the session record → ao-web stops listing/enriching it
-      reclaimed.add(s.id);
+      reclaimed.add(key);
       console.log(`[queue-poller] reclaimed merged session ${s.id} (${s.issueId}) — worktree + record removed`);
     } catch (e) {
       console.log(`[queue-poller] reclaim failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
     }
   }
   await execFileAsync("git", ["-C", p.path, "worktree", "prune"], { env: process.env, timeout: 30_000 }).catch(() => {});
+}
+
+// --- Branch-drift repair -------------------------------------------------------
+// Repo pre-push hooks can reject ao's spawn-time branch name (valhalla's rejects
+// `feat/…`), so the agent renames its branch before pushing. ao's record keeps the
+// old name, so the session's PR is never matched: no pr= link, status decays to
+// "stuck", the active count stays inflated, and spawning starves. The worktree's
+// actual HEAD is the truth — rewrite the record's branch to it and let the next
+// lifecycle pass link the PR and heal the status.
+async function repairBranchDrift(sessions, sessDir) {
+  for (const s of sessions) {
+    if (DEAD.has(s.status)) continue;
+    const f = join(sessDir, s.id);
+    let text, rec;
+    try { text = readFileSync(f, "utf8"); rec = parseSessionRecord(text); } catch { continue; }
+    if (!rec.branch || !rec.worktree || !existsSync(rec.worktree)) continue;
+    let actual;
+    try { ({ stdout: actual } = await execFileAsync("git", ["-C", rec.worktree, "rev-parse", "--abbrev-ref", "HEAD"], { env: process.env, timeout: 15_000 })); }
+    catch { continue; }
+    actual = actual.trim();
+    if (!actual || actual === "HEAD" || actual === rec.branch) continue; // detached HEAD (mid-rebase): skip
+    writeFileSync(f, text.replace(/^branch=.*$/m, `branch=${actual}`));
+    console.log(`[queue-poller] repaired branch drift for ${s.id}: ${rec.branch} -> ${actual}`);
+  }
 }
 
 // --- Orphan tmux reaper --------------------------------------------------------
@@ -608,6 +637,8 @@ async function pollProject(pid, p) {
   // contains it — its later pr_open/review transition must be driven off the live
   // session list, which is independent of whether anything new is waiting to spawn.
   const sessions = await listSessions();
+  const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
+  await repairBranchDrift(sessions, sessDir); // fix record<->worktree branch drift BEFORE any PR matching
   await syncStatuses(p.tracker.teamId, sessions, qp);
   await recoverStuck(sessions); // re-deliver the prompt to any session ao left stuck at launch
   await syncContext(sessions); // keep .ao-task.md current + surface new/truncated comments to the agent
@@ -622,7 +653,25 @@ async function pollProject(pid, p) {
   if (!issues.length) return;
 
   const live = new Set(sessions.filter((s) => s.issueId && !DEAD.has(s.status)).map((s) => String(s.issueId).toLowerCase()));
-  let active = sessions.filter((s) => !DEAD.has(s.status) && !IDLE.has(s.status)).length;
+  // ao's live status flaps when its PR polling is rate-limited (review_pending
+  // sessions get re-reported as working/stuck), which inflates a naive status
+  // count and starves spawning for days. Authoritative "busy" instead: a session
+  // with NO PR linked in the store is still building (or launch-stuck — the
+  // watchdog owns that); one WITH a PR is only busy while claude has an in-flight
+  // turn (reacting to CI/review feedback). Idle-at-prompt + PR open = waiting on
+  // review, never a slot-holder.
+  let active = 0;
+  for (const s of sessions) {
+    if (DEAD.has(s.status) || IDLE.has(s.status)) continue;
+    let rec = null;
+    try { rec = parseSessionRecord(readFileSync(join(sessDir, s.id), "utf8")); } catch { /* no record: trust live status */ }
+    if (rec && rec.pr) {
+      const tmuxName = rec.tmuxName || s.tmuxName;
+      const busy = tmuxName ? /esc to interrupt/.test(await paneText(tmuxName)) : false;
+      if (!busy) continue;
+    }
+    active++;
+  }
 
   for (const issue of issues) {
     if (live.has(issue.toLowerCase())) continue;               // already has a live session
