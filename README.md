@@ -1,230 +1,219 @@
 <div align="center">
 
-# Agent Orchestrator — The Orchestration Layer for Parallel AI Agents
+<p style="text-align: center;"><img src="ao-logo.svg" alt="Agent Orchestrator" width="200" height="200" style="max-width: 100%; height: auto; margin-left: 50px;" /></p>
 
-Spawn parallel AI coding agents, each in its own git worktree. Agents autonomously fix CI failures, address review comments, and open PRs — you supervise from one dashboard.
+# Agent Orchestrator
 
-[![GitHub stars](https://img.shields.io/github/stars/ComposioHQ/agent-orchestrator?style=flat-square)](https://github.com/ComposioHQ/agent-orchestrator/stargazers)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![PRs merged](https://img.shields.io/badge/PRs_merged-61-brightgreen?style=flat-square)](https://github.com/ComposioHQ/agent-orchestrator/pulls?q=is%3Amerged)
-[![Tests](https://img.shields.io/badge/test_cases-3%2C288-blue?style=flat-square)](https://github.com/ComposioHQ/agent-orchestrator/releases/tag/metrics-v1)
+**The orchestration layer for parallel AI coding agents**
+
+[![Stars](https://img.shields.io/github/stars/AgentWrapper/agent-orchestrator)](https://github.com/AgentWrapper/agent-orchestrator/stargazers)
+[![Contributors](https://img.shields.io/github/contributors/AgentWrapper/agent-orchestrator)](https://github.com/AgentWrapper/agent-orchestrator/graphs/contributors)
+[![Twitter](https://img.shields.io/badge/Twitter-1DA1F2?logo=twitter&logoColor=white)](https://x.com/aoagents)
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/UZv7JjxbwG)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+
+An Agentic IDE that supervises parallel AI coding agents in isolated workspaces, with complete control and automatic feedback loops from CI failures, review comments, and merge conflicts.
+
+![Agent Orchestrator Dashboard](ao-dashboard-preview.png)
+
+### Witness AO's Journey on X
+
+<table border="1" style="border-collapse: collapse; width: 100%;">
+<tr>
+<td style="padding: 10px; text-align: center; border: 1px solid #ddd;">
+<a href="https://x.com/agent_wrapper/status/2026329204405723180"><img src="screenshots/first.png" alt="First" width="400"></a><br><br>
+<a href="https://x.com/agent_wrapper/status/2026329204405723180">Visit</a>
+</td>
+<td style="padding: 10px; text-align: center; border: 1px solid #ddd;">
+<a href="https://x.com/agent_wrapper/status/2025986105485733945"><img src="screenshots/second.png" alt="Second" width="400"></a><br><br>
+<a href="https://x.com/agent_wrapper/status/2025986105485733945">Visit</a>
+</td>
+</tr>
+<tr>
+<td style="padding: 10px; text-align: center; border: 1px solid #ddd;">
+<a href="https://x.com/agent_wrapper/status/2064157228400341312"><img src="screenshots/third.png" alt="Third" width="400"></a><br><br>
+<a href="https://x.com/agent_wrapper/status/2064157228400341312">Visit</a>
+</td>
+<td style="padding: 10px; text-align: center; border: 1px solid #ddd;">
+<a href="https://x.com/agent_wrapper/status/2024885035774738700?s=20"><img src="screenshots/image.png" alt="Fourth" width="400"></a><br><br>
+<a href="https://x.com/agent_wrapper/status/2024885035774738700?s=20">Visit</a>
+</td>
+</tr>
+</table>
+
+[Features](#features) • [Quick Start](#quick-start) • [Architecture](#architecture) • [Documentation](#documentation) • [Contributing](#contributing)
 
 </div>
 
 ---
 
-Agent Orchestrator manages fleets of AI coding agents working in parallel on your codebase. Each agent gets its own git worktree, its own branch, and its own PR. When CI fails, the agent fixes it. When reviewers leave comments, the agent addresses them. You only get pulled in when human judgment is needed.
+## Features
 
-**Agent-agnostic** (Claude Code, Codex, Aider) · **Runtime-agnostic** (tmux, Docker) · **Tracker-agnostic** (GitHub, Linear)
+| Feature                        | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| :----------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Agent-Agnostic Platform**    | 23+ agent adapters including [Claude Code](https://code.claude.com/docs/en/overview), [OpenAI Codex](https://openai.com/), [Cursor](https://cursor.com/), [OpenCode](https://opencode.ai/), [Aider](https://aider.chat/), [Amp](https://ampcode.com/manual), [Goose](https://goose-docs.ai/), [GitHub Copilot](https://github.com/features/copilot), [Grok](https://x.ai/grok), [Qwen Code](https://github.com/QwenLM/qwen-code), [Kimi Code](https://www.kimi.com/code), [Cline](https://cline.bot/), [Continue](https://www.continue.dev/), [Kiro](https://kiro.dev/), and more |
+| **Isolated Workspaces**        | Each session spawns into its own git worktree with dedicated runtime                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Platform-Native Runtimes**   | tmux on Darwin/Linux, conpty on Windows for optimal performance                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Live PR Observation**        | Provider-neutral SCM observer with automatic feedback routing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Automatic Feedback Routing** | CI failures, review comments, and merge conflicts routed to the owning agent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **Durable Facts Storage**      | SQLite persists immutable facts with display status derived at read time                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **CDC Broadcasting**           | DB triggers append changes to change_log, broadcasted via SSE                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Desktop Experience**         | Native Electron app with React UI and live terminal streaming                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Loopback-Only Daemon**       | HTTP control over 127.0.0.1 with no auth, CORS, or TLS by design                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
-<!-- TODO: Add dashboard screenshot or terminal GIF showing 10+ sessions with attention zones -->
+### Supported Agents
+
+Works with 23+ CLI-based coding agents including Claude Code, OpenAI Codex, Cursor, OpenCode, Aider, Amp, Goose, GitHub Copilot, Grok, Qwen Code, Kimi Code, Crush, Cline, Droid, Devin, Auggie, Continue, Kiro, and Kilo Code.
+
+**If it runs in a terminal, it runs on Agent Orchestrator.**
+
+---
 
 ## Quick Start
 
-```bash
-# Install
-git clone https://github.com/ComposioHQ/agent-orchestrator.git
-cd agent-orchestrator && bash scripts/setup.sh
+### Prerequisites
 
-# Configure your project
-cd ~/your-project && ao init --auto
+| Requirement | Minimum | Recommended |
+| ----------- | ------- | ----------- |
+| Go          | 1.25+   | Latest      |
+| Node.js     | 20+     | Latest LTS  |
+| Git         | Any     | Latest      |
+| pnpm        | Any     | Latest      |
 
-# Launch and spawn an agent
-ao start
-ao spawn my-project 123    # GitHub issue, Linear ticket, or ad-hoc
-```
+**Optional:**
 
-Dashboard opens at `http://localhost:3000`. Run `ao status` for the CLI view.
+- `tmux` (Darwin/Linux) - For Unix runtime
+- `gh` (GitHub CLI) - For authenticated GitHub API calls
 
-## How It Works
+### Installation
 
-```
-ao spawn my-project 123
-```
+Download the latest release for your platform:
 
-1. **Workspace** creates an isolated git worktree with a feature branch
-2. **Runtime** starts a tmux session (or Docker container)
-3. **Agent** launches Claude Code (or Codex, or Aider) with issue context + persona behavior
-4. Agent works autonomously — reads code, writes tests, creates PR
-5. **Lifecycle** monitors CI, reviews, merge conflicts — auto-handles or escalates
-6. **Reactions** auto-fix CI failures, forward review comments, auto-merge when approved
-7. **Visual Verification** captures screenshots before PR creation (optional, Playwright-based)
-8. **Notifier** pings you only when judgment is needed
+| Platform    | Download                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------- |
+| **Windows** | [Setup.exe](https://github.com/AgentWrapper/agent-orchestrator/releases/latest)                   |
+| **macOS**   | [Agent Orchestrator.dmg](https://github.com/AgentWrapper/agent-orchestrator/releases/latest)      |
+| **Linux**   | [Agent Orchestrator.AppImage](https://github.com/AgentWrapper/agent-orchestrator/releases/latest) |
 
-### Plugin Architecture
+**Direct Download:** [Latest Release](https://github.com/AgentWrapper/agent-orchestrator/releases/latest)
 
-Eight slots. Every abstraction is swappable.
+---
 
-| Slot | Default | Alternatives |
-|------|---------|-------------|
-| Runtime | tmux | docker, k8s, process |
-| Agent | claude-code | codex, aider, opencode |
-| Workspace | worktree | clone |
-| Tracker | github | linear |
-| SCM | github | — |
-| Notifier | desktop | slack, composio, webhook |
-| Terminal | iterm2 | web |
-| Lifecycle | core | — |
+## Telemetry
 
-All interfaces defined in [`packages/core/src/types.ts`](packages/core/src/types.ts). A plugin implements one interface and exports a `PluginModule`. That's it.
+Agent Orchestrator collects minimal telemetry for reliability and product understanding. Data is stored locally by default; remote transmission is opt-in via environment variables. [Read the full telemetry policy](docs/telemetry.md).
 
-## Configuration
+---
 
-```yaml
-# agent-orchestrator.yaml
-port: 3000
+## Architecture
 
-defaults:
-  runtime: tmux
-  agent: claude-code
-  workspace: worktree
-  notifiers: [desktop]
+Agent Orchestrator is a long-running Go daemon built around **inbound/outbound port contracts** with swappable adapters.
 
-projects:
-  my-app:
-    repo: owner/my-app
-    path: ~/my-app
-    defaultBranch: main
-    sessionPrefix: app
-    agentPersonas: [test-writer, security-auditor]  # combinable behavior profiles
+**Core mental model:** OBSERVE external facts → UPDATE durable facts → DERIVE display status / ACT
 
-    # Auto-spawn agents from issue tracker
-    queuePoller:
-      enabled: true
-      interval: 30s
-      maxSessions: 5
-      filters:
-        labels: [agent]
-        statusName: "Ready to start"
+**Key components:**
 
-    # Visual verification (Playwright screenshots before PR)
-    # verify:
-    #   enabled: true
-    #   baseUrl: http://localhost:3000
-    #   paths: [{ url: "/dashboard", name: "Dashboard" }]
+- **Frontend** - Electron + React UI with TanStack Router/Query and shadcn/ui
+- **Backend Daemon** - Go-based HTTP server with controllers, services, and adapters
+- **Runtime** - Platform-specific: `tmux` on Darwin/Linux, `conpty` on Windows
+- **Storage** - SQLite with change-data-capture (CDC) for real-time updates
+- **Adapters** - 23+ agent adapters, git worktree workspace, GitHub SCM integration
 
-reactions:
-  ci-failed:
-    auto: true
-    action: send-to-agent
-    retries: 2
-  changes-requested:
-    auto: true
-    action: send-comments-to-agent
-    escalateAfter: 30m
-  approved-and-green:
-    auto: true
-    action: auto-merge      # squash-merges when CI green + approved
-```
+For detailed architecture diagrams, data flows, and load-bearing rules, see [architecture.md](docs/architecture.md).
 
-CI fails → agent gets the logs and fixes it. Reviewer requests changes → agent addresses them. PR approved with green CI → auto-merge (or notify, your choice).
-
-### Agent Personas
-
-Personas are pre-built behavior profiles that shape how agents approach their work. Combine multiple personas per project — they stack.
-
-| Persona | Focus |
-|---------|-------|
-| `security-auditor` | Vulnerability scanning, dependency audits, secrets detection |
-| `code-reviewer` | Code quality, patterns, linting, dead code removal |
-| `test-writer` | Unit/integration/E2E tests, coverage, mocking |
-| `bug-fixer` | Root cause analysis, minimal fixes, regression tests |
-| `refactorer` | Behavior-preserving cleanup, type safety, modularity |
-| `full-stack-dev` | End-to-end feature implementation, API design, UI states |
-
-**Custom personas:** drop a `.md` file in the `personas/` directory (or set `personasDir` in config) and reference it by filename. No code changes needed.
-
-### Queue Poller
-
-Automatically spawn agent sessions from your issue tracker — no manual intervention needed. Configure filters (labels, status, assignee) and the poller picks up matching issues, spawns sessions, and moves issues to "In Progress".
-
-```yaml
-queuePoller:
-  enabled: true
-  interval: 30s
-  maxSessions: 5
-  filters:
-    labels: [agent]
-    statusName: "Ready to start"
-  onSpawn:
-    moveToStatus: "In Progress"
-```
-
-### Visual Verification
-
-Capture screenshots of your running app after agent changes — before the PR is even created. Supports authentication (Firebase, stored auth state), smart file-pattern matching (only runs when UI files are touched), and auto-posts screenshots as PR comments.
-
-```bash
-ao verify INT-123    # Run verification manually
-```
-
-### Auto-Merge & Lifecycle
-
-The lifecycle manager tracks every session through a full state machine: `spawning → working → pr_open → ci_failed/ci_passing → review_pending → approved → merged`. At each stage, configurable reactions handle the routine work:
-
-- **CI failures** → send logs to agent for auto-fix (with retry + escalation)
-- **Review comments** → forward to agent with file/line context
-- **Merge conflicts** → agent rebases and resolves
-- **Approved + CI green** → auto-merge (squash, merge, or rebase)
-
-Rate-limited GitHub API calls with exponential backoff and PR state caching for efficient polling.
-
-See [`agent-orchestrator.yaml.example`](agent-orchestrator.yaml.example) for the full reference.
-
-## CLI
-
-```bash
-ao status                              # Overview of all sessions
-ao spawn <project> [issue]             # Spawn an agent
-ao send <session> "Fix the tests"      # Send instructions
-ao session ls                          # List sessions
-ao session kill <session>              # Kill a session
-ao session restore <session>           # Revive a crashed agent
-ao verify <issue>                      # Run visual verification
-ao dashboard                           # Open web dashboard
-```
-
-## Why Agent Orchestrator?
-
-Running one AI agent in a terminal is easy. Running 30 across different issues, branches, and PRs is a coordination problem.
-
-**Without orchestration**, you manually: create branches, start agents, check if they're stuck, read CI failures, forward review comments, track which PRs are ready to merge, clean up when done.
-
-**With Agent Orchestrator**, you: `ao spawn` and walk away. The system handles isolation, feedback routing, and status tracking. You review PRs and make decisions — the rest is automated.
-
-## Prerequisites
-
-- **Node.js 20+** and **pnpm** (via `corepack enable`)
-- **Git 2.25+**
-- **tmux** (for default runtime — or set `runtime: process` to skip)
-- **Claude Code CLI** (default agent) — `npm install -g @anthropic-ai/claude-code && claude login`
-- **`gh` CLI** (for GitHub integration) — install and run `gh auth login`
-- **`LINEAR_API_KEY`** env var (if using Linear as issue tracker) — get from https://linear.app/settings/api
-- **gitleaks** (pre-commit secret scanning) — `brew install gitleaks`
-
-## Development
-
-```bash
-pnpm install && pnpm build    # Install and build all packages
-pnpm test                      # Run tests (3,288 test cases)
-pnpm dev                       # Start web dashboard dev server
-```
-
-See [CLAUDE.md](CLAUDE.md) for code conventions and architecture details.
+---
 
 ## Documentation
 
-| Doc | What it covers |
-|-----|---------------|
-| [Setup Guide](SETUP.md) | Detailed installation and configuration |
-| [Examples](examples/) | Config templates (GitHub, Linear, multi-project, auto-merge) |
-| [CLAUDE.md](CLAUDE.md) | Architecture, conventions, plugin pattern |
-| [Troubleshooting](TROUBLESHOOTING.md) | Common issues and fixes |
+| Document                                                 | Description                                             |
+| -------------------------------------------------------- | ------------------------------------------------------- |
+| [Architecture](docs/architecture.md)                     | System architecture, data flows, and load-bearing rules |
+| [Backend Code Structure](docs/backend-code-structure.md) | Package-by-package ownership and dependency rules       |
+| [AGENTS.md](AGENTS.md)                                   | Contributor and worker-agent contract                   |
+| [Agent Adapter Contract](docs/agent/README.md)           | Agent adapter interface and hook behavior               |
+
+---
+
+## Testing
+
+```bash
+# Backend tests
+cd backend
+go test -race ./...
+
+# Frontend tests
+cd frontend
+pnpm test
+
+# Full CI validation locally
+npx @redwoodjs/agent-ci run --all
+```
+
+---
+
+## Configuration
+
+All configuration is environment-driven. The daemon takes no config file.
+
+| Variable              | Default              | Purpose                     |
+| --------------------- | -------------------- | --------------------------- |
+| `AO_PORT`             | `3001`               | HTTP bind port              |
+| `AO_REQUEST_TIMEOUT`  | `60s`                | Per-request timeout         |
+| `AO_SHUTDOWN_TIMEOUT` | `10s`                | Graceful shutdown cap       |
+| `AO_RUN_FILE`         | `~/.ao/running.json` | PID/port handshake          |
+| `AO_DATA_DIR`         | `~/.ao/data`         | SQLite data directory       |
+| `AO_AGENT`            | `claude-code`        | Compatibility agent adapter |
+| `GITHUB_TOKEN`        | -                    | GitHub auth token           |
+
+### Health Checks
+
+```bash
+curl localhost:3001/healthz   # Liveness probe
+curl localhost:3001/readyz    # Readiness probe
+```
+
+---
 
 ## Contributing
 
-Contributions welcome. The plugin system makes it straightforward to add support for new agents, runtimes, trackers, and notification channels. Every plugin is an implementation of a TypeScript interface — see [CLAUDE.md](CLAUDE.md) for the pattern.
+We love contributions! Join our community on Discord to get started.
+
+### Join us on Discord
+
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white&logoSize=auto)](https://discord.com/invite/UZv7JjxbwG)
+
+**Daily contributor sync:** Every day at **10:00 PM IST**
+
+Get your issues verified by core contributors, ask questions, share progress, and learn from the community. New contributors are always welcome!
+
+**Why join Discord?**
+
+- Get your issues and PRs verified by core contributors before investing time
+- Learn from experienced contributors in daily sync calls
+- Share your progress and get feedback
+- Get help troubleshooting in real-time
+- Stay updated on the latest developments and roadmap
+
+### Quick Start
+
+1. **Join the Discord** - Connect with the community and get guidance
+2. **Read the contributor contract** - See [AGENTS.md](AGENTS.md) for repo layout, daemon/API boundaries, and coding conventions
+3. **Pick a focused problem** - Browse [open issues](https://github.com/AgentWrapper/agent-orchestrator/issues) and choose one small enough for a focused PR
+4. **Open a clear PR** - Keep changes narrow, explain user-visible impact, link issues, include tests
+5. **Iterate with contributors** - Use review feedback to tighten the PR until verified
+
+---
 
 ## License
 
-MIT
+Apache License 2.0 - see [LICENSE](LICENSE) for details.
+
+---
+
+<div align="center">
+
+**[Star us on GitHub](https://github.com/AgentWrapper/agent-orchestrator)** • **[Report Issues](https://github.com/AgentWrapper/agent-orchestrator/issues)** • **[Discussions](https://github.com/AgentWrapper/agent-orchestrator/discussions)**
+
+Made with love by the Agent Orchestrator community
+
+</div>

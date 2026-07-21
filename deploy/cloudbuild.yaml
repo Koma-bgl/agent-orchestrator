@@ -1,0 +1,24 @@
+# Cloud Build: build + push the fleet images to Artifact Registry.
+# Submitted by publish-image.sh with the deploy/ directory as context
+# (.gcloudignore keeps .env and other local-only files out of the upload).
+# Cloud Build machines are native amd64 — matches the VMs, no emulation.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - us-central1-docker.pkg.dev/$PROJECT_ID/ao-fleet/ao:latest
+      - -f
+      - Dockerfile
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - us-central1-docker.pkg.dev/$PROJECT_ID/ao-fleet/caddy:latest
+      - ./caddy
+images:
+  - us-central1-docker.pkg.dev/$PROJECT_ID/ao-fleet/ao:latest
+  - us-central1-docker.pkg.dev/$PROJECT_ID/ao-fleet/caddy:latest
+# The ao image npm-installs ao-cli + claude-code — allow a slow cold build.
+timeout: 1800s

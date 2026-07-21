@@ -1,0 +1,118 @@
+services:
+  ao:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Pinned to match the x86_64 VM + the x86_64 ttyd static binary in the image;
+    # emulated on arm64 dev machines, native on the VM.
+    platform: linux/amd64
+    image: ao-local:dev
+    env_file:
+      - .env
+    # init reaps zombies and forwards signals. LOAD-BEARING now: start-all.js is a
+    # Node PID 1 that spawns next + terminal servers + per-session ttyd children;
+    # init: true ensures ttyd grandchildren are reaped.
+    init: true
+    # `expose` makes these reachable as `ao:<port>` on the compose network for
+    # Caddy ONLY — never published to the host. 3000 = dashboard (Next.js), 8090 =
+    # admin/setup backend, 14800/14801 = terminal WS servers, 7800-7900 = per-session
+    # ttyd instances (terminal gating through Caddy is finalized in the live test).
+    expose:
+      - "3000"
+      - "8090"
+      - "14800"
+      - "14801"
+      - "7800-7900"
+      - "7990"    # setup terminal (ttyd for `gh auth login`)
+      - "7991"    # setup terminal (ttyd for `claude auth login`)
+    volumes:
+      # Durable state: ao-core writes config, sessions, worktrees, the worker PID,
+      # the gh config dir, cloned repos, and on-box secrets under
+      # /root/.agent-orchestrator — mount the volume there so all of it survives
+      # restarts/rebuilds/Watchtower recreate.
+      - ao-state:/root/.agent-orchestrator
+      # ao-cli@0.2.2 creates session worktrees at $HOME/.worktrees — OUTSIDE the data
+      # dir above — so give them their own persistent volume (as a REAL mount, not a
+      # symlink: a symlink would make claude's realpath cwd differ from the recorded
+      # workspacePath, breaking transcript-path encoding → activity misread as
+      # needs_input). Persisting them also keeps git worktree records coherent across
+      # a container recreate so `ao spawn` isn't wedged by an orphaned checkout.
+      - ao-worktrees:/root/.worktrees
+      # Persistent npm cache (npm_config_cache=/root/.npm in the Dockerfile). Each fresh
+      # worktree runs `npm ci`; a shared cache across sessions/recreates keeps it mostly
+      # offline (~2 min → seconds warm) instead of re-fetching the whole tree each time.
+      - ao-npm-cache:/root/.npm
+      # For the gcp secret source locally: mount your ADC read-only. Harmless if unused.
+      - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      # Drain gate: before Watchtower updates this container it runs drain-check.sh
+      # INSIDE it; a non-zero exit aborts the update (retried next poll), so a nightly
+      # update never kills an in-flight coding session — it waits for an idle window.
+      # Requires WATCHTOWER_LIFECYCLE_HOOKS=true (set on watchtower below).
+      com.centurylinklabs.watchtower.lifecycle.pre-update: "/app/scripts/drain-check.sh"
+      com.centurylinklabs.watchtower.lifecycle.pre-update-timeout: "1"
+    restart: unless-stopped
+
+  caddy:
+    build:
+      context: ./caddy
+    image: ao-caddy:dev
+    depends_on:
+      - ao
+    env_file:
+      - .env
+    environment:
+      # Local defaults; M7 overrides these with the real domain + drops tls internal.
+      AO_SITE_ADDRESS: ${AO_SITE_ADDRESS:-localhost:8443}
+      AO_SITE_URL: ${AO_SITE_URL:-https://localhost:8443}
+    # Only Caddy is published. Local: HTTPS on 8443 (Caddy internal cert).
+    # M7 switches to "80:80" + "443:443" for the public domain + Let's Encrypt.
+    ports:
+      - "8443:8443"
+    volumes:
+      # Our Caddyfile (read-only). Without this, Caddy runs the stock image
+      # default (a file-server welcome page) instead of the auth + proxy config.
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # (The old static monitoring SPA mount `./web:/srv` is gone — the TS
+      #  dashboard on :3000 is now the UI; Caddy only reverse-proxies.)
+      - caddy-data:/data      # cert/ACME storage; persists the internal CA locally
+      - caddy-config:/config
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+    restart: unless-stopped
+
+  watchtower:
+    image: containrrr/watchtower:1.7.1
+    restart: unless-stopped
+    volumes:
+      # Required: Watchtower recreates sibling containers via the Docker API.
+      # This is root-equivalent on the host — the documented trust boundary.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # Watchtower's client defaults to an ancient Docker API (1.25); modern
+      # daemons require >= 1.40. Pin a version within the daemon's supported range.
+      DOCKER_API_VERSION: "1.44"
+      # 6-field cron (sec min hr dom mon dow) = 00:00:00 daily.
+      WATCHTOWER_SCHEDULE: "0 0 0 * * *"
+      # Only touch containers we labelled; never update Watchtower itself.
+      WATCHTOWER_LABEL_ENABLE: "true"
+      # Enable pre/post-update lifecycle hooks so the ao drain-check gate runs.
+      WATCHTOWER_LIFECYCLE_HOOKS: "true"
+      # Remove the old image after a successful update.
+      WATCHTOWER_CLEANUP: "true"
+      # On-demand update API (M5 "update now" calls this); keep the schedule too.
+      WATCHTOWER_HTTP_API_UPDATE: "true"
+      WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_TOKEN:-changeme-local}
+      WATCHTOWER_HTTP_API_PERIODIC_POLLS: "true"
+    # API on container :8080 — exposed to the compose network for M5 only,
+    # NOT published to the host.
+    expose:
+      - "8080"
+
+volumes:
+  ao-state:
+  ao-worktrees:
+  ao-npm-cache:
+  caddy-data:
+  caddy-config:

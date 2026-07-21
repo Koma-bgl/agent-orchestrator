@@ -1,0 +1,103 @@
+{
+	# PUBLIC mode (on the VM): Caddy on 80/443, automatic Let's Encrypt for
+	# {$AO_SITE_ADDRESS} (the bot's fleet hostname, e.g. koma.binary-badger.xyz).
+	#
+	# M8a: bots are AUTHORIZE-ONLY. Authentication happens at the fleet SSO
+	# portal (auth.binary-badger.xyz, Cloud Run); it mints a domain-wide JWT
+	# cookie signed with the shared JWT_SHARED_KEY, which the policy below
+	# validates statelessly. No portal, no OAuth client, no per-bot Console steps.
+	order authorize before basicauth
+
+	security {
+		authorization policy mypolicy {
+			# Unauthenticated users are sent to the fleet portal ROOT (AO_AUTH_URL
+			# = https://auth.binary-badger.xyz/) — NOT straight at /oauth2/google,
+			# so the portal issues the token cookie + honors redirect_url.
+			set auth url {$AO_AUTH_URL}
+			crypto key verify {env.JWT_SHARED_KEY}
+			# Read the JWT from the cross-domain COOKIE (a browser only sends a
+			# cookie, never a Bearer header). Explicit + cookie-first.
+			set token sources cookie header query
+
+			# EMAIL ALLOWLIST — acl default is deny-unless-allowed. {$ALLOWED_EMAILS}
+			# is PARSE-TIME substitution: a space-separated value splats into a
+			# multi-value match ({env.…} would not). Empty/unset → Caddy fails to
+			# start (acceptable: the VM .env always sets it from dashboard-allowlist).
+			acl rule {
+				comment fleet allowlist
+				match email {$ALLOWED_EMAILS}
+				allow stop log info
+			}
+			acl rule {
+				comment default deny
+				match any
+				deny log warn
+			}
+
+			validate bearer header
+			inject headers with claims
+		}
+	}
+}
+
+{$AO_SITE_ADDRESS} {
+	# Public: automatic Let's Encrypt (HTTP-01 needs port 80 reachable — the
+	# firewall opens 80+443).
+
+	# Admin/setup-wizard backend (JSON) — authorized, proxied to the co-located
+	# admin server. Distinct /admin/api/* prefix, no collision with the dashboard.
+	handle /admin/api/* {
+		authorize with mypolicy
+		reverse_proxy ao:8090
+	}
+
+	# The setup-wizard PAGE (served by the admin backend at /setup).
+	handle /setup* {
+		authorize with mypolicy
+		reverse_proxy ao:8090
+	}
+
+	# Setup terminal (ttyd on :7990) — the operator runs `gh auth login` here. ttyd
+	# serves its own xterm UI + WS under /shell; Caddy proxies the WS Upgrade behind
+	# the gate (the JWT cookie rides the handshake).
+	handle /shell-claude* {
+		authorize with mypolicy
+		reverse_proxy ao:7991
+	}
+	handle /shell* {
+		authorize with mypolicy
+		reverse_proxy ao:7990
+	}
+
+	# Terminal WebSocket — the client builds a same-origin wss://<host>/terminal-ws
+	# URL (NEXT_PUBLIC_TERMINAL_WS_PATH). The real node-pty WS server is direct-terminal-ws.js
+	# on :14801 and only completes the upgrade on the exact path /ws, so rewrite the path
+	# (preserving ?session=) before proxying. :14800 is the ttyd HTTP manager with NO upgrade
+	# handler — proxying there left the socket hanging forever. Caddy handles the WS Upgrade
+	# automatically; the JWT cookie rides the handshake.
+	handle /terminal-ws* {
+		authorize with mypolicy
+		rewrite * /ws?{query}
+		reverse_proxy ao:14801
+	}
+
+	# Everything else: the TS agent-orchestrator dashboard (Next.js on :3000) —
+	# First-run signpost: ONLY the exact root document goes through the admin
+	# backend, which 302s to /setup until the bot is configured, then streams the
+	# dashboard root page through. Assets/API/WS all match other handles and go
+	# direct — this costs one internal hop per hard page-load of "/".
+	handle / {
+		authorize with mypolicy
+		reverse_proxy ao:8090
+	}
+
+	# it serves the UI AND its own /api/* (projects, sessions, spawn, events…).
+	# flush_interval -1 keeps the /api/events SSE stream unbuffered. Next.js binds
+	# 0.0.0.0 so the sibling Caddy reaches it directly (no socat bridge).
+	handle {
+		authorize with mypolicy
+		reverse_proxy ao:3000 {
+			flush_interval -1
+		}
+	}
+}
