@@ -6,7 +6,7 @@
 
 ## Purpose
 
-One command to exercise the **complete *real* deploy flow locally** — reading the
+One command to exercise the **complete _real_ deploy flow locally** — reading the
 operator's real secrets from their GCP project's Secret Manager — so they can see
 the actual gated dashboard, real Google sign-in, and real agents **on their laptop,
 before any VM and with no cloud spend.** It is the rehearsal of the eventual M8
@@ -16,7 +16,7 @@ credentials (not the dummy values used in the M1–M6 mechanics tier).
 ## What this is NOT (scope guard)
 
 - Not the VM provisioner (that's M7).
-- Not a secret *writer* — it **reads** existing secrets. It guides creation of any
+- Not a secret _writer_ — it **reads** existing secrets. It guides creation of any
   missing ones but does not own writing them (rotation stays in the M5 admin UI).
 - Not a new auth model — it reuses the committed deploy kit (`deploy/`) verbatim.
 
@@ -34,16 +34,16 @@ Two independent planes, stored in **two different places** by design:
 
 ### Secret Manager holds only the THREE shared gate secrets
 
-| Secret | Consumed by |
-|---|---|
+| Secret                              | Consumed by                     |
+| ----------------------------------- | ------------------------------- |
 | `google-oauth-client` (id + secret) | Caddy — powers the sign-in gate |
-| `jwt-shared-key` | Caddy — signs the session JWT |
-| `dashboard-allowlist` | Caddy — permitted Google emails |
+| `jwt-shared-key`                    | Caddy — signs the session JWT   |
+| `dashboard-allowlist`               | Caddy — permitted Google emails |
 
 These are **deployment-level, shared, create-once-read-many**. The Google OAuth
 client is tied to the **domain + project**, not a VM instance — recreate the box, it
-re-reads the same client. A new client is only needed for a *separate* deployment on
-a *different* domain.
+re-reads the same client. A new client is only needed for a _separate_ deployment on
+a _different_ domain.
 
 ### Agent credentials live on the box, NOT in Secret Manager
 
@@ -67,7 +67,7 @@ make in M7** (not yet implemented).
 
 ### The bootstrap credential (cannot live in Secret Manager)
 
-The GCP identity that *reads* Secret Manager can't itself be stored there
+The GCP identity that _reads_ Secret Manager can't itself be stored there
 (chicken-and-egg). It comes from the environment:
 
 - **VM (Phase 2):** the attached **service account** (metadata token). Nothing stored.
@@ -80,7 +80,7 @@ The GCP identity that *reads* Secret Manager can't itself be stored there
 - **Never embed:** the SA key JSON, any token, any secret value.
 - **Authenticate by impersonation:** the skill runs as the invoker's ADC and
   impersonates the SA (`--impersonate-service-account=<email>`) — keyless,
-  short-lived tokens, and the *exact* identity the VM will use (true rehearsal).
+  short-lived tokens, and the _exact_ identity the VM will use (true rehearsal).
   The ability to impersonate is governed by `roles/iam.serviceAccountTokenCreator`
   on the SA — so the skill is safe to share; GCP IAM gates who can actually use it.
 
@@ -108,7 +108,7 @@ The GCP identity that *reads* Secret Manager can't itself be stored there
 4. **Bring up + verify** — `docker compose up -d --build`; run the mechanics suite
    (healthy; `/` → 302 gated; `/api/v1/sessions`; spawn + SSE; Watchtower scheduled;
    `/admin/api/*` responds) and report pass/fail.
-5. **Optional live tier** — offer to open `https://localhost:8443` for a *real*
+5. **Optional live tier** — offer to open `https://localhost:8443` for a _real_
    Google sign-in (real client + localhost redirect) → populated dashboard.
    - **5b. On-box agent auth:** `docker compose exec ao gh auth login` and
      `claude setup-token` so agents can do real work — stored on the box's volume,
@@ -117,10 +117,10 @@ The GCP identity that *reads* Secret Manager can't itself be stored there
 
 ## Missing-secret guidance (one-time creation — the 3 gate secrets only)
 
-| Secret | Suggested create |
-|---|---|
-| `jwt-shared-key` | `openssl rand -hex 32 \| gcloud secrets create jwt-shared-key --data-file=-` |
-| `dashboard-allowlist` | `printf '%s' you@org.com \| gcloud secrets create dashboard-allowlist --data-file=-` |
+| Secret                | Suggested create                                                                               |
+| --------------------- | ---------------------------------------------------------------------------------------------- |
+| `jwt-shared-key`      | `openssl rand -hex 32 \| gcloud secrets create jwt-shared-key --data-file=-`                   |
+| `dashboard-allowlist` | `printf '%s' you@org.com \| gcloud secrets create dashboard-allowlist --data-file=-`           |
 | `google-oauth-client` | Console-created OAuth Web client (id+secret); store as JSON/`id\|secret` — the one manual step |
 
 Agent creds (`github-pat`/`claude-oauth-token`) are **not** created here — they're

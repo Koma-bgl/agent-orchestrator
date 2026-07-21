@@ -23,8 +23,8 @@ services:
       - "14800"
       - "14801"
       - "7800-7900"
-      - "7990"    # setup terminal (ttyd for `gh auth login`)
-      - "7991"    # setup terminal (ttyd for `claude auth login`)
+      - "7990" # setup terminal (ttyd for `gh auth login`)
+      - "7991" # setup terminal (ttyd for `claude auth login`)
     volumes:
       # Durable state: ao-core writes config, sessions, worktrees, the worker PID,
       # the gh config dir, cloned repos, and on-box secrets under
@@ -76,7 +76,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # (The old static monitoring SPA mount `./web:/srv` is gone — the TS
       #  dashboard on :3000 is now the UI; Caddy only reverse-proxies.)
-      - caddy-data:/data      # cert/ACME storage; persists the internal CA locally
+      - caddy-data:/data # cert/ACME storage; persists the internal CA locally
       - caddy-config:/config
     labels:
       com.centurylinklabs.watchtower.enable: "true"

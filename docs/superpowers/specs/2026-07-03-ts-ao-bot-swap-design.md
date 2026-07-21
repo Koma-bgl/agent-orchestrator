@@ -18,6 +18,7 @@ agent-orchestrator**.
 
 **The real TS AO is published on public npm as `@composio/ao-cli`** (latest `0.2.2`).
 Not to be confused with two namesakes we ruled out:
+
 - bare `agent-orchestrator` npm pkg (v1.0.0-beta.1) — unrelated project, no Linear.
 - `@aoagents/ao` — the Go daemon (current bot image), no automation.
 
@@ -35,12 +36,12 @@ bot needs installs from npm — **no source build**.
   (off the shipped prebuilt `.next`, no build) + terminal WS servers, binds `0.0.0.0:3000`,
   **boots on empty `projects: {}`**. The **automation** (Linear poll → spawn → reactions)
   is a **separate `ao lifecycle-worker <project>` process** (`getLifecycleManager(...)
-  .start(30_000)`, PID-guarded). `ao start <project>` bundles start-all + lifecycle-worker
-  + a tmux orchestrator agent but **throws on empty config** → it's the Milestone-B
-  "project configured" entry, not the empty-bot boot. So: **Milestone A runs start-all
-  (dashboard, idle, no creds); Milestone B writes the yaml + starts `ao lifecycle-worker`.**
+.start(30_000)`, PID-guarded). `ao start <project>` bundles start-all + lifecycle-worker
+  - a tmux orchestrator agent but **throws on empty config** → it's the Milestone-B
+    "project configured" entry, not the empty-bot boot. So: **Milestone A runs start-all
+    (dashboard, idle, no creds); Milestone B writes the yaml + starts `ao lifecycle-worker`.**
 - **ao-web ships a PREBUILT `.next`** (tarball `files` include `.next/server|static|
-  BUILD_ID`, no `output: standalone`). ⇒ **run `next start` off the shipped build; do
+BUILD_ID`, no `output: standalone`). ⇒ **run `next start` off the shipped build; do
   NOT pass `--prod`** (that re-runs `next build` at every boot — minutes wasted + needs
   build-time devDeps). Corrects the earlier `--prod` plan.
 - **Terminals need the external `ttyd` binary** (compiled C, **not** an npm pkg).
@@ -62,27 +63,28 @@ bot needs installs from npm — **no source build**.
 - Runtime deps: **Node 20.x** (ao-web bakes "requires Node 20.x"; node-pty 1.1.0
   incompatible with Node ≥25 — so keep `node:20-bookworm`, not 22), `git`, `tmux`,
   **`ttyd`**, `gh` CLI, `claude` CLI. `python3/make/g++` are **optional** — needed only
-  to build node-pty for the *direct* terminal; ttyd is the primary terminal and needs
+  to build node-pty for the _direct_ terminal; ttyd is the primary terminal and needs
   no toolchain. `better-sqlite3` is **not** used (ao-core persists to files).
 - Cred env: **`LINEAR_API_KEY`**, **`GH_TOKEN`/`GITHUB_TOKEN`**, **`ANTHROPIC_API_KEY`**.
-  None required to *boot* an empty bot — only once a project with a tracker is added.
+  None required to _boot_ an empty bot — only once a project with a tracker is added.
 
 ## Scope
 
 **Two milestones.** This spec covers the design of both; plans are separate.
 
 ### Milestone A — engine swap (container)
+
 Make the bot run `ao dashboard` (TS AO) instead of the Go daemon, behind the
 existing portal, booting cleanly with an empty skeleton config.
 
-| Item | Change |
-|---|---|
-| `deploy/Dockerfile` | Keep base **`node:20-bookworm`** (vendor bakes "requires Node 20.x"; node-pty breaks on ≥25 — do NOT jump to 22). Install **`ttyd`** (primary terminal — external binary; via apt/`tsl0922/ttyd` release) + keep `tmux git curl ca-certificates gh`. `python3 make g++` **optional** — add only if we want the node-pty *direct* terminal; ttyd needs no toolchain and `better-sqlite3` is not used. Line 21: `@aoagents/ao@0.10.0` → **`@composio/ao-cli@0.2.2 @anthropic-ai/claude-code`**; `ao --version` sanity. Replace `ENV AO_PORT=3001` with **`AO_CONFIG_PATH=/root/.ao/agent-orchestrator.yaml`**; `EXPOSE 3001`→**`3000`**. Fix the `--platform=linux/amd64` **comment** (ao-cli is not x64-only) but keep the pin (GCE VM is x64). |
-| `deploy/entrypoint.sh` | **Delete the Go-binary-resolve+exec block** (`entrypoint.sh:77-80`) and the **socat loopback bridge** (`:53-55`, existed only because the Go daemon bound 127.0.0.1; `next start` binds 0.0.0.0 — but confirm the WS/ttyd bind host first, see risks). After secret-load: **ensure `/root/.ao/agent-orchestrator.yaml` exists** — write skeleton **`projects: {}`** (map, not array; `port`/dirs default) if absent so a fresh bot boots. Then `exec node <ao-web>/dist-server/start-all.js` (webDir via `require.resolve('@composio/ao-web/package.json')`; **not `ao dashboard`** — that's dev-only) with `PORT=3000`. start-all runs `next start` off the prebuilt `.next` + terminal servers, installs its own SIGTERM cleanup; compose `init: true` reaps ttyd grandchildren. Background the admin/wizard backend as today; keep `GH_CONFIG_DIR` on the volume. (Milestone B adds `ao lifecycle-worker <project>` once a project exists.) |
-| `deploy/Caddyfile.public` | Retarget `reverse_proxy ao:8080`(socat) → **`ao:3000`**. **Also proxy the terminal surfaces**: the **`ttyd` iframe range 7800–7900** and the WS servers (`terminalPort`/`directTerminalPort`, default 14800/14801 — pin explicit ports in the yaml so the Caddy config is static). WebSocket `Upgrade` must survive the caddy-security **authorize** gate — **live-test** (cookie JWT on the WS handshake is exactly what silently 401s). Authorize-only gate otherwise unchanged. |
-| Compose (`docker-compose*.yml`) | `AO_PORT`→remove; add `AO_CONFIG_PATH`, `LINEAR_API_KEY`/`ANTHROPIC_API_KEY` passthrough. Keep `init: true`. Volume `/root/.ao` unchanged. Expose the ttyd/WS ports to the caddy sibling. |
-| `HEALTHCHECK` | No health route exists on the dashboard (routes: projects/sessions/spawn/… no `/healthz`, no `/api/health`). Use **`GET http://127.0.0.1:3000/`** (renders 200 with empty projects) or a TCP liveness on 3000. |
-| `deploy-gcp.sh` | `.env` template: drop Go-only vars, add `LINEAR_API_KEY=`/`ANTHROPIC_API_KEY=` empties. `AO_AUTH_URL`/`ALLOWED_EMAILS` unchanged. |
+| Item                            | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deploy/Dockerfile`             | Keep base **`node:20-bookworm`** (vendor bakes "requires Node 20.x"; node-pty breaks on ≥25 — do NOT jump to 22). Install **`ttyd`** (primary terminal — external binary; via apt/`tsl0922/ttyd` release) + keep `tmux git curl ca-certificates gh`. `python3 make g++` **optional** — add only if we want the node-pty _direct_ terminal; ttyd needs no toolchain and `better-sqlite3` is not used. Line 21: `@aoagents/ao@0.10.0` → **`@composio/ao-cli@0.2.2 @anthropic-ai/claude-code`**; `ao --version` sanity. Replace `ENV AO_PORT=3001` with **`AO_CONFIG_PATH=/root/.ao/agent-orchestrator.yaml`**; `EXPOSE 3001`→**`3000`**. Fix the `--platform=linux/amd64` **comment** (ao-cli is not x64-only) but keep the pin (GCE VM is x64).                                                                                                                                                                                                 |
+| `deploy/entrypoint.sh`          | **Delete the Go-binary-resolve+exec block** (`entrypoint.sh:77-80`) and the **socat loopback bridge** (`:53-55`, existed only because the Go daemon bound 127.0.0.1; `next start` binds 0.0.0.0 — but confirm the WS/ttyd bind host first, see risks). After secret-load: **ensure `/root/.ao/agent-orchestrator.yaml` exists** — write skeleton **`projects: {}`** (map, not array; `port`/dirs default) if absent so a fresh bot boots. Then `exec node <ao-web>/dist-server/start-all.js` (webDir via `require.resolve('@composio/ao-web/package.json')`; **not `ao dashboard`** — that's dev-only) with `PORT=3000`. start-all runs `next start` off the prebuilt `.next` + terminal servers, installs its own SIGTERM cleanup; compose `init: true` reaps ttyd grandchildren. Background the admin/wizard backend as today; keep `GH_CONFIG_DIR` on the volume. (Milestone B adds `ao lifecycle-worker <project>` once a project exists.) |
+| `deploy/Caddyfile.public`       | Retarget `reverse_proxy ao:8080`(socat) → **`ao:3000`**. **Also proxy the terminal surfaces**: the **`ttyd` iframe range 7800–7900** and the WS servers (`terminalPort`/`directTerminalPort`, default 14800/14801 — pin explicit ports in the yaml so the Caddy config is static). WebSocket `Upgrade` must survive the caddy-security **authorize** gate — **live-test** (cookie JWT on the WS handshake is exactly what silently 401s). Authorize-only gate otherwise unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Compose (`docker-compose*.yml`) | `AO_PORT`→remove; add `AO_CONFIG_PATH`, `LINEAR_API_KEY`/`ANTHROPIC_API_KEY` passthrough. Keep `init: true`. Volume `/root/.ao` unchanged. Expose the ttyd/WS ports to the caddy sibling.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `HEALTHCHECK`                   | No health route exists on the dashboard (routes: projects/sessions/spawn/… no `/healthz`, no `/api/health`). Use **`GET http://127.0.0.1:3000/`** (renders 200 with empty projects) or a TCP liveness on 3000.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `deploy-gcp.sh`                 | `.env` template: drop Go-only vars, add `LINEAR_API_KEY=`/`ANTHROPIC_API_KEY=` empties. `AO_AUTH_URL`/`ALLOWED_EMAILS` unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 **Verify (A):** local compose bot boots `ao dashboard` off the `projects: {}` skeleton
 (no Zod crash, no creds), dashboard reachable through the portal gate, empty-project
@@ -91,12 +93,14 @@ must pass caddy-security — the load-bearing unknown). Then a fresh VM `create`
 the TS dashboard behind SSO with a working terminal.
 
 ### Milestone B — config wizard (reshaped M8c, now real)
+
 A **Setup page on the bot** (behind the SSO gate) that takes the empty bot to a
 working one by writing a **real `agent-orchestrator.yaml`** + on-box tokens, then
 restarting the engine. Chosen over create-time baking because the fleet invariant is
 **per-user, on-box creds that never route through the admin** who runs `create`.
 
 Steps (checklist, each row reads real state + acts):
+
 1. **Connect GitHub** — paste PAT → `gh auth login --with-token --insecure-storage`
    (GH_CONFIG_DIR on volume). State from `gh auth status` (never echo token).
 2. **Pick repo** — `gh repo list --json nameWithOwner,url` picker + paste-URL fallback.
@@ -116,6 +120,7 @@ project → a matching Linear ticket auto-spawns a claude-code session in a work
 (the automation the Go daemon could never do).
 
 ## Non-goals (later)
+
 - Device-flow GitHub/Claude login (PAT paste now; documented drop-in upgrade).
 - Multi-repo per bot (one repo per bot; matches max-1 quota).
 - M8b self-serve provisioning broker (separate milestone).
@@ -124,8 +129,9 @@ project → a matching Linear ticket auto-spawns a claude-code session in a work
 ## Risks / open questions
 
 **Resolved by spec review (were open, now answered):**
+
 - ~~Native-build~~ — `better-sqlite3` not used; node-pty **optional** (graceful-disable),
-  so no toolchain is *required*. Add `python3/make/g++` only to keep the direct terminal.
+  so no toolchain is _required_. Add `python3/make/g++` only to keep the direct terminal.
 - ~~`--prod`/next build~~ — ao-web ships a prebuilt `.next`; **skip `--prod`**, `next start`
   runs off it. No runtime build.
 - ~~Health endpoint~~ — none exists; use `GET /` or TCP on 3000.
@@ -133,6 +139,7 @@ project → a matching Linear ticket auto-spawns a claude-code session in a work
 - ~~Skeleton config~~ — must be **`projects: {}`** (map); `[]` crashes Zod.
 
 **Still to pin at plan/verify time:**
+
 - **`ttyd` install + 7800–7900 proxying** — the terminal depends on the external `ttyd`
   binary; confirm the apt/release install and how the iframe range is proxied/gated.
 - **WS/ttyd bind host** — do the WS servers + ttyd bind `0.0.0.0` or `localhost`? If

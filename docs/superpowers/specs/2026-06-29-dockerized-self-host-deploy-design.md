@@ -16,7 +16,7 @@
 Agent Orchestrator (AO) ships as a **headless Go daemon** (`ao daemon`) plus an
 Electron desktop app. The daemon is the engine: it spawns coding agents in tmux
 sessions + git worktrees and exposes a loopback HTTP API. There is no turnkey way
-for a **non-technical user** to stand up their own always-on, *remotely accessible*
+for a **non-technical user** to stand up their own always-on, _remotely accessible_
 AO instance — the desktop app assumes a local machine with a display.
 
 We want a **skill** that hand-holds a non-technical user through:
@@ -48,20 +48,20 @@ sessions/status, check version, and rotate tokens after deploy.
 
 ## Key Decisions (resolved during brainstorming)
 
-| Decision | Choice | Rationale |
-|---|---|---|
-| Audience | Skill-guided self-host for non-technical users | The skill is the product; Docker is the vehicle |
-| Cloud | GCP — GCE VM via `gcloud`, secrets in Secret Manager | User's chosen platform |
-| Engine | **`ao daemon`** — the headless Go daemon (not `ao start`, which launches Electron) | The only headless entry point; no display required |
-| Binary | **`npm i -g @aoagents/ao`** pulls the platform Go binary (`@aoagents/ao-linux-x64`) | One install line; no monorepo/pnpm/node-pty build |
-| Packaging | AO daemon container + Caddy + Watchtower (docker compose) | Matches the daemon's single-process tmux/worktree model |
-| Self-update | **Watchtower on a midnight cron** (`--schedule "0 0 0 * * *"` — Watchtower's 6-field cron: `sec min hr dom mon dow`, i.e. 00:00:00 daily), pinned to `:stable` | Zero custom code, predictable, no daytime surprises |
-| Agent auth | **Claude OAuth token** via `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`), inherited by agents from the daemon env | Headless-friendly, uses the user's subscription, no device-code dance |
-| Deploy structure | **Approach B** — committed deploy kit + thin skill wrapper; image built in CI → `ghcr.io` | Idempotent, reviewable, version-controlled, keeps skill thin |
-| Remote UI | **New standalone monitoring SPA** built on the daemon's `/api/v1` + SSE; the daemon ships no remote web UI | Read-only monitoring + admin; the real net-new build |
-| Access control | **Caddy-level Google sign-in + email allowlist; zero passwords stored** — load-bearing, since the daemon itself has no auth | Daemon trusts loopback fully; the edge is the only security boundary |
-| Domain/TLS | **Bring a domain + Caddy auto-TLS (Let's Encrypt)** | Google OAuth rejects bare IPs; needs a real domain over HTTPS |
-| VM size | `e2-standard-4` default (~$105/mo all-in), `e2-standard-2` budget (~$50/mo) | Builds/tests are RAM-hungry; Claude Code itself is light |
+| Decision         | Choice                                                                                                                                                         | Rationale                                                             |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Audience         | Skill-guided self-host for non-technical users                                                                                                                 | The skill is the product; Docker is the vehicle                       |
+| Cloud            | GCP — GCE VM via `gcloud`, secrets in Secret Manager                                                                                                           | User's chosen platform                                                |
+| Engine           | **`ao daemon`** — the headless Go daemon (not `ao start`, which launches Electron)                                                                             | The only headless entry point; no display required                    |
+| Binary           | **`npm i -g @aoagents/ao`** pulls the platform Go binary (`@aoagents/ao-linux-x64`)                                                                            | One install line; no monorepo/pnpm/node-pty build                     |
+| Packaging        | AO daemon container + Caddy + Watchtower (docker compose)                                                                                                      | Matches the daemon's single-process tmux/worktree model               |
+| Self-update      | **Watchtower on a midnight cron** (`--schedule "0 0 0 * * *"` — Watchtower's 6-field cron: `sec min hr dom mon dow`, i.e. 00:00:00 daily), pinned to `:stable` | Zero custom code, predictable, no daytime surprises                   |
+| Agent auth       | **Claude OAuth token** via `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`), inherited by agents from the daemon env                                           | Headless-friendly, uses the user's subscription, no device-code dance |
+| Deploy structure | **Approach B** — committed deploy kit + thin skill wrapper; image built in CI → `ghcr.io`                                                                      | Idempotent, reviewable, version-controlled, keeps skill thin          |
+| Remote UI        | **New standalone monitoring SPA** built on the daemon's `/api/v1` + SSE; the daemon ships no remote web UI                                                     | Read-only monitoring + admin; the real net-new build                  |
+| Access control   | **Caddy-level Google sign-in + email allowlist; zero passwords stored** — load-bearing, since the daemon itself has no auth                                    | Daemon trusts loopback fully; the edge is the only security boundary  |
+| Domain/TLS       | **Bring a domain + Caddy auto-TLS (Let's Encrypt)**                                                                                                            | Google OAuth rejects bare IPs; needs a real domain over HTTPS         |
+| VM size          | `e2-standard-4` default (~$105/mo all-in), `e2-standard-2` budget (~$50/mo)                                                                                    | Builds/tests are RAM-hungry; Claude Code itself is light              |
 
 ## Architecture
 
@@ -89,7 +89,7 @@ docker-compose.yml
   container (see Risks). A minimal init (`tini`) supervises both processes so
   signals and zombie-reaping are correct; the daemon is the primary process.
   (A separate `web` container via `network_mode: "service:ao"` remains a valid
-  alternative, but is **not** the default precisely because Watchtower *recreates*
+  alternative, but is **not** the default precisely because Watchtower _recreates_
   `ao` — destroying the namespace the sidecar is bound to.)
 - **Daemon is fully headless** — no Electron, no display. Agents (Claude Code
   etc.) run via the daemon's tmux runtime + git worktrees. It has **zero auth** —
@@ -129,7 +129,7 @@ credential sources, same code path:
   token) → Secret Manager. SA roles: `secretmanager.secretAccessor` (read) +
   `secretmanager.secretVersionAdder` (write, for UI rotation).
 - **Locally (Phase 1):** **Application Default Credentials** (`gcloud auth
-  application-default login`) → same Secret Manager API. This proves the
+application-default login`) → same Secret Manager API. This proves the
   secret-fetch path without a VM. A pure-offline `.env` fallback also works.
 
 Because Watchtower restarts the container nightly, **rotation is automatic**: a
@@ -158,26 +158,27 @@ force an immediate restart for "apply now".
 
 A **new standalone SPA + small backend** (the daemon ships no remote web UI). The
 SPA is read-only monitoring over the daemon's documented API; the backend adds the
-auth gate, a daemon-API proxy, and the admin operations that act on *our* infra
+auth gate, a daemon-API proxy, and the admin operations that act on _our_ infra
 (Secret Manager, Watchtower, allowlist) rather than the daemon.
 
 Read-only monitoring is built on the daemon's existing endpoints:
+
 - `GET /api/v1/sessions`, `GET /api/v1/sessions/{id}` — sessions + derived status
 - `GET /api/v1/projects` — registered projects
-- `GET /api/v1/sessions/{id}/pr` — PR facts (read path only; PR *action*
+- `GET /api/v1/sessions/{id}/pr` — PR facts (read path only; PR _action_
   endpoints are a 501 stub in this build — don't plan admin PR-actions on them)
 - `GET /api/v1/events` (SSE) — live change stream for the UI
 - `GET /api/v1/notifications`, `/api/v1/notifications/stream` — needs-input /
   ready-to-merge (these are under `/api/v1`, **not** root `/notifications`)
 - `GET /healthz`, `/readyz` — health (at root); `GET /api/v1/openapi.yaml` — the contract
 
-| Panel | Content | Backing API |
-|---|---|---|
-| Sessions | live session list + derived status (working / needs_input / ci_failed / mergeable …), via SSE | daemon `GET /api/v1/sessions` + `/api/v1/events` |
-| Status | daemon health, agent/session counts | daemon `/healthz` + `/api/v1/sessions` |
-| Version | running AO version vs latest `:stable` in registry → "up to date" / "update pending (applies tonight)" + **Update now** | web backend `api/admin/version` + `api/admin/update-now` |
-| Tokens | paste new Claude OAuth / GitHub PAT / Linear key → writes a new Secret Manager version → optional immediate restart | web backend `api/admin/secrets` |
-| Access | add/remove allowlisted Google emails | web backend `api/admin/allowlist` |
+| Panel    | Content                                                                                                                 | Backing API                                              |
+| -------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Sessions | live session list + derived status (working / needs_input / ci_failed / mergeable …), via SSE                           | daemon `GET /api/v1/sessions` + `/api/v1/events`         |
+| Status   | daemon health, agent/session counts                                                                                     | daemon `/healthz` + `/api/v1/sessions`                   |
+| Version  | running AO version vs latest `:stable` in registry → "up to date" / "update pending (applies tonight)" + **Update now** | web backend `api/admin/version` + `api/admin/update-now` |
+| Tokens   | paste new Claude OAuth / GitHub PAT / Linear key → writes a new Secret Manager version → optional immediate restart     | web backend `api/admin/secrets`                          |
+| Access   | add/remove allowlisted Google emails                                                                                    | web backend `api/admin/allowlist`                        |
 
 The monitoring panels proxy the daemon; the admin panels (version/update, tokens,
 access) are web-backend operations on the deployment infra. All require an
@@ -219,16 +220,16 @@ A guided conversation under `skills/` that:
 Phase 1 is fully testable on a laptop with `docker compose up`. Phase 2 (actual
 VM creation) is deferred until the local stack is validated.
 
-| Milestone | Phase | Deliverable | How it's verified |
-|---|---|---|---|
-| M1 | 1 (local) | Dockerfile (binary install) + compose; `ao daemon` runs headless in-container; CI publishes image to ghcr | `docker compose up` → `/healthz` 200, `GET /api/v1/sessions` returns |
-| M2 | 1 (local) | Secret-fetch entrypoint via ADC + `.env` fallback → daemon env | container boots with secrets from Secret Manager using local ADC |
-| M3 | 1 (local) | Caddy + Google sign-in + email allowlist (localhost redirect) | only allowlisted Google account can reach the UI / proxied daemon API |
-| M4 | 1 (local) | Monitoring SPA: live sessions + status over `/api/v1` + SSE | spawn a session → it appears live in the UI with correct derived status |
-| M5 | 1 (local) | Admin ops: version / token rotation / allowlist | rotate a secret version from UI; "update pending" reflects a pushed tag |
-| M6 | 1 (local) | Watchtower midnight self-update | push a new `:stable` → containers swap on schedule / forced run |
-| M7 | 2 (cloud) | `deploy-gcp.sh` + startup script + metadata SA + real domain TLS | **deferred** — run only after Phase 1 is solid |
-| M8 | 2 (cloud) | The setup skill tying it all together | non-tech user dry-run from zero |
+| Milestone | Phase     | Deliverable                                                                                               | How it's verified                                                       |
+| --------- | --------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| M1        | 1 (local) | Dockerfile (binary install) + compose; `ao daemon` runs headless in-container; CI publishes image to ghcr | `docker compose up` → `/healthz` 200, `GET /api/v1/sessions` returns    |
+| M2        | 1 (local) | Secret-fetch entrypoint via ADC + `.env` fallback → daemon env                                            | container boots with secrets from Secret Manager using local ADC        |
+| M3        | 1 (local) | Caddy + Google sign-in + email allowlist (localhost redirect)                                             | only allowlisted Google account can reach the UI / proxied daemon API   |
+| M4        | 1 (local) | Monitoring SPA: live sessions + status over `/api/v1` + SSE                                               | spawn a session → it appears live in the UI with correct derived status |
+| M5        | 1 (local) | Admin ops: version / token rotation / allowlist                                                           | rotate a secret version from UI; "update pending" reflects a pushed tag |
+| M6        | 1 (local) | Watchtower midnight self-update                                                                           | push a new `:stable` → containers swap on schedule / forced run         |
+| M7        | 2 (cloud) | `deploy-gcp.sh` + startup script + metadata SA + real domain TLS                                          | **deferred** — run only after Phase 1 is solid                          |
+| M8        | 2 (cloud) | The setup skill tying it all together                                                                     | non-tech user dry-run from zero                                         |
 
 ## Risks & Open Questions
 
@@ -243,8 +244,8 @@ VM creation) is deferred until the local stack is validated.
   `127.0.0.1` with no `AO_HOST` override, the web backend is **co-located in the
   daemon's container** (default). The rejected alternative — a separate container
   with `network_mode: "service:ao"` — is fragile under Watchtower: Watchtower
-  *recreates* the `ao` container with the new image, destroying its network
-  namespace; a namespace-sharing sidecar is bound to the *old* namespace and will
+  _recreates_ the `ao` container with the new image, destroying its network
+  namespace; a namespace-sharing sidecar is bound to the _old_ namespace and will
   not auto-follow, so it must be recreated after `ao` (ordering dependency) and
   fails to start if `ao` isn't up yet. Co-location sidesteps this entirely.
 - **Binary via npm + hook PATH naming.** The daemon pins its own binary dir on
@@ -276,6 +277,7 @@ VM creation) is deferred until the local stack is validated.
 ## Cost (reference)
 
 `e2-standard-4` (4 vCPU / 16 GB), us-central1, 24/7:
+
 - On-demand all-in ≈ **$105/mo** (E2 has no sustained-use discount).
 - 1-year committed use ≈ **$70/mo**.
 - Budget `e2-standard-2` (2 vCPU / 8 GB) ≈ **$50/mo all-in**.
