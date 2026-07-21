@@ -5,7 +5,28 @@
 # tag to REPLACE them, otherwise the base's 8443 + local Caddyfile mount would
 # also apply (publishing 8443 and double-mounting /etc/caddy/Caddyfile).
 services:
+  ao:
+    # Registry image so Watchtower has something to PULL (locally-built images
+    # never update). The base `build:` stays as a fallback: bootstrap tries
+    # `compose pull` first and only builds when the registry is unreachable —
+    # a local build is tagged with this same ref, so Watchtower converges it
+    # to the registry image on a later poll.
+    image: ${AO_IMAGE:-us-central1-docker.pkg.dev/cloudbet-native/ao-fleet/ao:latest}
+
+  watchtower:
+    volumes: !override
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Registry credentials for the nightly pull. The DIRECTORY is mounted
+      # (not config.json itself) because `docker login` replaces the file —
+      # a file bind-mount would go stale on the old inode. Credentials are
+      # short-lived SA access tokens refreshed by the ao-registry-login.timer
+      # systemd unit (installed by bootstrap-gcs.sh).
+      - /root/.docker:/dockerconfig:ro
+    environment:
+      DOCKER_CONFIG: /dockerconfig
+
   caddy:
+    image: ${AO_CADDY_IMAGE:-us-central1-docker.pkg.dev/cloudbet-native/ao-fleet/caddy:latest}
     ports: !override
       - "80:80"      # Let's Encrypt HTTP-01 challenge + HTTP→HTTPS redirect
       - "443:443"    # public HTTPS

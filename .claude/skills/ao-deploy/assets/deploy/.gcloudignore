@@ -1,0 +1,7 @@
+# Upload filter for `gcloud builds submit deploy/` (publish-image.sh).
+# NEVER upload local secrets or junk to Cloud Build.
+.env
+.env.*
+node_modules
+admin/node_modules
+web
