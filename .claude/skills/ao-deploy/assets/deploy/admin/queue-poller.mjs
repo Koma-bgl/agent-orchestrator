@@ -401,6 +401,50 @@ async function relayCiFailures(p, qp, sessions) {
   }
 }
 
+// --- Merge-conflict relay ------------------------------------------------------
+// Same dead-reaction story as CI failures: when the base branch moves and a live
+// session's PR goes CONFLICTING, nothing tells the agent — it idles at its prompt
+// while the dashboard shows the "merge conflict / ask to fix" badge waiting for a
+// human click. Candidates come from ao-web's cached mergeability (free); a direct
+// gh read confirms before nudging. Re-nudge on a new head SHA (agent pushed but
+// conflict remains) or after 30 min (base moved again under the same head).
+const conflictNudged = new Map(); // pr.url -> { sha, at }
+
+async function relayMergeConflicts(p, qp, sessions) {
+  if (!p.repo) return;
+  const candidates = sessions.filter((s) =>
+    s.pr?.url && s.metadata?.tmuxName && !DEAD.has(s.status) && s.pr.mergeability?.noConflicts === false && !mergedPRs.has(s.pr.url));
+  if (!candidates.length) return;
+  const remaining = await graphqlRemaining();
+  if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) return; // never add pressure while throttled
+  for (const s of candidates) {
+    const m = s.pr.url.match(/\/pull\/(\d+)/);
+    const prNum = s.pr.number || (m && m[1]);
+    if (!prNum) continue;
+    try {
+      const { stdout } = await execFileAsync("gh", ["pr", "view", String(prNum), "--repo", p.repo, "--json", "state,mergeable,headRefOid,baseRefName"], { env: process.env, timeout: 30_000 });
+      const info = JSON.parse(stdout);
+      if (info.state === "MERGED") { mergedPRs.add(s.pr.url); continue; }
+      if (info.state !== "OPEN" || info.mergeable !== "CONFLICTING") continue; // cached badge was stale
+      const prev = conflictNudged.get(s.pr.url);
+      if (prev && prev.sha === info.headRefOid && Date.now() - prev.at < 30 * 60_000) continue;
+      const pane = await paneText(s.metadata.tmuxName);
+      if (pane.includes("esc to interrupt")) continue; // agent mid-task — retry next tick
+      const base = info.baseRefName || "the base branch";
+      const ok = await nudge(
+        s.metadata.tmuxName,
+        `Your PR #${prNum} has merge conflicts with ${base}. In this worktree: run \`git fetch origin\` and \`git merge origin/${base}\`, resolve every conflict (keep both sides' intent — check the conflicting commits with \`git log --merge\`), run the fast local checks, then commit the merge and push to the same branch. After pushing, stop again — the orchestrator keeps monitoring the PR.`,
+      );
+      if (ok) {
+        conflictNudged.set(s.pr.url, { sha: info.headRefOid, at: Date.now() });
+        console.log(`[queue-poller] relayed merge conflict to ${s.id} (PR #${prNum} vs ${base})`);
+      }
+    } catch (e) {
+      console.log(`[queue-poller] conflict relay failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
+    }
+  }
+}
+
 // --- Merged-session reclaim --------------------------------------------------
 // Nothing retires a session after its PR merges in this deploy (the ao reaction that
 // should do it isn't firing; the poller only merged the PR). So merged sessions pile
@@ -645,6 +689,7 @@ async function pollProject(pid, p) {
   await normalizePrTitles(p, qp, sessions); // enforce [Type][TICKET] title before it can merge
   await autoMergePRs(pid, p, qp, sessions); // squash-merge approved+green+clean PRs (if autoMerge)
   await relayCiFailures(p, qp, sessions); // ao's ci_failed reaction never dispatches — tell the agent ourselves
+  await relayMergeConflicts(p, qp, sessions); // conflicted PRs otherwise idle until a human clicks "ask to fix"
   await cleanupMerged(pid, p, sessions); // retire merged sessions: free the worktree + stop enrichment
 
   let issues;
