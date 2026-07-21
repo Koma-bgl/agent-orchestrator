@@ -149,9 +149,21 @@ Healthy = 3 containers up; poller active in logs; dashboard reachable over
 HTTPS; terminal connects (WS is `:14801 /ws` via the `/terminal-ws*` Caddy
 rewrite — NOT `:14800`).
 
-## 5. Update an existing VM
+## 5. Update VMs
 
-Pick the lightest path that ships the change:
+**Fleet-wide (the default release path — updates EVERY VM, admin-run):**
+
+```bash
+./publish-image.sh --project=<gcp-project>   # build + push ao/caddy images to Artifact Registry
+```
+
+Every VM's nightly Watchtower (00:00, drain-gated — waits until no session is
+working) pulls the new images and recreates. All VMs converge within 24h with
+zero SSH. For an immediate update on one bot: `POST /admin/api/update` (the
+dashboard's "update now"), same drain gate. Also run `./publish-kit.sh` when
+`bootstrap-gcs.sh` / compose files changed, so NEW VMs bootstrap current.
+
+**Single VM, same-day hot fix** — pick the lightest path that ships the change:
 - **Poller/admin `.mjs` change only** → hot-swap, zero session impact:
   `gcloud compute scp` the file → `docker cp` into `deploy-ao-1` →
   `node --check` it → `pkill -f queue-poller.mjs` → relaunch:

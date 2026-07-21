@@ -59,7 +59,43 @@ else
   log ".env exists — keeping it"
 fi
 
+# --- Artifact Registry auth: images come from the fleet registry so nightly
+# Watchtower can actually pull updates (a locally-built image never updates).
+# SA access tokens live ~1h, so a systemd timer re-logins every 45 min — the
+# watchtower container reads the mounted /root/.docker (see compose.vm).
+registry_login() {
+  gcloud auth print-access-token 2>/dev/null \
+    | docker login -u oauth2accesstoken --password-stdin https://us-central1-docker.pkg.dev >/dev/null 2>&1
+}
+cat > /etc/systemd/system/ao-registry-login.service <<'UNIT'
+[Unit]
+Description=Refresh Docker credentials for the AO fleet Artifact Registry
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin https://us-central1-docker.pkg.dev'
+UNIT
+cat > /etc/systemd/system/ao-registry-login.timer <<'UNIT'
+[Unit]
+Description=Keep AO registry credentials fresh (SA tokens expire hourly)
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=45min
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now ao-registry-login.timer || true
+
 log "starting the stack…"
-docker compose -f docker-compose.yml -f docker-compose.vm.yml up -d --build
+# Registry-first: pull the fleet images so this VM runs (and Watchtower tracks)
+# the published build. Fall back to a local build if the registry is empty or
+# unreachable — the build tags the same registry ref, so Watchtower converges
+# it once images are published.
+if registry_login && docker compose -f docker-compose.yml -f docker-compose.vm.yml pull ao caddy; then
+  docker compose -f docker-compose.yml -f docker-compose.vm.yml up -d --no-build
+else
+  log "registry pull failed — building locally (Watchtower converges later)"
+  docker compose -f docker-compose.yml -f docker-compose.vm.yml up -d --build
+fi
 touch /opt/ao/.startup-done
 log "done — https://${AO_HOST}"
