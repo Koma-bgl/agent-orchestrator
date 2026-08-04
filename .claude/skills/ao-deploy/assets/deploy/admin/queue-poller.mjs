@@ -318,7 +318,7 @@ async function autoMergePRs(pid, p, qp, sessions) {
     const m = pr.url.match(/\/pull\/(\d+)/);
     const prNum = pr.number || (m && m[1]);
     if (!prNum) continue;
-    const entry = { issueId: s.issueId, url: pr.url, prNum };
+    const entry = { issueId: s.issueId, url: pr.url, prNum, sid: s.id, dead: DEAD.has(s.status) };
     const mg = pr.mergeability || {};
     const cachedReady = pr.reviewDecision === "approved" && mg.mergeable && mg.ciPassing && mg.approved && mg.noConflicts && (mg.blockers?.length ?? 0) === 0;
     if (cachedReady) ready.push(entry);
@@ -350,6 +350,15 @@ async function autoMergePRs(pid, p, qp, sessions) {
       console.log(`[queue-poller] auto-merge: ${r.issueId} PR #${r.prNum} (approved+green+clean) — squash merging`);
       await execFileAsync("gh", ["pr", "merge", String(r.prNum), "--repo", p.repo, "--squash"], { env: process.env, timeout: 60_000 });
       mergedPRs.add(r.url);
+      if (r.dead) {
+        // A dead session's status is never refreshed by the lifecycle, so nothing would
+        // ever flip it to merged — write it ourselves so cleanupMerged can reclaim the
+        // worktree + record instead of leaving them behind forever.
+        try {
+          const f = join(projectBaseDir(CONFIG_PATH, p.path), "sessions", r.sid);
+          writeFileSync(f, upsertRecordField(readFileSync(f, "utf8"), "status", "merged"));
+        } catch { /* record already gone — reclaim has nothing to do */ }
+      }
     } catch (e) {
       console.log(`[queue-poller] auto-merge failed for #${r.prNum}: ${String(e.stderr || e.message).slice(0, 300)}`);
     }
@@ -509,6 +518,71 @@ async function cleanupMerged(pid, p, sessions) {
     }
   }
   await execFileAsync("git", ["-C", p.path, "worktree", "prune"], { env: process.env, timeout: 30_000 }).catch(() => {});
+}
+
+// --- Orphan-PR linking -----------------------------------------------------------
+// ao can misclassify a launch as dead within seconds of spawn (record status=killed)
+// while the agent in tmux is actually fine — it finishes the ticket and opens its PR
+// AFTER the record went terminal (observed: val-20/val-21 killed at spawn+3s, PRs
+// opened 17 min later). The lifecycle never refreshes terminal sessions, so no pr=
+// is ever written, and every downstream reaction (auto-merge's orphan-verify path,
+// reclaim, status write-back) skips a record with no pr — the approved PR then sits
+// open forever with nothing watching it. Heal it here: for a terminal session with
+// no pr= but a branch=, look the PR up by head branch via gh.
+//   • OPEN PR   -> write pr= into the record; ao-web serves it next tick and the
+//     normal orphan-verify path in autoMergePRs takes over.
+//   • MERGED PR -> write pr= AND status=merged, so cleanupMerged reclaims the
+//     worktree + record on its next pass.
+// Throttled per session; candidates are rare (a handful of terminal records), so
+// this adds at most one gh call per candidate per window.
+const ORPHAN_LINK_WINDOW_MS = 600_000; // PRs can appear long after the kill — keep re-checking, slowly
+const orphanCheckedAt = new Map(); // `${id}:${issueId}` -> last lookup ms (id:issue — ids are recycled)
+
+/** From `gh pr list --json number,url,state`: first OPEN, else first MERGED, else null. */
+export function pickOrphanPr(items) {
+  if (!Array.isArray(items)) return null;
+  return items.find((i) => i.state === "OPEN") || items.find((i) => i.state === "MERGED") || null;
+}
+
+/** Replace `key=` line in a line-based session record, or append it. Always newline-terminated. */
+export function upsertRecordField(text, key, value) {
+  const line = `${key}=${value}`;
+  const re = new RegExp(`^${key}=.*$`, "m");
+  if (re.test(text)) return text.replace(re, line);
+  return (text === "" || text.endsWith("\n") ? text : text + "\n") + line + "\n";
+}
+
+async function linkOrphanPrs(pid, p, qp, sessions, sessDir) {
+  if (!p.repo) return;
+  const candidates = [];
+  for (const s of sessions) {
+    if (s.projectId !== pid || s.pr || !DEAD.has(s.status)) continue;
+    if (s.status === "merged" || s.status === "cleanup") continue; // reclaim owns these
+    const key = `${s.id}:${s.issueId}`;
+    if (Date.now() - (orphanCheckedAt.get(key) ?? 0) < ORPHAN_LINK_WINDOW_MS) continue;
+    candidates.push({ s, key });
+  }
+  if (!candidates.length) return; // zero GitHub API this tick
+  const remaining = await graphqlRemaining();
+  if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) return;
+  for (const { s, key } of candidates) {
+    orphanCheckedAt.set(key, Date.now());
+    const f = join(sessDir, s.id);
+    let text, rec;
+    try { text = readFileSync(f, "utf8"); rec = parseSessionRecord(text); } catch { continue; }
+    if (rec.pr || !rec.branch) continue; // already linked (live list stale) / nothing to look up
+    try {
+      const { stdout } = await execFileAsync("gh", ["pr", "list", "--repo", p.repo, "--head", rec.branch, "--state", "all", "--limit", "10", "--json", "number,url,state"], { env: process.env, timeout: 30_000 });
+      const pr = pickOrphanPr(JSON.parse(stdout));
+      if (!pr) continue; // no PR for this branch (yet) — re-check next window
+      let next = upsertRecordField(text, "pr", pr.url);
+      if (pr.state === "MERGED") next = upsertRecordField(next, "status", "merged");
+      writeFileSync(f, next);
+      console.log(`[queue-poller] linked orphan PR #${pr.number} (${pr.state}) to ${s.id} (${s.issueId}) via branch ${rec.branch}`);
+    } catch (e) {
+      console.log(`[queue-poller] orphan PR lookup failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
+    }
+  }
 }
 
 // --- Branch-drift repair -------------------------------------------------------
@@ -683,6 +757,7 @@ async function pollProject(pid, p) {
   const sessions = await listSessions();
   const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
   await repairBranchDrift(sessions, sessDir); // fix record<->worktree branch drift BEFORE any PR matching
+  await linkOrphanPrs(pid, p, qp, sessions, sessDir); // sessions ao killed before their PR opened: find + link the PR by branch
   await syncStatuses(p.tracker.teamId, sessions, qp);
   await recoverStuck(sessions); // re-deliver the prompt to any session ao left stuck at launch
   await syncContext(sessions); // keep .ao-task.md current + surface new/truncated comments to the agent
