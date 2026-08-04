@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatPrTitle, parseSessionRecord } from "./queue-poller.mjs";
+import { formatPrTitle, parseSessionRecord, pickOrphanPr, upsertRecordField } from "./queue-poller.mjs";
 
 test("formatPrTitle: conventional fix -> [Bugfix][TICKET]", () => {
   assert.equal(
@@ -76,4 +76,54 @@ test("parseSessionRecord: tolerates blank lines / junk", () => {
   const rec = parseSessionRecord("\nstatus=merged\n\n# not a pair\nworktree=/x\n");
   assert.equal(rec.status, "merged");
   assert.equal(rec.worktree, "/x");
+});
+
+// --- orphan-PR linking (killed-before-link sessions) ---------------------------
+
+test("pickOrphanPr: prefers the first OPEN PR", () => {
+  const pr = pickOrphanPr([
+    { number: 5, url: "u5", state: "MERGED" },
+    { number: 7, url: "u7", state: "OPEN" },
+    { number: 8, url: "u8", state: "OPEN" },
+  ]);
+  assert.deepEqual(pr, { number: 7, url: "u7", state: "OPEN" });
+});
+
+test("pickOrphanPr: falls back to the first MERGED when nothing is open", () => {
+  const pr = pickOrphanPr([
+    { number: 3, url: "u3", state: "CLOSED" },
+    { number: 5, url: "u5", state: "MERGED" },
+  ]);
+  assert.deepEqual(pr, { number: 5, url: "u5", state: "MERGED" });
+});
+
+test("pickOrphanPr: closed-only or empty -> null", () => {
+  assert.equal(pickOrphanPr([{ number: 1, url: "u1", state: "CLOSED" }]), null);
+  assert.equal(pickOrphanPr([]), null);
+  assert.equal(pickOrphanPr(null), null);
+});
+
+test("upsertRecordField: appends a missing key with trailing newline preserved", () => {
+  const next = upsertRecordField("branch=feat/X\nstatus=killed\n", "pr", "https://g/pull/1");
+  assert.equal(next, "branch=feat/X\nstatus=killed\npr=https://g/pull/1\n");
+});
+
+test("upsertRecordField: appends when the file lacks a trailing newline", () => {
+  const next = upsertRecordField("branch=feat/X\nstatus=killed", "pr", "https://g/pull/1");
+  assert.equal(next, "branch=feat/X\nstatus=killed\npr=https://g/pull/1\n");
+});
+
+test("upsertRecordField: replaces an existing key in place", () => {
+  const next = upsertRecordField("branch=feat/X\nstatus=killed\npr=old\n", "status", "merged");
+  assert.equal(next, "branch=feat/X\nstatus=merged\npr=old\n");
+});
+
+test("upsertRecordField: round-trips through parseSessionRecord", () => {
+  let text = "worktree=/w\nbranch=feat/SPOR-3349\nstatus=killed\n";
+  text = upsertRecordField(text, "pr", "https://github.com/bitgaming/valhalla/pull/10993");
+  text = upsertRecordField(text, "status", "merged");
+  const rec = parseSessionRecord(text);
+  assert.equal(rec.pr, "https://github.com/bitgaming/valhalla/pull/10993");
+  assert.equal(rec.status, "merged");
+  assert.equal(rec.branch, "feat/SPOR-3349");
 });
