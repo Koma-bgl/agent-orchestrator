@@ -35,6 +35,12 @@ j.projects[cwd] = Object.assign({}, j.projects[cwd], {
 });
 try { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(j)); } catch {}
 ' "$CFG" 2>/dev/null || true
+# Never let claude update itself: its updater runs `npm install -g`, which yanks
+# the bin symlink mid-install (concurrent spawns die with "command not found") and
+# then replaces this wrapper with npm's raw symlink. The Dockerfile ENV already sets
+# both; re-export here so the guarantee survives any launch path that loses the
+# container env. Version bumps go through the image pin, not self-update.
+export DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1
 # exec the real binary via /usr/local/libexec/claude — a path whose BASENAME is
 # "claude". The agent-claude-code plugin finds the live process by matching `ps` args
 # against /(?:^|\/)claude(?:\s|$)/; if it can't, it reports the session "exited" and

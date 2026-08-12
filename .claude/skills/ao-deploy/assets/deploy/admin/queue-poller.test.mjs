@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatPrTitle, parseSessionRecord, pickOrphanPr, upsertRecordField } from "./queue-poller.mjs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { archiveSessionRecord, formatPrTitle, parseSessionRecord, pickOrphanPr, upsertRecordField } from "./queue-poller.mjs";
 
 test("formatPrTitle: conventional fix -> [Bugfix][TICKET]", () => {
   assert.equal(
@@ -116,6 +119,26 @@ test("upsertRecordField: appends when the file lacks a trailing newline", () => 
 test("upsertRecordField: replaces an existing key in place", () => {
   const next = upsertRecordField("branch=feat/X\nstatus=killed\npr=old\n", "status", "merged");
   assert.equal(next, "branch=feat/X\nstatus=merged\npr=old\n");
+});
+
+test("archiveSessionRecord: copies the record into sessions/archive/<id>_<timestamp>", () => {
+  const sessDir = mkdtempSync(join(tmpdir(), "ao-sess-"));
+  const content = "worktree=/w\nbranch=feat/SPOR-1\nstatus=merged\npr=https://g/pull/1\n";
+  writeFileSync(join(sessDir, "val-3"), content);
+  const archived = archiveSessionRecord(sessDir, "val-3");
+  assert.ok(archived, "returns the archive path");
+  assert.equal(readFileSync(archived, "utf8"), content);
+  const names = readdirSync(join(sessDir, "archive"));
+  assert.equal(names.length, 1);
+  assert.match(names[0], /^val-3_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}/);
+  // Archiving must not remove the live record — deletion stays the caller's job.
+  assert.ok(existsSync(join(sessDir, "val-3")));
+});
+
+test("archiveSessionRecord: missing record -> null, no archive dir created", () => {
+  const sessDir = mkdtempSync(join(tmpdir(), "ao-sess-"));
+  assert.equal(archiveSessionRecord(sessDir, "val-9"), null);
+  assert.ok(!existsSync(join(sessDir, "archive")));
 });
 
 test("upsertRecordField: round-trips through parseSessionRecord", () => {

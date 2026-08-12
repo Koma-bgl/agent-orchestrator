@@ -7,7 +7,7 @@
 // sessions, respect maxSessions, and `ao spawn <issueId>` the new ones. The reaction
 // engine (CI/review) is still handled by `ao lifecycle-worker`; this only spawns.
 import { execFile } from "node:child_process";
-import { writeFileSync, readdirSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { writeFileSync, readdirSync, readFileSync, existsSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { readConfig, projectBaseDir, generateConfigHash } from "./config-writer.mjs";
@@ -481,6 +481,23 @@ export function parseSessionRecord(text) {
 // merged session then lingers forever (worktree disk + PR enrichment rate burn).
 const reclaimed = new Set();
 
+// Preserve a retired session's record before deletion: copy it to
+// sessions/archive/<id>_<timestamp> (same convention as ao-core's deleteMetadata,
+// which the reclaim path bypasses). Session ids are reused lowest-free after the
+// record is removed, so without this the archive file is the ONLY surviving link
+// from issue -> branch -> PR. Returns the archive path, or null if no record.
+// Exported for tests.
+export function archiveSessionRecord(sessDir, sessionId) {
+  const src = join(sessDir, sessionId);
+  if (!existsSync(src)) return null;
+  const archiveDir = join(sessDir, "archive");
+  mkdirSync(archiveDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dest = join(archiveDir, `${sessionId}_${timestamp}`);
+  writeFileSync(dest, readFileSync(src, "utf8"));
+  return dest;
+}
+
 // Retire sessions whose PR has merged: remove the git worktree (frees disk) and the
 // store record (stops ao-web enriching it). STRICTLY gated on status===merged from BOTH
 // the live list AND the authoritative store file, so a killed-but-unmerged session
@@ -510,9 +527,10 @@ async function cleanupMerged(pid, p, sessions) {
           else throw e;
         });
       }
+      archiveSessionRecord(sessDir, s.id); // keep history: sessions/archive/<id>_<ts>
       rmSync(f); // remove the session record → ao-web stops listing/enriching it
       reclaimed.add(key);
-      console.log(`[queue-poller] reclaimed merged session ${s.id} (${s.issueId}) — worktree + record removed`);
+      console.log(`[queue-poller] reclaimed merged session ${s.id} (${s.issueId}) — worktree + record removed (record archived)`);
     } catch (e) {
       console.log(`[queue-poller] reclaim failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
     }
