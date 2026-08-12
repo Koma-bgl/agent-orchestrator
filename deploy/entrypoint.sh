@@ -82,6 +82,19 @@ if [ -f "${AO_SECRETS_FILE}" ]; then
   done < "${AO_SECRETS_FILE}"
 fi
 
+# Self-heal the claude wrapper. /usr/local/bin/claude must be the headless shim
+# (claude-wrapper.sh), NOT npm's symlink into the package: claude-code's auto-updater
+# once reinstalled itself on a live VM and clobbered the wrapper, so every later spawn
+# hit the interactive trust dialog and died (2026-08-12). The image now pins the
+# version and disables updates, but restore the wrapper on every boot anyway so a
+# clobbered container heals itself on restart instead of needing a rebuild.
+if ! head -1 /usr/local/bin/claude 2>/dev/null | grep -q bash; then
+  echo "[entrypoint] restoring claude wrapper (found non-wrapper at /usr/local/bin/claude)"
+  rm -f /usr/local/bin/claude
+  cp /app/scripts/claude-wrapper.sh /usr/local/bin/claude
+  chmod +x /usr/local/bin/claude
+fi
+
 # Claude writes its per-session JSONL transcripts under
 # ${CLAUDE_CONFIG_DIR}/projects (on the volume), but the agent-claude-code plugin
 # reads activity from a HARDCODED ~/.claude/projects (homedir(), ignoring

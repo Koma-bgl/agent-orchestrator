@@ -28,8 +28,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # The TS agent-orchestrator engine (@composio/ao-cli — pulls ao-web = the prebuilt
 # Next.js dashboard, ao-core = poller/reactions/lifecycle, and the tracker-linear /
 # scm-github / runtime-tmux / agent-claude-code plugins) + the Claude Code CLI that
-# spawned agent sessions drive. Pin ao-cli exactly so self-update is deliberate.
-RUN npm install -g @composio/ao-cli@0.2.2 @anthropic-ai/claude-code \
+# spawned agent sessions drive. Pin BOTH exactly so every update is deliberate:
+# claude-code's own auto-updater once ran `npm install -g` mid-flight on a live VM
+# (2026-08-12) — the bin symlink vanished for minutes (a concurrent `ao spawn` hit
+# "claude: command not found" and the session died at launch) and the finished
+# install replaced the wrapper below with npm's plain symlink, dropping every
+# headless dialog gate for subsequent spawns. See DISABLE_UPDATES in the ENV block.
+RUN npm install -g @composio/ao-cli@0.2.2 @anthropic-ai/claude-code@2.1.228 \
  && ao --version \
  # Sanity-check that ao-web's prod entry resolves relative to the `ao` bin (it is
  # a nested dep, not resolvable from the global root — mirrors the entrypoint).
@@ -112,8 +117,17 @@ RUN chmod +x /app/entrypoint.sh \
 # never merges). It also no-ops `husky install` (npm ci's prepare step), so
 # core.hooksPath is never set. npm_config_cache pins npm's cache to the mounted
 # ao-npm-cache volume so `npm ci --prefer-offline` survives worktrees + recreates.
+# DISABLE_AUTOUPDATER/DISABLE_UPDATES: claude-code must NEVER update itself inside
+# the image — its updater runs `npm install -g`, which (a) leaves a window with no
+# `claude` on PATH (spawns launched then die with "command not found" and ao marks
+# them killed) and (b) overwrites the /usr/local/bin/claude WRAPPER with npm's raw
+# symlink, silently dropping the headless dialog gates. AUTOUPDATER kills the
+# background check; UPDATES also blocks an agent running `claude update` by hand.
+# Version bumps happen by editing the pin above and republishing the image.
 ENV AO_CONFIG_PATH=/root/.agent-orchestrator/agent-orchestrator.yaml \
     IS_SANDBOX=1 \
+    DISABLE_AUTOUPDATER=1 \
+    DISABLE_UPDATES=1 \
     HUSKY=0 \
     npm_config_cache=/root/.npm \
     GH_CONFIG_DIR=/root/.agent-orchestrator/gh \
