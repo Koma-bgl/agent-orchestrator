@@ -3,7 +3,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { archiveSessionRecord, formatPrTitle, parseSessionRecord, pickOrphanPr, upsertRecordField } from "./queue-poller.mjs";
+import {
+  archiveSessionRecord,
+  classifyPane,
+  formatPrTitle,
+  isReapableRecord,
+  parseSessionRecord,
+  pickOrphanPr,
+  upsertRecordField,
+} from "./queue-poller.mjs";
 
 test("formatPrTitle: conventional fix -> [Bugfix][TICKET]", () => {
   assert.equal(
@@ -149,4 +157,97 @@ test("upsertRecordField: round-trips through parseSessionRecord", () => {
   assert.equal(rec.pr, "https://github.com/bitgaming/valhalla/pull/10993");
   assert.equal(rec.status, "merged");
   assert.equal(rec.branch, "feat/SPOR-3349");
+});
+
+// --- classifyPane (watchdog: what is actually on the agent's screen?) ---------
+
+test("classifyPane: a live claude session with an in-flight turn is busy", () => {
+  assert.equal(
+    classifyPane("⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for age…"),
+    "busy",
+  );
+});
+
+test("classifyPane: an idle claude session at its prompt is claude", () => {
+  assert.equal(classifyPane("❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle)"), "claude");
+});
+
+test("classifyPane: a bash prompt with no claude UI is shell", () => {
+  // The SPOR-3537 shape (2026-09-03): claude was missing from PATH mid-self-update,
+  // so ao's launch fell through to bash and typed the whole ticket in as commands.
+  const pane = [
+    "claude --dangerously-skip-permissions",
+    "-bash: claude: command not found",
+    "root@df0fbb736e9e:~/.worktrees/valhalla/val-18# You are an AI coding agent",
+    "-bash: syntax error near unexpected token `('",
+    "root@df0fbb736e9e:~/.worktrees/valhalla/val-18#",
+  ].join("\n");
+  assert.equal(classifyPane(pane), "shell");
+});
+
+test("classifyPane: shell detection needs a prompt, not just the words", () => {
+  // An agent legitimately discussing a failed command must never read as a dead shell.
+  assert.equal(
+    classifyPane("❯ I ran it and got `command not found`, installing now\n  ⏵⏵ bypass permissions on"),
+    "claude",
+  );
+});
+
+test("classifyPane: an empty / not-yet-painted pane is unknown", () => {
+  assert.equal(classifyPane(""), "unknown");
+  assert.equal(classifyPane("   \n \n"), "unknown");
+});
+
+test("classifyPane: busy wins over shell — never touch a pane mid-turn", () => {
+  assert.equal(
+    classifyPane("root@host:~/w# something\nesc to interrupt"),
+    "busy",
+  );
+});
+
+// --- isReapableRecord (freeing a branch a dead session is squatting) ----------
+
+const EMPTY = { ahead: 0, dirty: false, remoteBranch: false };
+
+test("isReapableRecord: dead session, no PR, nothing committed -> reap", () => {
+  const rec = { status: "killed", branch: "feat/SPOR-3537", worktree: "/w/val-18" };
+  assert.equal(isReapableRecord(rec, EMPTY), true);
+});
+
+test("isReapableRecord: a live session is never reaped", () => {
+  const rec = { status: "working", branch: "feat/SPOR-3537", worktree: "/w/val-18" };
+  assert.equal(isReapableRecord(rec, EMPTY), false);
+});
+
+test("isReapableRecord: a linked PR is never reaped", () => {
+  const rec = {
+    status: "killed",
+    branch: "feat/SPOR-3537",
+    worktree: "/w/val-18",
+    pr: "https://github.com/bitgaming/valhalla/pull/1",
+  };
+  assert.equal(isReapableRecord(rec, EMPTY), false);
+});
+
+test("isReapableRecord: commits, dirt, or a pushed branch all block the reap", () => {
+  const rec = { status: "killed", branch: "feat/SPOR-3537", worktree: "/w/val-18" };
+  assert.equal(isReapableRecord(rec, { ...EMPTY, ahead: 1 }), false);
+  assert.equal(isReapableRecord(rec, { ...EMPTY, dirty: true }), false);
+  assert.equal(isReapableRecord(rec, { ...EMPTY, remoteBranch: true }), false);
+});
+
+test("isReapableRecord: merged/cleanup belong to the reclaim path, not this one", () => {
+  for (const status of ["merged", "cleanup"]) {
+    assert.equal(isReapableRecord({ status, branch: "b", worktree: "/w" }, EMPTY), false);
+  }
+});
+
+test("isReapableRecord: a record with no branch or no worktree has nothing to free", () => {
+  assert.equal(isReapableRecord({ status: "killed", worktree: "/w" }, EMPTY), false);
+  assert.equal(isReapableRecord({ status: "killed", branch: "b" }, EMPTY), false);
+});
+
+test("isReapableRecord: unknown git state is treated as unsafe", () => {
+  const rec = { status: "killed", branch: "feat/SPOR-3537", worktree: "/w/val-18" };
+  assert.equal(isReapableRecord(rec, null), false);
 });

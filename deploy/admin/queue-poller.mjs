@@ -627,6 +627,57 @@ async function repairBranchDrift(sessions, sessDir) {
   }
 }
 
+// --- Dead-branch reaper --------------------------------------------------------
+// `ao spawn <TICKET>` derives its branch name from the ticket, so a dead session that
+// still holds that branch in a worktree makes `git worktree add` fail — and the poller
+// retries the same doomed spawn every interval, forever, with the ticket parked in the
+// trigger column. Observed 2026-09-03: SPOR-3537 failed ~1000 times over 8h because
+// val-18 (whose agent never started; see classifyPane) never let go of feat/SPOR-3537.
+//
+// Free the branch so the next tick's spawn succeeds. Only provably-empty sessions
+// qualify (see isReapableRecord) — anything with a commit, a dirty tree, a pushed
+// branch, or a linked PR is left strictly alone. The record is archived first, exactly
+// like the reclaim path, so the issue -> branch trail survives.
+async function gitState(rec) {
+  const wt = rec.worktree;
+  if (!wt || !existsSync(wt)) return null;
+  const git = async (args, cwd = wt) =>
+    (await execFileAsync("git", ["-C", cwd, ...args], { env: process.env, timeout: 30_000 })).stdout.trim();
+  try {
+    let base;
+    try { base = await git(["rev-parse", "--abbrev-ref", "origin/HEAD"]); }
+    catch { base = "origin/main"; } // no origin/HEAD ref in this worktree
+    const ahead = parseInt(await git(["rev-list", "--count", `${base}..HEAD`]), 10);
+    const dirty = (await git(["status", "--porcelain"])).length > 0;
+    const remoteBranch = (await git(["ls-remote", "--heads", "origin", rec.branch])).length > 0;
+    return { ahead: Number.isFinite(ahead) ? ahead : NaN, dirty, remoteBranch };
+  } catch {
+    return null; // unreadable git state — isReapableRecord treats null as unsafe
+  }
+}
+
+async function reapDeadBranches(p, sessions, sessDir) {
+  for (const s of sessions) {
+    const f = join(sessDir, s.id);
+    let rec;
+    try { rec = parseSessionRecord(readFileSync(f, "utf8")); } catch { continue; }
+    // Trust the RECORD's status, not the live one: ao's lifecycle never refreshes a
+    // terminal session, and its live status flaps under PR-poll rate limiting.
+    if (!isReapableRecord(rec, await gitState(rec))) continue;
+    try {
+      const tmuxName = rec.tmuxName || s.metadata?.tmuxName;
+      if (tmuxName) await execFileAsync("tmux", ["kill-session", "-t", tmuxName], { timeout: 15_000 }).catch(() => {});
+      archiveSessionRecord(sessDir, s.id);
+      await execFileAsync("git", ["-C", p.path, "worktree", "remove", "--force", rec.worktree], { env: process.env, timeout: 60_000 });
+      await execFileAsync("git", ["-C", p.path, "branch", "-D", rec.branch], { env: process.env, timeout: 30_000 }).catch(() => {});
+      rmSync(f, { force: true });
+      console.log(`[queue-poller] reaped empty dead session ${s.id} (${s.issueId || "no issue"}) — freed ${rec.branch}`);
+    } catch (e) {
+      console.log(`[queue-poller] reap failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
+    }
+  }
+}
+
 // --- Orphan tmux reaper --------------------------------------------------------
 // A tmux session whose store record is gone (reclaimed, or ao lost it) is invisible
 // to ao but still squats its name: ao's next-id picks max(existing records)+1, so a
@@ -681,6 +732,50 @@ async function reapOrphanTmux(cfg) {
 const STUCK_AGE_MS = 90_000;
 const nudged = new Set();
 
+// What is actually on an agent's screen. Exported for tests.
+//   busy    — claude has an in-flight turn. NEVER touch this pane.
+//   claude  — claude's UI is up and idle at its prompt.
+//   shell   — claude is NOT running: a bare shell prompt owns the pane. ao launched
+//             the agent and the launch fell through to bash, so the task prompt was
+//             typed in as shell commands (see SPOR-3537, 2026-09-03: claude-code's
+//             self-updater had yanked the bin from PATH mid-install, so `claude` was
+//             "command not found" at spawn). Unrecoverable in place — the session has
+//             no agent to nudge, and re-pasting just runs the ticket as more commands.
+//   unknown — nothing painted yet; wait for a later tick.
+// Order matters: `busy` is checked first so a live agent merely *discussing* a shell
+// prompt or a "command not found" can never be misread as a dead shell.
+export function classifyPane(text) {
+  const pane = String(text || "");
+  if (!pane.trim()) return "unknown";
+  if (/esc to interrupt/.test(pane)) return "busy";
+  if (/bypass permissions|❯/.test(pane)) return "claude";
+  // A shell prompt at the START of a line (`root@host:/path#` or `$ `) is the tell.
+  // Requiring line-start plus the trailing #/$ keeps prose about prompts from matching.
+  if (/^[^\s@]+@[^\s:]+:[^\s#$]*[#$]\s*$/m.test(pane)) return "shell";
+  return "unknown";
+}
+
+// Is this record's branch safe to free? A session that died before producing anything
+// still squats its worktree + branch, and `ao spawn` derives the SAME branch name from
+// the ticket — so `git worktree add` fails and the ticket can never be picked up again
+// (observed: SPOR-3537 retried every 30s for 8h). Freeing it lets the normal spawn path
+// re-create the session from scratch.
+//
+// Deliberately paranoid — this deletes a branch, so every one of these must hold:
+//   • the session is DEAD (a live agent owns its worktree)
+//   • ...but not merged/cleanup: those belong to cleanupMerged, which archives first
+//   • no pr= linked (linkOrphanPrs runs FIRST, so a real PR is already attached)
+//   • zero commits ahead of the base, clean tree, and no branch on the remote
+// `git` is the authority on the last three; an unreadable git state (null) is unsafe.
+export function isReapableRecord(rec, git) {
+  if (!rec || !git) return false;
+  if (!rec.branch || !rec.worktree) return false;      // nothing to free
+  if (rec.pr) return false;                            // has a PR — never touch
+  if (rec.status === "merged" || rec.status === "cleanup") return false; // reclaim owns these
+  if (!DEAD.has(rec.status)) return false;             // a live agent is using it
+  return git.ahead === 0 && !git.dirty && !git.remoteBranch;
+}
+
 async function fetchIssueForPrompt(identifier) {
   try {
     const data = await linearGraphQL("query($id:String!){ issue(id:$id){ identifier title description } }", { id: identifier });
@@ -733,8 +828,19 @@ async function recoverStuck(sessions) {
     if (!(await tmuxAlive(tmuxName))) continue; // genuinely gone — can't recover via tmux
     if (hasTranscript(worktree)) continue; // it processed something — working/done/waiting; leave it
     const pane = await paneText(tmuxName);
-    if (!/bypass permissions|❯/.test(pane)) continue; // claude UI not up yet — wait for a later tick
-    if (/esc to interrupt/.test(pane)) continue; // claude has an active turn (processing) — not stuck; never double-deliver
+    const state = classifyPane(pane);
+    if (state === "busy") continue;    // claude has an active turn — not stuck; never double-deliver
+    if (state === "unknown") continue; // claude UI not up yet — wait for a later tick
+    if (state === "shell") {
+      // claude is not running at all: the launch fell through to bash and ao typed the
+      // ticket in as shell commands. There is no agent here to nudge — re-pasting would
+      // just execute more of the ticket. Kill the pane so reapDeadBranches can free the
+      // branch on a later tick and the ticket gets a clean, fresh spawn.
+      console.log(`[queue-poller] watchdog: ${s.id} (${s.issueId}) fell through to a shell — killing for respawn`);
+      await execFileAsync("tmux", ["kill-session", "-t", tmuxName], { timeout: 10_000 }).catch(() => {});
+      nudged.add(s.id);
+      continue;
+    }
     try {
       if (/\[Pasted text/.test(pane)) {
         // Failure mode A: ao pasted the prompt but the submit Enter was lost — the box
@@ -784,6 +890,7 @@ async function pollProject(pid, p) {
   await relayCiFailures(p, qp, sessions); // ao's ci_failed reaction never dispatches — tell the agent ourselves
   await relayMergeConflicts(p, qp, sessions); // conflicted PRs otherwise idle until a human clicks "ask to fix"
   await cleanupMerged(pid, p, sessions); // retire merged sessions: free the worktree + stop enrichment
+  await reapDeadBranches(p, sessions, sessDir); // LAST before spawning: free branches dead sessions squat, else their ticket can never respawn
 
   let issues;
   try { issues = await linearIssues(p.tracker.teamId, qp.filters?.labels, qp.filters?.statusName); }

@@ -154,6 +154,7 @@ AO_AUTH_URL=https://auth.binary-badger.xyz/
 GITHUB_OAUTH_CLIENT_ID=${GH_OAUTH_CLIENT_ID:-}
 WATCHTOWER_TOKEN=\${WT}
 ENV
+sudo bash /opt/ao/deploy/scripts/install-registry-login.sh
 sudo docker compose -f docker-compose.yml -f docker-compose.vm.yml up -d --build
 REMOTE
 }
