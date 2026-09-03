@@ -23,30 +23,32 @@ const DEAD = new Set(["killed", "done", "exited", "errored", "terminated", "merg
 const IDLE = new Set(["review_pending", "changes_requested", "approved", "mergeable", "pr_open"]);
 
 function parseInterval(v) {
-  if (typeof v === "number") return v;
-  const m = String(v || "").match(/^(\d+)(s|m|h)$/);
-  if (!m) return 30_000;
-  const n = parseInt(m[1], 10);
-  return m[2] === "s" ? n * 1000 : m[2] === "m" ? n * 60_000 : n * 3_600_000;
+	if (typeof v === "number") return v;
+	const m = String(v || "").match(/^(\d+)(s|m|h)$/);
+	if (!m) return 30_000;
+	const n = parseInt(m[1], 10);
+	return m[2] === "s" ? n * 1000 : m[2] === "m" ? n * 60_000 : n * 3_600_000;
 }
 
 async function linearGraphQL(query, variables) {
-  const r = await fetch("https://api.linear.app/graphql", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: LINEAR_KEY },
-    body: JSON.stringify({ query, variables }),
-  });
-  const j = await r.json();
-  if (j.errors) throw new Error(JSON.stringify(j.errors).slice(0, 300));
-  return j.data;
+	const r = await fetch("https://api.linear.app/graphql", {
+		method: "POST",
+		headers: { "content-type": "application/json", authorization: LINEAR_KEY },
+		body: JSON.stringify({ query, variables }),
+	});
+	const j = await r.json();
+	if (j.errors) throw new Error(JSON.stringify(j.errors).slice(0, 300));
+	return j.data;
 }
 
 async function linearIssues(teamId, labels, statusName) {
-  const filter = { team: { id: { eq: teamId } } };
-  if (labels && labels.length) filter.labels = { name: { in: labels } };
-  if (statusName) filter.state = { name: { eq: statusName } };
-  const data = await linearGraphQL("query($f: IssueFilter){ issues(first:50, filter:$f){ nodes { identifier } } }", { f: filter });
-  return (data?.issues?.nodes || []).map((n) => n.identifier);
+	const filter = { team: { id: { eq: teamId } } };
+	if (labels && labels.length) filter.labels = { name: { in: labels } };
+	if (statusName) filter.state = { name: { eq: statusName } };
+	const data = await linearGraphQL("query($f: IssueFilter){ issues(first:50, filter:$f){ nodes { identifier } } }", {
+		f: filter,
+	});
+	return (data?.issues?.nodes || []).map((n) => n.identifier);
 }
 
 // --- Linear status write-back ------------------------------------------------
@@ -62,59 +64,68 @@ const stateIdCache = new Map(); // `${teamId}::${nameLower}` -> stateId | null
 const syncedStatus = new Map(); // issueId(lower) -> last status NAME we wrote (dedup writes)
 
 async function resolveStateId(teamId, name) {
-  const key = `${teamId}::${String(name).toLowerCase()}`;
-  if (stateIdCache.has(key)) return stateIdCache.get(key);
-  let id = null;
-  try {
-    const data = await linearGraphQL("query($t:ID!){ workflowStates(filter:{team:{id:{eq:$t}}}){ nodes { id name } } }", { t: teamId });
-    const nodes = data?.workflowStates?.nodes || [];
-    const match = nodes.find((n) => n.name.toLowerCase() === String(name).toLowerCase());
-    if (match) id = match.id;
-    else console.log(`[queue-poller] status "${name}" not found for team ${teamId}; available: ${nodes.map((n) => n.name).join(", ")}`);
-  } catch (e) {
-    console.log(`[queue-poller] workflowStates lookup failed for team ${teamId}: ${e.message}`);
-    return null; // transient — don't cache a miss
-  }
-  stateIdCache.set(key, id);
-  return id;
+	const key = `${teamId}::${String(name).toLowerCase()}`;
+	if (stateIdCache.has(key)) return stateIdCache.get(key);
+	let id = null;
+	try {
+		const data = await linearGraphQL(
+			"query($t:ID!){ workflowStates(filter:{team:{id:{eq:$t}}}){ nodes { id name } } }",
+			{ t: teamId },
+		);
+		const nodes = data?.workflowStates?.nodes || [];
+		const match = nodes.find((n) => n.name.toLowerCase() === String(name).toLowerCase());
+		if (match) id = match.id;
+		else
+			console.log(
+				`[queue-poller] status "${name}" not found for team ${teamId}; available: ${nodes.map((n) => n.name).join(", ")}`,
+			);
+	} catch (e) {
+		console.log(`[queue-poller] workflowStates lookup failed for team ${teamId}: ${e.message}`);
+		return null; // transient — don't cache a miss
+	}
+	stateIdCache.set(key, id);
+	return id;
 }
 
 // Move an issue to a named status, at most once per (issue, status). issueUpdate's
 // `id` accepts the short identifier (e.g. SPOR-3220) directly.
 async function moveIssue(teamId, identifier, statusName) {
-  if (!teamId || !identifier || !statusName) return;
-  const seenKey = String(identifier).toLowerCase();
-  if (syncedStatus.get(seenKey) === statusName) return;
-  const stateId = await resolveStateId(teamId, statusName);
-  if (!stateId) return;
-  try {
-    const data = await linearGraphQL("mutation($id:String!,$s:String!){ issueUpdate(id:$id, input:{stateId:$s}){ success } }", { id: identifier, s: stateId });
-    if (data?.issueUpdate?.success) {
-      syncedStatus.set(seenKey, statusName);
-      console.log(`[queue-poller] ${identifier} -> "${statusName}"`);
-    }
-  } catch (e) {
-    console.log(`[queue-poller] failed to move ${identifier} -> "${statusName}": ${e.message}`);
-  }
+	if (!teamId || !identifier || !statusName) return;
+	const seenKey = String(identifier).toLowerCase();
+	if (syncedStatus.get(seenKey) === statusName) return;
+	const stateId = await resolveStateId(teamId, statusName);
+	if (!stateId) return;
+	try {
+		const data = await linearGraphQL(
+			"mutation($id:String!,$s:String!){ issueUpdate(id:$id, input:{stateId:$s}){ success } }",
+			{ id: identifier, s: stateId },
+		);
+		if (data?.issueUpdate?.success) {
+			syncedStatus.set(seenKey, statusName);
+			console.log(`[queue-poller] ${identifier} -> "${statusName}"`);
+		}
+	} catch (e) {
+		console.log(`[queue-poller] failed to move ${identifier} -> "${statusName}": ${e.message}`);
+	}
 }
 
 // Reconcile live session states -> Linear ticket status (best-effort, non-fatal).
 function targetStatusFor(sessionStatus, qp) {
-  if (sessionStatus === "working") return qp.onStartStatus || "In Progress";
-  if (sessionStatus === "pr_open" || sessionStatus === "review_pending") return qp.onReviewStatus || "Ready for review";
-  // Deliberately NO merged → Done move: a merged PR leaves the ticket at "Ready for
-  // review" so a human owns the final Done/QA/release call. It's opt-in — a user can
-  // set queuePoller.onDoneStatus later (e.g. via setup) to auto-close on merge.
-  if (sessionStatus === "merged" && qp.onDoneStatus) return qp.onDoneStatus;
-  return null;
+	if (sessionStatus === "working") return qp.onStartStatus || "In Progress";
+	if (sessionStatus === "pr_open" || sessionStatus === "review_pending") return qp.onReviewStatus || "Ready for review";
+	// Deliberately NO merged → Done move: a merged PR leaves the ticket at "Ready for
+	// review" so a human owns the final Done/QA/release call. It's opt-in — a user can
+	// set queuePoller.onDoneStatus later (e.g. via setup) to auto-close on merge.
+	if (sessionStatus === "merged" && qp.onDoneStatus) return qp.onDoneStatus;
+	return null;
 }
 
 async function syncStatuses(teamId, sessions, qp) {
-  for (const s of sessions) {
-    if (!s.issueId) continue;
-    const target = targetStatusFor(s.status, qp);
-    if (target) await moveIssue(teamId, String(s.issueId), target);
-  }
+	for (const s of sessions) {
+		if (!s.issueId) continue;
+		const target = targetStatusFor(s.status, qp);
+		if (target) await moveIssue(teamId, String(s.issueId), target);
+	}
 }
 
 // --- Auto-merge (fully autonomous) -------------------------------------------
@@ -139,68 +150,81 @@ const lastContextCheck = new Map(); // sessionId -> ms (throttle Linear getComme
 const deliveredComments = new Map(); // sessionId -> Set(commentId) already surfaced to the agent
 
 async function fetchIssueContext(identifier) {
-  try {
-    const data = await linearGraphQL(
-      "query($id:String!){ issue(id:$id){ identifier title description comments{ nodes { id body createdAt user{ displayName name } } } } }",
-      { id: identifier },
-    );
-    const iss = data?.issue;
-    if (!iss) return null;
-    const comments = (iss.comments?.nodes || [])
-      .map((c) => ({ id: c.id, body: c.body || "", createdAt: c.createdAt, author: (c.user && (c.user.displayName || c.user.name)) || "Unknown" }))
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)); // newest first
-    return { identifier: iss.identifier, title: iss.title || "", description: iss.description || "", comments };
-  } catch { return null; }
+	try {
+		const data = await linearGraphQL(
+			"query($id:String!){ issue(id:$id){ identifier title description comments{ nodes { id body createdAt user{ displayName name } } } } }",
+			{ id: identifier },
+		);
+		const iss = data?.issue;
+		if (!iss) return null;
+		const comments = (iss.comments?.nodes || [])
+			.map((c) => ({
+				id: c.id,
+				body: c.body || "",
+				createdAt: c.createdAt,
+				author: (c.user && (c.user.displayName || c.user.name)) || "Unknown",
+			}))
+			.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)); // newest first
+		return { identifier: iss.identifier, title: iss.title || "", description: iss.description || "", comments };
+	} catch {
+		return null;
+	}
 }
 
 function renderTaskFile(iss) {
-  const out = [`# ${iss.identifier}: ${iss.title}`, "", "## Description", "", iss.description || "(none)", ""];
-  if (iss.comments.length) {
-    out.push("## Comments — NEWEST FIRST (the latest comment supersedes earlier rounds)", "");
-    for (const c of iss.comments) out.push(`### @${c.author} (${String(c.createdAt).split("T")[0]})`, "", c.body, "");
-  }
-  return out.join("\n");
+	const out = [`# ${iss.identifier}: ${iss.title}`, "", "## Description", "", iss.description || "(none)", ""];
+	if (iss.comments.length) {
+		out.push("## Comments — NEWEST FIRST (the latest comment supersedes earlier rounds)", "");
+		for (const c of iss.comments) out.push(`### @${c.author} (${String(c.createdAt).split("T")[0]})`, "", c.body, "");
+	}
+	return out.join("\n");
 }
 
 async function nudge(tmuxName, message) {
-  try {
-    await execFileAsync("tmux", ["set-buffer", "-b", "aoctx", message], { timeout: 10_000 });
-    await execFileAsync("tmux", ["paste-buffer", "-d", "-b", "aoctx", "-t", tmuxName], { timeout: 10_000 });
-    await sleep(800);
-    await execFileAsync("tmux", ["send-keys", "-t", tmuxName, "Enter"], { timeout: 10_000 });
-    return true;
-  } catch { return false; }
+	try {
+		await execFileAsync("tmux", ["set-buffer", "-b", "aoctx", message], { timeout: 10_000 });
+		await execFileAsync("tmux", ["paste-buffer", "-d", "-b", "aoctx", "-t", tmuxName], { timeout: 10_000 });
+		await sleep(800);
+		await execFileAsync("tmux", ["send-keys", "-t", tmuxName, "Enter"], { timeout: 10_000 });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 async function syncContext(sessions) {
-  for (const s of sessions) {
-    const tmuxName = s.metadata?.tmuxName;
-    const worktree = s.metadata?.worktree;
-    if (!s.issueId || !tmuxName || !worktree || DEAD.has(s.status)) continue; // live sessions only
-    if (Date.now() - (lastContextCheck.get(s.id) ?? 0) < CONTEXT_CHECK_MS) continue;
-    lastContextCheck.set(s.id, Date.now());
+	for (const s of sessions) {
+		const tmuxName = s.metadata?.tmuxName;
+		const worktree = s.metadata?.worktree;
+		if (!s.issueId || !tmuxName || !worktree || DEAD.has(s.status)) continue; // live sessions only
+		if (Date.now() - (lastContextCheck.get(s.id) ?? 0) < CONTEXT_CHECK_MS) continue;
+		lastContextCheck.set(s.id, Date.now());
 
-    const iss = await fetchIssueContext(s.issueId);
-    if (!iss || !iss.comments.length) continue; // no comments → no truncation risk → nothing to sync
+		const iss = await fetchIssueContext(s.issueId);
+		if (!iss || !iss.comments.length) continue; // no comments → no truncation risk → nothing to sync
 
-    try { writeFileSync(`${worktree}/.ao-task.md`, renderTaskFile(iss)); } catch { continue; } // keep it current
+		try {
+			writeFileSync(`${worktree}/.ao-task.md`, renderTaskFile(iss));
+		} catch {
+			continue;
+		} // keep it current
 
-    const seen = deliveredComments.get(s.id) ?? new Set();
-    const firstSight = !deliveredComments.has(s.id);
-    const fresh = iss.comments.filter((c) => !seen.has(c.id));
-    if (!fresh.length) continue; // agent already knows everything
+		const seen = deliveredComments.get(s.id) ?? new Set();
+		const firstSight = !deliveredComments.has(s.id);
+		const fresh = iss.comments.filter((c) => !seen.has(c.id));
+		if (!fresh.length) continue; // agent already knows everything
 
-    const pane = await paneText(tmuxName);
-    if (!/bypass permissions|❯/.test(pane)) continue; // UI not up yet — retry next window (comments stay fresh)
+		const pane = await paneText(tmuxName);
+		if (!/bypass permissions|❯/.test(pane)) continue; // UI not up yet — retry next window (comments stay fresh)
 
-    const msg = firstSight
-      ? `Your complete task and ALL ticket comments (including the newest) are in ./.ao-task.md — your initial prompt may have been truncated. Read ./.ao-task.md in full before implementing and address the NEWEST comment. Do NOT conclude "already resolved" without handling the latest follow-up. Do not commit .ao-task.md.`
-      : `New follow-up comment(s) added to ./.ao-task.md — re-read it (newest first) and address the latest feedback for ${s.issueId}.`;
-    if (await nudge(tmuxName, msg)) {
-      fresh.forEach((c) => seen.add(c.id));
-      deliveredComments.set(s.id, seen);
-    }
-  }
+		const msg = firstSight
+			? `Your complete task and ALL ticket comments (including the newest) are in ./.ao-task.md — your initial prompt may have been truncated. Read ./.ao-task.md in full before implementing and address the NEWEST comment. Do NOT conclude "already resolved" without handling the latest follow-up. Do not commit .ao-task.md.`
+			: `New follow-up comment(s) added to ./.ao-task.md — re-read it (newest first) and address the latest feedback for ${s.issueId}.`;
+		if (await nudge(tmuxName, msg)) {
+			fresh.forEach((c) => seen.add(c.id));
+			deliveredComments.set(s.id, seen);
+		}
+	}
 }
 
 const mergedPRs = new Set();
@@ -210,11 +234,16 @@ const mergedPRs = new Set();
 // GraphQL points, or null if the check fails (in which case we proceed — don't block
 // on a flaky check).
 async function graphqlRemaining() {
-  try {
-    const { stdout } = await execFileAsync("gh", ["api", "rate_limit", "--jq", ".resources.graphql.remaining"], { env: process.env, timeout: 15_000 });
-    const n = parseInt(stdout.trim(), 10);
-    return Number.isFinite(n) ? n : null;
-  } catch { return null; }
+	try {
+		const { stdout } = await execFileAsync("gh", ["api", "rate_limit", "--jq", ".resources.graphql.remaining"], {
+			env: process.env,
+			timeout: 15_000,
+		});
+		const n = parseInt(stdout.trim(), 10);
+		return Number.isFinite(n) ? n : null;
+	} catch {
+		return null;
+	}
 }
 
 const prVerifiedAt = new Map(); // pr.url -> last direct gh-check ms (throttle orphan re-checks)
@@ -226,9 +255,22 @@ const prVerifiedAt = new Map(); // pr.url -> last direct gh-check ms (throttle o
 // the open PR, and `gh pr merge --squash` uses the PR title as the squashed commit
 // subject — so a correct title fixes the merge commit too.
 const TYPE_MAP = {
-  feat: "Feat", feature: "Feat", fix: "Bugfix", bugfix: "Bugfix", bug: "Bugfix",
-  perf: "Perf", chore: "Chore", refactor: "Refactor", docs: "Docs", doc: "Docs",
-  test: "Test", tests: "Test", build: "Build", ci: "CI", style: "Style", revert: "Revert",
+	feat: "Feat",
+	feature: "Feat",
+	fix: "Bugfix",
+	bugfix: "Bugfix",
+	bug: "Bugfix",
+	perf: "Perf",
+	chore: "Chore",
+	refactor: "Refactor",
+	docs: "Docs",
+	doc: "Docs",
+	test: "Test",
+	tests: "Test",
+	build: "Build",
+	ci: "CI",
+	style: "Style",
+	revert: "Revert",
 };
 
 /**
@@ -236,27 +278,35 @@ const TYPE_MAP = {
  * Returns the corrected title, or null when no change is needed / no ticket to key on.
  */
 export function formatPrTitle(title, ticket) {
-  const tk = String(ticket || "").trim().toUpperCase();
-  if (!tk) return null; // without a ticket we can't (and shouldn't) reformat
-  let body = String(title || "").trim();
-  // Already `[Anything][TICKET] …`? Leave it — don't churn a hand-correct title.
-  if (new RegExp(`^\\[[^\\]]+\\]\\[${tk}\\]\\s*\\S`, "i").test(body)) return null;
-  // Drop a trailing " [TICKET]" suffix (the conventional-with-suffix style we also emit).
-  body = body.replace(new RegExp(`\\s*\\[${tk}\\]\\s*$`, "i"), "").trim();
-  let type = null;
-  // Prefer a conventional-commit prefix: type(scope)?!?: desc
-  const cc = body.match(/^([a-zA-Z]+)(?:\([^)]*\))?!?:\s*(.*)$/);
-  if (cc && TYPE_MAP[cc[1].toLowerCase()]) { type = TYPE_MAP[cc[1].toLowerCase()]; body = cc[2].trim(); }
-  // Else an existing leading [Type] bracket (already-tagged but missing the ticket) —
-  // but not when that leading bracket is the ticket itself.
-  if (!type) {
-    const lead = body.match(/^\[([^\]]+)\]\s*(.*)$/);
-    if (lead && lead[1].trim().toUpperCase() !== tk) { type = TYPE_MAP[lead[1].toLowerCase()] || lead[1].trim(); body = lead[2].trim(); }
-  }
-  // Strip a leftover leading [TICKET] if the title led with it.
-  body = body.replace(new RegExp(`^\\[${tk}\\]\\s*`, "i"), "").trim();
-  const desc = body ? body.charAt(0).toUpperCase() + body.slice(1) : "";
-  return `[${type || "Chore"}][${tk}] ${desc}`.trim();
+	const tk = String(ticket || "")
+		.trim()
+		.toUpperCase();
+	if (!tk) return null; // without a ticket we can't (and shouldn't) reformat
+	let body = String(title || "").trim();
+	// Already `[Anything][TICKET] …`? Leave it — don't churn a hand-correct title.
+	if (new RegExp(`^\\[[^\\]]+\\]\\[${tk}\\]\\s*\\S`, "i").test(body)) return null;
+	// Drop a trailing " [TICKET]" suffix (the conventional-with-suffix style we also emit).
+	body = body.replace(new RegExp(`\\s*\\[${tk}\\]\\s*$`, "i"), "").trim();
+	let type = null;
+	// Prefer a conventional-commit prefix: type(scope)?!?: desc
+	const cc = body.match(/^([a-zA-Z]+)(?:\([^)]*\))?!?:\s*(.*)$/);
+	if (cc && TYPE_MAP[cc[1].toLowerCase()]) {
+		type = TYPE_MAP[cc[1].toLowerCase()];
+		body = cc[2].trim();
+	}
+	// Else an existing leading [Type] bracket (already-tagged but missing the ticket) —
+	// but not when that leading bracket is the ticket itself.
+	if (!type) {
+		const lead = body.match(/^\[([^\]]+)\]\s*(.*)$/);
+		if (lead && lead[1].trim().toUpperCase() !== tk) {
+			type = TYPE_MAP[lead[1].toLowerCase()] || lead[1].trim();
+			body = lead[2].trim();
+		}
+	}
+	// Strip a leftover leading [TICKET] if the title led with it.
+	body = body.replace(new RegExp(`^\\[${tk}\\]\\s*`, "i"), "").trim();
+	const desc = body ? body.charAt(0).toUpperCase() + body.slice(1) : "";
+	return `[${type || "Chore"}][${tk}] ${desc}`.trim();
 }
 
 const titledPRs = new Set(); // pr.url -> normalized (or confirmed-correct) once; dedup edits
@@ -264,105 +314,140 @@ const titledPRs = new Set(); // pr.url -> normalized (or confirmed-correct) once
 // Rewrite non-conforming PR titles to `[Type][TICKET] …`, once per PR. Uses the PR
 // title from /api/sessions when present (free); falls back to one `gh pr view` read.
 async function normalizePrTitles(p, qp, sessions) {
-  if (!p.repo) return;
-  // Only PRs we haven't handled and that carry a ticket are candidates. If none need a
-  // (possible) GitHub read, do nothing — and never add GitHub pressure while the budget
-  // is low (the /rate_limit probe itself is exempt).
-  const candidates = sessions.filter((s) => s.pr?.url && s.issueId && !titledPRs.has(s.pr.url));
-  if (!candidates.length) return;
-  // A title read (gh pr view) and edit (gh pr edit) are both GraphQL — never add
-  // pressure while the budget is low (the /rate_limit probe itself is exempt).
-  const remaining = await graphqlRemaining();
-  if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) {
-    console.log(`[queue-poller] skipping title normalize — GitHub GraphQL remaining ${remaining} < floor`);
-    return;
-  }
-  for (const s of candidates) {
-    const pr = s.pr;
-    const m = pr.url.match(/\/pull\/(\d+)/);
-    const prNum = pr.number || (m && m[1]);
-    if (!prNum) continue;
-    try {
-      let current = pr.title;
-      if (!current) {
-        const { stdout } = await execFileAsync("gh", ["pr", "view", String(prNum), "--repo", p.repo, "--json", "title", "--jq", ".title"], { env: process.env, timeout: 30_000 });
-        current = stdout.trim();
-      }
-      const fixed = formatPrTitle(current, s.issueId);
-      titledPRs.add(pr.url); // mark handled regardless — one attempt per PR
-      if (fixed && fixed !== current) {
-        await execFileAsync("gh", ["pr", "edit", String(prNum), "--repo", p.repo, "--title", fixed], { env: process.env, timeout: 30_000 });
-        console.log(`[queue-poller] PR #${prNum} title -> "${fixed}"`);
-      }
-    } catch (e) {
-      titledPRs.delete(pr.url); // transient — retry next window
-      console.log(`[queue-poller] title normalize failed for #${prNum}: ${String(e.stderr || e.message).slice(0, 200)}`);
-    }
-  }
+	if (!p.repo) return;
+	// Only PRs we haven't handled and that carry a ticket are candidates. If none need a
+	// (possible) GitHub read, do nothing — and never add GitHub pressure while the budget
+	// is low (the /rate_limit probe itself is exempt).
+	const candidates = sessions.filter((s) => s.pr?.url && s.issueId && !titledPRs.has(s.pr.url));
+	if (!candidates.length) return;
+	// A title read (gh pr view) and edit (gh pr edit) are both GraphQL — never add
+	// pressure while the budget is low (the /rate_limit probe itself is exempt).
+	const remaining = await graphqlRemaining();
+	if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) {
+		console.log(`[queue-poller] skipping title normalize — GitHub GraphQL remaining ${remaining} < floor`);
+		return;
+	}
+	for (const s of candidates) {
+		const pr = s.pr;
+		const m = pr.url.match(/\/pull\/(\d+)/);
+		const prNum = pr.number || (m && m[1]);
+		if (!prNum) continue;
+		try {
+			let current = pr.title;
+			if (!current) {
+				const { stdout } = await execFileAsync(
+					"gh",
+					["pr", "view", String(prNum), "--repo", p.repo, "--json", "title", "--jq", ".title"],
+					{ env: process.env, timeout: 30_000 },
+				);
+				current = stdout.trim();
+			}
+			const fixed = formatPrTitle(current, s.issueId);
+			titledPRs.add(pr.url); // mark handled regardless — one attempt per PR
+			if (fixed && fixed !== current) {
+				await execFileAsync("gh", ["pr", "edit", String(prNum), "--repo", p.repo, "--title", fixed], {
+					env: process.env,
+					timeout: 30_000,
+				});
+				console.log(`[queue-poller] PR #${prNum} title -> "${fixed}"`);
+			}
+		} catch (e) {
+			titledPRs.delete(pr.url); // transient — retry next window
+			console.log(
+				`[queue-poller] title normalize failed for #${prNum}: ${String(e.stderr || e.message).slice(0, 200)}`,
+			);
+		}
+	}
 }
 
 async function autoMergePRs(pid, p, qp, sessions) {
-  if (!qp.autoMerge || !p.repo) return;
-  // A container recreate (redeploy / nightly) kills live sessions, so a session with an
-  // open PR ends up "killed" with STALE cached PR data the lifecycle no longer refreshes.
-  // Its PR must still merge once approved — else it's orphaned. So:
-  //   • alive sessions: trust the fresh /api/sessions PR data (free, no GitHub read);
-  //   • terminal (killed/exited/…) sessions with an open PR: re-check directly via gh,
-  //     throttled to once/2min per PR (matches ao's own review cadence).
-  const ready = []; // {issueId, url, prNum} — confirmed mergeable
-  const verify = []; // terminal sessions whose PR needs a fresh direct check
-  for (const s of sessions) {
-    if (s.projectId !== pid) continue;
-    const pr = s.pr;
-    if (!pr || typeof pr !== "object" || !pr.url || mergedPRs.has(pr.url)) continue;
-    const m = pr.url.match(/\/pull\/(\d+)/);
-    const prNum = pr.number || (m && m[1]);
-    if (!prNum) continue;
-    const entry = { issueId: s.issueId, url: pr.url, prNum, sid: s.id, dead: DEAD.has(s.status) };
-    const mg = pr.mergeability || {};
-    const cachedReady = pr.reviewDecision === "approved" && mg.mergeable && mg.ciPassing && mg.approved && mg.noConflicts && (mg.blockers?.length ?? 0) === 0;
-    if (cachedReady) ready.push(entry);
-    else if (DEAD.has(s.status) && s.status !== "merged" && s.status !== "cleanup") {
-      const last = prVerifiedAt.get(pr.url) ?? 0;
-      if (Date.now() - last >= 120_000) verify.push(entry); // orphaned PR — re-check
-    }
-  }
-  if (!ready.length && !verify.length) return; // nothing to do — zero GitHub API this tick
-  // Gate all GitHub work on the rate-limit backstop (the /rate_limit check is exempt).
-  const floor = qp.rateLimitFloor ?? 500;
-  const remaining = await graphqlRemaining();
-  if (remaining != null && remaining < floor) {
-    console.log(`[queue-poller] skipping auto-merge — GitHub GraphQL remaining ${remaining} < ${floor}`);
-    return;
-  }
-  // Fresh-check orphaned PRs (killed sessions); promote to `ready` if now mergeable.
-  for (const e of verify) {
-    prVerifiedAt.set(e.url, Date.now());
-    try {
-      const { stdout } = await execFileAsync("gh", ["pr", "view", String(e.prNum), "--repo", p.repo, "--json", "state,reviewDecision,mergeable,mergeStateStatus"], { env: process.env, timeout: 30_000 });
-      const i = JSON.parse(stdout);
-      if (i.state === "MERGED") { mergedPRs.add(e.url); continue; }
-      if (i.state === "OPEN" && i.reviewDecision === "APPROVED" && i.mergeable === "MERGEABLE" && i.mergeStateStatus === "CLEAN") ready.push(e);
-    } catch { /* transient — retry next window */ }
-  }
-  for (const r of ready) {
-    try {
-      console.log(`[queue-poller] auto-merge: ${r.issueId} PR #${r.prNum} (approved+green+clean) — squash merging`);
-      await execFileAsync("gh", ["pr", "merge", String(r.prNum), "--repo", p.repo, "--squash"], { env: process.env, timeout: 60_000 });
-      mergedPRs.add(r.url);
-      if (r.dead) {
-        // A dead session's status is never refreshed by the lifecycle, so nothing would
-        // ever flip it to merged — write it ourselves so cleanupMerged can reclaim the
-        // worktree + record instead of leaving them behind forever.
-        try {
-          const f = join(projectBaseDir(CONFIG_PATH, p.path), "sessions", r.sid);
-          writeFileSync(f, upsertRecordField(readFileSync(f, "utf8"), "status", "merged"));
-        } catch { /* record already gone — reclaim has nothing to do */ }
-      }
-    } catch (e) {
-      console.log(`[queue-poller] auto-merge failed for #${r.prNum}: ${String(e.stderr || e.message).slice(0, 300)}`);
-    }
-  }
+	if (!qp.autoMerge || !p.repo) return;
+	// A container recreate (redeploy / nightly) kills live sessions, so a session with an
+	// open PR ends up "killed" with STALE cached PR data the lifecycle no longer refreshes.
+	// Its PR must still merge once approved — else it's orphaned. So:
+	//   • alive sessions: trust the fresh /api/sessions PR data (free, no GitHub read);
+	//   • terminal (killed/exited/…) sessions with an open PR: re-check directly via gh,
+	//     throttled to once/2min per PR (matches ao's own review cadence).
+	const ready = []; // {issueId, url, prNum} — confirmed mergeable
+	const verify = []; // terminal sessions whose PR needs a fresh direct check
+	for (const s of sessions) {
+		if (s.projectId !== pid) continue;
+		const pr = s.pr;
+		if (!pr || typeof pr !== "object" || !pr.url || mergedPRs.has(pr.url)) continue;
+		const m = pr.url.match(/\/pull\/(\d+)/);
+		const prNum = pr.number || (m && m[1]);
+		if (!prNum) continue;
+		const entry = { issueId: s.issueId, url: pr.url, prNum, sid: s.id, dead: DEAD.has(s.status) };
+		const mg = pr.mergeability || {};
+		const cachedReady =
+			pr.reviewDecision === "approved" &&
+			mg.mergeable &&
+			mg.ciPassing &&
+			mg.approved &&
+			mg.noConflicts &&
+			(mg.blockers?.length ?? 0) === 0;
+		if (cachedReady) ready.push(entry);
+		else if (DEAD.has(s.status) && s.status !== "merged" && s.status !== "cleanup") {
+			const last = prVerifiedAt.get(pr.url) ?? 0;
+			if (Date.now() - last >= 120_000) verify.push(entry); // orphaned PR — re-check
+		}
+	}
+	if (!ready.length && !verify.length) return; // nothing to do — zero GitHub API this tick
+	// Gate all GitHub work on the rate-limit backstop (the /rate_limit check is exempt).
+	const floor = qp.rateLimitFloor ?? 500;
+	const remaining = await graphqlRemaining();
+	if (remaining != null && remaining < floor) {
+		console.log(`[queue-poller] skipping auto-merge — GitHub GraphQL remaining ${remaining} < ${floor}`);
+		return;
+	}
+	// Fresh-check orphaned PRs (killed sessions); promote to `ready` if now mergeable.
+	for (const e of verify) {
+		prVerifiedAt.set(e.url, Date.now());
+		try {
+			const { stdout } = await execFileAsync(
+				"gh",
+				["pr", "view", String(e.prNum), "--repo", p.repo, "--json", "state,reviewDecision,mergeable,mergeStateStatus"],
+				{ env: process.env, timeout: 30_000 },
+			);
+			const i = JSON.parse(stdout);
+			if (i.state === "MERGED") {
+				mergedPRs.add(e.url);
+				continue;
+			}
+			if (
+				i.state === "OPEN" &&
+				i.reviewDecision === "APPROVED" &&
+				i.mergeable === "MERGEABLE" &&
+				i.mergeStateStatus === "CLEAN"
+			)
+				ready.push(e);
+		} catch {
+			/* transient — retry next window */
+		}
+	}
+	for (const r of ready) {
+		try {
+			console.log(`[queue-poller] auto-merge: ${r.issueId} PR #${r.prNum} (approved+green+clean) — squash merging`);
+			await execFileAsync("gh", ["pr", "merge", String(r.prNum), "--repo", p.repo, "--squash"], {
+				env: process.env,
+				timeout: 60_000,
+			});
+			mergedPRs.add(r.url);
+			if (r.dead) {
+				// A dead session's status is never refreshed by the lifecycle, so nothing would
+				// ever flip it to merged — write it ourselves so cleanupMerged can reclaim the
+				// worktree + record instead of leaving them behind forever.
+				try {
+					const f = join(projectBaseDir(CONFIG_PATH, p.path), "sessions", r.sid);
+					writeFileSync(f, upsertRecordField(readFileSync(f, "utf8"), "status", "merged"));
+				} catch {
+					/* record already gone — reclaim has nothing to do */
+				}
+			}
+		} catch (e) {
+			console.log(`[queue-poller] auto-merge failed for #${r.prNum}: ${String(e.stderr || e.message).slice(0, 300)}`);
+		}
+	}
 }
 
 // --- CI-failure relay ----------------------------------------------------------
@@ -377,37 +462,41 @@ async function autoMergePRs(pid, p, qp, sessions) {
 const ciNudged = new Map(); // pr.url -> head SHA already relayed
 
 async function relayCiFailures(p, qp, sessions) {
-  if (!p.repo) return;
-  const failed = sessions.filter((s) => s.status === "ci_failed" && s.pr?.url && s.metadata?.tmuxName);
-  if (!failed.length) return;
-  const remaining = await graphqlRemaining();
-  if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) return; // never add pressure while throttled
-  for (const s of failed) {
-    const m = s.pr.url.match(/\/pull\/(\d+)/);
-    const prNum = s.pr.number || (m && m[1]);
-    if (!prNum) continue;
-    try {
-      const { stdout } = await execFileAsync("gh", ["pr", "view", String(prNum), "--repo", p.repo, "--json", "headRefOid,statusCheckRollup"], { env: process.env, timeout: 30_000 });
-      const info = JSON.parse(stdout);
-      if (ciNudged.get(s.pr.url) === info.headRefOid) continue; // this SHA's failure already relayed
-      const failing = (info.statusCheckRollup || [])
-        .filter((c) => ["FAILURE", "ERROR", "TIMED_OUT"].includes(String(c.conclusion || "").toUpperCase()))
-        .map((c) => c.name);
-      if (!failing.length) continue; // rollup lagging the status (e.g. checks re-running) — retry next tick
-      const pane = await paneText(s.metadata.tmuxName);
-      if (pane.includes("esc to interrupt")) continue; // agent mid-task — retry next tick
-      const ok = await nudge(
-        s.metadata.tmuxName,
-        `CI failed on your PR #${prNum} — failing checks: ${failing.join(", ")}. In this worktree: run \`gh pr checks ${prNum}\` and \`gh run view --log-failed\` on the failing run to see why, fix it, run the fast local checks, then commit and push to the same branch. After pushing, stop again — the orchestrator keeps monitoring CI.`,
-      );
-      if (ok) {
-        ciNudged.set(s.pr.url, info.headRefOid);
-        console.log(`[queue-poller] relayed CI failure to ${s.id} (PR #${prNum}: ${failing.join(", ")})`);
-      }
-    } catch (e) {
-      console.log(`[queue-poller] CI relay failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
-    }
-  }
+	if (!p.repo) return;
+	const failed = sessions.filter((s) => s.status === "ci_failed" && s.pr?.url && s.metadata?.tmuxName);
+	if (!failed.length) return;
+	const remaining = await graphqlRemaining();
+	if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) return; // never add pressure while throttled
+	for (const s of failed) {
+		const m = s.pr.url.match(/\/pull\/(\d+)/);
+		const prNum = s.pr.number || (m && m[1]);
+		if (!prNum) continue;
+		try {
+			const { stdout } = await execFileAsync(
+				"gh",
+				["pr", "view", String(prNum), "--repo", p.repo, "--json", "headRefOid,statusCheckRollup"],
+				{ env: process.env, timeout: 30_000 },
+			);
+			const info = JSON.parse(stdout);
+			if (ciNudged.get(s.pr.url) === info.headRefOid) continue; // this SHA's failure already relayed
+			const failing = (info.statusCheckRollup || [])
+				.filter((c) => ["FAILURE", "ERROR", "TIMED_OUT"].includes(String(c.conclusion || "").toUpperCase()))
+				.map((c) => c.name);
+			if (!failing.length) continue; // rollup lagging the status (e.g. checks re-running) — retry next tick
+			const pane = await paneText(s.metadata.tmuxName);
+			if (pane.includes("esc to interrupt")) continue; // agent mid-task — retry next tick
+			const ok = await nudge(
+				s.metadata.tmuxName,
+				`CI failed on your PR #${prNum} — failing checks: ${failing.join(", ")}. In this worktree: run \`gh pr checks ${prNum}\` and \`gh run view --log-failed\` on the failing run to see why, fix it, run the fast local checks, then commit and push to the same branch. After pushing, stop again — the orchestrator keeps monitoring CI.`,
+			);
+			if (ok) {
+				ciNudged.set(s.pr.url, info.headRefOid);
+				console.log(`[queue-poller] relayed CI failure to ${s.id} (PR #${prNum}: ${failing.join(", ")})`);
+			}
+		} catch (e) {
+			console.log(`[queue-poller] CI relay failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
+		}
+	}
 }
 
 // --- Merge-conflict relay ------------------------------------------------------
@@ -420,38 +509,51 @@ async function relayCiFailures(p, qp, sessions) {
 const conflictNudged = new Map(); // pr.url -> { sha, at }
 
 async function relayMergeConflicts(p, qp, sessions) {
-  if (!p.repo) return;
-  const candidates = sessions.filter((s) =>
-    s.pr?.url && s.metadata?.tmuxName && !DEAD.has(s.status) && s.pr.mergeability?.noConflicts === false && !mergedPRs.has(s.pr.url));
-  if (!candidates.length) return;
-  const remaining = await graphqlRemaining();
-  if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) return; // never add pressure while throttled
-  for (const s of candidates) {
-    const m = s.pr.url.match(/\/pull\/(\d+)/);
-    const prNum = s.pr.number || (m && m[1]);
-    if (!prNum) continue;
-    try {
-      const { stdout } = await execFileAsync("gh", ["pr", "view", String(prNum), "--repo", p.repo, "--json", "state,mergeable,headRefOid,baseRefName"], { env: process.env, timeout: 30_000 });
-      const info = JSON.parse(stdout);
-      if (info.state === "MERGED") { mergedPRs.add(s.pr.url); continue; }
-      if (info.state !== "OPEN" || info.mergeable !== "CONFLICTING") continue; // cached badge was stale
-      const prev = conflictNudged.get(s.pr.url);
-      if (prev && prev.sha === info.headRefOid && Date.now() - prev.at < 30 * 60_000) continue;
-      const pane = await paneText(s.metadata.tmuxName);
-      if (pane.includes("esc to interrupt")) continue; // agent mid-task — retry next tick
-      const base = info.baseRefName || "the base branch";
-      const ok = await nudge(
-        s.metadata.tmuxName,
-        `Your PR #${prNum} has merge conflicts with ${base}. In this worktree: run \`git fetch origin\` and \`git merge origin/${base}\`, resolve every conflict (keep both sides' intent — check the conflicting commits with \`git log --merge\`), run the fast local checks, then commit the merge and push to the same branch. After pushing, stop again — the orchestrator keeps monitoring the PR.`,
-      );
-      if (ok) {
-        conflictNudged.set(s.pr.url, { sha: info.headRefOid, at: Date.now() });
-        console.log(`[queue-poller] relayed merge conflict to ${s.id} (PR #${prNum} vs ${base})`);
-      }
-    } catch (e) {
-      console.log(`[queue-poller] conflict relay failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
-    }
-  }
+	if (!p.repo) return;
+	const candidates = sessions.filter(
+		(s) =>
+			s.pr?.url &&
+			s.metadata?.tmuxName &&
+			!DEAD.has(s.status) &&
+			s.pr.mergeability?.noConflicts === false &&
+			!mergedPRs.has(s.pr.url),
+	);
+	if (!candidates.length) return;
+	const remaining = await graphqlRemaining();
+	if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) return; // never add pressure while throttled
+	for (const s of candidates) {
+		const m = s.pr.url.match(/\/pull\/(\d+)/);
+		const prNum = s.pr.number || (m && m[1]);
+		if (!prNum) continue;
+		try {
+			const { stdout } = await execFileAsync(
+				"gh",
+				["pr", "view", String(prNum), "--repo", p.repo, "--json", "state,mergeable,headRefOid,baseRefName"],
+				{ env: process.env, timeout: 30_000 },
+			);
+			const info = JSON.parse(stdout);
+			if (info.state === "MERGED") {
+				mergedPRs.add(s.pr.url);
+				continue;
+			}
+			if (info.state !== "OPEN" || info.mergeable !== "CONFLICTING") continue; // cached badge was stale
+			const prev = conflictNudged.get(s.pr.url);
+			if (prev && prev.sha === info.headRefOid && Date.now() - prev.at < 30 * 60_000) continue;
+			const pane = await paneText(s.metadata.tmuxName);
+			if (pane.includes("esc to interrupt")) continue; // agent mid-task — retry next tick
+			const base = info.baseRefName || "the base branch";
+			const ok = await nudge(
+				s.metadata.tmuxName,
+				`Your PR #${prNum} has merge conflicts with ${base}. In this worktree: run \`git fetch origin\` and \`git merge origin/${base}\`, resolve every conflict (keep both sides' intent — check the conflicting commits with \`git log --merge\`), run the fast local checks, then commit the merge and push to the same branch. After pushing, stop again — the orchestrator keeps monitoring the PR.`,
+			);
+			if (ok) {
+				conflictNudged.set(s.pr.url, { sha: info.headRefOid, at: Date.now() });
+				console.log(`[queue-poller] relayed merge conflict to ${s.id} (PR #${prNum} vs ${base})`);
+			}
+		} catch (e) {
+			console.log(`[queue-poller] conflict relay failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
+		}
+	}
 }
 
 // --- Merged-session reclaim --------------------------------------------------
@@ -467,12 +569,12 @@ const SESSION_KV = /^([a-zA-Z0-9_]+)=(.*)$/;
 
 /** Parse a session store file (line-based key=value). Pure + exported for tests. */
 export function parseSessionRecord(text) {
-  const rec = {};
-  for (const line of String(text || "").split("\n")) {
-    const m = line.match(SESSION_KV);
-    if (m) rec[m[1]] = m[2].trim();
-  }
-  return rec;
+	const rec = {};
+	for (const line of String(text || "").split("\n")) {
+		const m = line.match(SESSION_KV);
+		if (m) rec[m[1]] = m[2].trim();
+	}
+	return rec;
 }
 
 // Dedup key is "id:issueId", NOT the bare session id: ids are RECYCLED (ao's
@@ -488,14 +590,14 @@ const reclaimed = new Set();
 // from issue -> branch -> PR. Returns the archive path, or null if no record.
 // Exported for tests.
 export function archiveSessionRecord(sessDir, sessionId) {
-  const src = join(sessDir, sessionId);
-  if (!existsSync(src)) return null;
-  const archiveDir = join(sessDir, "archive");
-  mkdirSync(archiveDir, { recursive: true });
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const dest = join(archiveDir, `${sessionId}_${timestamp}`);
-  writeFileSync(dest, readFileSync(src, "utf8"));
-  return dest;
+	const src = join(sessDir, sessionId);
+	if (!existsSync(src)) return null;
+	const archiveDir = join(sessDir, "archive");
+	mkdirSync(archiveDir, { recursive: true });
+	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const dest = join(archiveDir, `${sessionId}_${timestamp}`);
+	writeFileSync(dest, readFileSync(src, "utf8"));
+	return dest;
 }
 
 // Retire sessions whose PR has merged: remove the git worktree (frees disk) and the
@@ -503,39 +605,53 @@ export function archiveSessionRecord(sessDir, sessionId) {
 // the live list AND the authoritative store file, so a killed-but-unmerged session
 // (e.g. one whose PR is still open) is never touched.
 async function cleanupMerged(pid, p, sessions) {
-  const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
-  for (const s of sessions) {
-    const key = `${s.id}:${s.issueId}`;
-    if (s.projectId !== pid || s.status !== "merged" || reclaimed.has(key)) continue;
-    const f = join(sessDir, s.id);
-    try {
-      if (!existsSync(f)) { reclaimed.add(key); continue; }
-      const rec = parseSessionRecord(readFileSync(f, "utf8"));
-      if (rec.status !== "merged") continue; // authoritative store must agree — belt + suspenders
-      // Kill the tmux session FIRST. Leaving it running leaks an idle claude (RAM)
-      // and — worse — deadlocks spawning: with the record gone, ao reuses this
-      // session id and `tmux new-session` fails with "duplicate session" forever.
-      const tmuxName = rec.tmuxName || s.tmuxName;
-      if (tmuxName) await execFileAsync("tmux", ["kill-session", "-t", tmuxName], { env: process.env, timeout: 15_000 }).catch(() => {});
-      const wt = rec.worktree;
-      if (wt && existsSync(wt)) {
-        // --force: the branch is merged so nothing is lost; force clears the untracked
-        // .ao-task.md and any build detritus that would otherwise block removal.
-        await execFileAsync("git", ["-C", p.path, "worktree", "remove", "--force", wt], { env: process.env, timeout: 60_000 }).catch(async (e) => {
-          // A worktree git no longer tracks (record drifted) — just delete the dir.
-          if (/not a working tree|is not a working tree/i.test(String(e.stderr || e.message))) rmSync(wt, { recursive: true, force: true });
-          else throw e;
-        });
-      }
-      archiveSessionRecord(sessDir, s.id); // keep history: sessions/archive/<id>_<ts>
-      rmSync(f); // remove the session record → ao-web stops listing/enriching it
-      reclaimed.add(key);
-      console.log(`[queue-poller] reclaimed merged session ${s.id} (${s.issueId}) — worktree + record removed (record archived)`);
-    } catch (e) {
-      console.log(`[queue-poller] reclaim failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
-    }
-  }
-  await execFileAsync("git", ["-C", p.path, "worktree", "prune"], { env: process.env, timeout: 30_000 }).catch(() => {});
+	const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
+	for (const s of sessions) {
+		const key = `${s.id}:${s.issueId}`;
+		if (s.projectId !== pid || s.status !== "merged" || reclaimed.has(key)) continue;
+		const f = join(sessDir, s.id);
+		try {
+			if (!existsSync(f)) {
+				reclaimed.add(key);
+				continue;
+			}
+			const rec = parseSessionRecord(readFileSync(f, "utf8"));
+			if (rec.status !== "merged") continue; // authoritative store must agree — belt + suspenders
+			// Kill the tmux session FIRST. Leaving it running leaks an idle claude (RAM)
+			// and — worse — deadlocks spawning: with the record gone, ao reuses this
+			// session id and `tmux new-session` fails with "duplicate session" forever.
+			const tmuxName = rec.tmuxName || s.tmuxName;
+			if (tmuxName)
+				await execFileAsync("tmux", ["kill-session", "-t", tmuxName], { env: process.env, timeout: 15_000 }).catch(
+					() => {},
+				);
+			const wt = rec.worktree;
+			if (wt && existsSync(wt)) {
+				// --force: the branch is merged so nothing is lost; force clears the untracked
+				// .ao-task.md and any build detritus that would otherwise block removal.
+				await execFileAsync("git", ["-C", p.path, "worktree", "remove", "--force", wt], {
+					env: process.env,
+					timeout: 60_000,
+				}).catch(async (e) => {
+					// A worktree git no longer tracks (record drifted) — just delete the dir.
+					if (/not a working tree|is not a working tree/i.test(String(e.stderr || e.message)))
+						rmSync(wt, { recursive: true, force: true });
+					else throw e;
+				});
+			}
+			archiveSessionRecord(sessDir, s.id); // keep history: sessions/archive/<id>_<ts>
+			rmSync(f); // remove the session record → ao-web stops listing/enriching it
+			reclaimed.add(key);
+			console.log(
+				`[queue-poller] reclaimed merged session ${s.id} (${s.issueId}) — worktree + record removed (record archived)`,
+			);
+		} catch (e) {
+			console.log(`[queue-poller] reclaim failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
+		}
+	}
+	await execFileAsync("git", ["-C", p.path, "worktree", "prune"], { env: process.env, timeout: 30_000 }).catch(
+		() => {},
+	);
 }
 
 // --- Orphan-PR linking -----------------------------------------------------------
@@ -558,49 +674,73 @@ const orphanCheckedAt = new Map(); // `${id}:${issueId}` -> last lookup ms (id:i
 
 /** From `gh pr list --json number,url,state`: first OPEN, else first MERGED, else null. */
 export function pickOrphanPr(items) {
-  if (!Array.isArray(items)) return null;
-  return items.find((i) => i.state === "OPEN") || items.find((i) => i.state === "MERGED") || null;
+	if (!Array.isArray(items)) return null;
+	return items.find((i) => i.state === "OPEN") || items.find((i) => i.state === "MERGED") || null;
 }
 
 /** Replace `key=` line in a line-based session record, or append it. Always newline-terminated. */
 export function upsertRecordField(text, key, value) {
-  const line = `${key}=${value}`;
-  const re = new RegExp(`^${key}=.*$`, "m");
-  if (re.test(text)) return text.replace(re, line);
-  return (text === "" || text.endsWith("\n") ? text : text + "\n") + line + "\n";
+	const line = `${key}=${value}`;
+	const re = new RegExp(`^${key}=.*$`, "m");
+	if (re.test(text)) return text.replace(re, line);
+	return (text === "" || text.endsWith("\n") ? text : text + "\n") + line + "\n";
 }
 
 async function linkOrphanPrs(pid, p, qp, sessions, sessDir) {
-  if (!p.repo) return;
-  const candidates = [];
-  for (const s of sessions) {
-    if (s.projectId !== pid || s.pr || !DEAD.has(s.status)) continue;
-    if (s.status === "merged" || s.status === "cleanup") continue; // reclaim owns these
-    const key = `${s.id}:${s.issueId}`;
-    if (Date.now() - (orphanCheckedAt.get(key) ?? 0) < ORPHAN_LINK_WINDOW_MS) continue;
-    candidates.push({ s, key });
-  }
-  if (!candidates.length) return; // zero GitHub API this tick
-  const remaining = await graphqlRemaining();
-  if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) return;
-  for (const { s, key } of candidates) {
-    orphanCheckedAt.set(key, Date.now());
-    const f = join(sessDir, s.id);
-    let text, rec;
-    try { text = readFileSync(f, "utf8"); rec = parseSessionRecord(text); } catch { continue; }
-    if (rec.pr || !rec.branch) continue; // already linked (live list stale) / nothing to look up
-    try {
-      const { stdout } = await execFileAsync("gh", ["pr", "list", "--repo", p.repo, "--head", rec.branch, "--state", "all", "--limit", "10", "--json", "number,url,state"], { env: process.env, timeout: 30_000 });
-      const pr = pickOrphanPr(JSON.parse(stdout));
-      if (!pr) continue; // no PR for this branch (yet) — re-check next window
-      let next = upsertRecordField(text, "pr", pr.url);
-      if (pr.state === "MERGED") next = upsertRecordField(next, "status", "merged");
-      writeFileSync(f, next);
-      console.log(`[queue-poller] linked orphan PR #${pr.number} (${pr.state}) to ${s.id} (${s.issueId}) via branch ${rec.branch}`);
-    } catch (e) {
-      console.log(`[queue-poller] orphan PR lookup failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
-    }
-  }
+	if (!p.repo) return;
+	const candidates = [];
+	for (const s of sessions) {
+		if (s.projectId !== pid || s.pr || !DEAD.has(s.status)) continue;
+		if (s.status === "merged" || s.status === "cleanup") continue; // reclaim owns these
+		const key = `${s.id}:${s.issueId}`;
+		if (Date.now() - (orphanCheckedAt.get(key) ?? 0) < ORPHAN_LINK_WINDOW_MS) continue;
+		candidates.push({ s, key });
+	}
+	if (!candidates.length) return; // zero GitHub API this tick
+	const remaining = await graphqlRemaining();
+	if (remaining != null && remaining < (qp.rateLimitFloor ?? 500)) return;
+	for (const { s, key } of candidates) {
+		orphanCheckedAt.set(key, Date.now());
+		const f = join(sessDir, s.id);
+		let text, rec;
+		try {
+			text = readFileSync(f, "utf8");
+			rec = parseSessionRecord(text);
+		} catch {
+			continue;
+		}
+		if (rec.pr || !rec.branch) continue; // already linked (live list stale) / nothing to look up
+		try {
+			const { stdout } = await execFileAsync(
+				"gh",
+				[
+					"pr",
+					"list",
+					"--repo",
+					p.repo,
+					"--head",
+					rec.branch,
+					"--state",
+					"all",
+					"--limit",
+					"10",
+					"--json",
+					"number,url,state",
+				],
+				{ env: process.env, timeout: 30_000 },
+			);
+			const pr = pickOrphanPr(JSON.parse(stdout));
+			if (!pr) continue; // no PR for this branch (yet) — re-check next window
+			let next = upsertRecordField(text, "pr", pr.url);
+			if (pr.state === "MERGED") next = upsertRecordField(next, "status", "merged");
+			writeFileSync(f, next);
+			console.log(
+				`[queue-poller] linked orphan PR #${pr.number} (${pr.state}) to ${s.id} (${s.issueId}) via branch ${rec.branch}`,
+			);
+		} catch (e) {
+			console.log(`[queue-poller] orphan PR lookup failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
+		}
+	}
 }
 
 // --- Branch-drift repair -------------------------------------------------------
@@ -611,20 +751,31 @@ async function linkOrphanPrs(pid, p, qp, sessions, sessDir) {
 // actual HEAD is the truth — rewrite the record's branch to it and let the next
 // lifecycle pass link the PR and heal the status.
 async function repairBranchDrift(sessions, sessDir) {
-  for (const s of sessions) {
-    if (DEAD.has(s.status)) continue;
-    const f = join(sessDir, s.id);
-    let text, rec;
-    try { text = readFileSync(f, "utf8"); rec = parseSessionRecord(text); } catch { continue; }
-    if (!rec.branch || !rec.worktree || !existsSync(rec.worktree)) continue;
-    let actual;
-    try { ({ stdout: actual } = await execFileAsync("git", ["-C", rec.worktree, "rev-parse", "--abbrev-ref", "HEAD"], { env: process.env, timeout: 15_000 })); }
-    catch { continue; }
-    actual = actual.trim();
-    if (!actual || actual === "HEAD" || actual === rec.branch) continue; // detached HEAD (mid-rebase): skip
-    writeFileSync(f, text.replace(/^branch=.*$/m, `branch=${actual}`));
-    console.log(`[queue-poller] repaired branch drift for ${s.id}: ${rec.branch} -> ${actual}`);
-  }
+	for (const s of sessions) {
+		if (DEAD.has(s.status)) continue;
+		const f = join(sessDir, s.id);
+		let text, rec;
+		try {
+			text = readFileSync(f, "utf8");
+			rec = parseSessionRecord(text);
+		} catch {
+			continue;
+		}
+		if (!rec.branch || !rec.worktree || !existsSync(rec.worktree)) continue;
+		let actual;
+		try {
+			({ stdout: actual } = await execFileAsync("git", ["-C", rec.worktree, "rev-parse", "--abbrev-ref", "HEAD"], {
+				env: process.env,
+				timeout: 15_000,
+			}));
+		} catch {
+			continue;
+		}
+		actual = actual.trim();
+		if (!actual || actual === "HEAD" || actual === rec.branch) continue; // detached HEAD (mid-rebase): skip
+		writeFileSync(f, text.replace(/^branch=.*$/m, `branch=${actual}`));
+		console.log(`[queue-poller] repaired branch drift for ${s.id}: ${rec.branch} -> ${actual}`);
+	}
 }
 
 // --- Dead-branch reaper --------------------------------------------------------
@@ -639,43 +790,58 @@ async function repairBranchDrift(sessions, sessDir) {
 // branch, or a linked PR is left strictly alone. The record is archived first, exactly
 // like the reclaim path, so the issue -> branch trail survives.
 async function gitState(rec) {
-  const wt = rec.worktree;
-  if (!wt || !existsSync(wt)) return null;
-  const git = async (args, cwd = wt) =>
-    (await execFileAsync("git", ["-C", cwd, ...args], { env: process.env, timeout: 30_000 })).stdout.trim();
-  try {
-    let base;
-    try { base = await git(["rev-parse", "--abbrev-ref", "origin/HEAD"]); }
-    catch { base = "origin/main"; } // no origin/HEAD ref in this worktree
-    const ahead = parseInt(await git(["rev-list", "--count", `${base}..HEAD`]), 10);
-    const dirty = (await git(["status", "--porcelain"])).length > 0;
-    const remoteBranch = (await git(["ls-remote", "--heads", "origin", rec.branch])).length > 0;
-    return { ahead: Number.isFinite(ahead) ? ahead : NaN, dirty, remoteBranch };
-  } catch {
-    return null; // unreadable git state — isReapableRecord treats null as unsafe
-  }
+	const wt = rec.worktree;
+	if (!wt || !existsSync(wt)) return null;
+	const git = async (args, cwd = wt) =>
+		(await execFileAsync("git", ["-C", cwd, ...args], { env: process.env, timeout: 30_000 })).stdout.trim();
+	try {
+		let base;
+		try {
+			base = await git(["rev-parse", "--abbrev-ref", "origin/HEAD"]);
+		} catch {
+			base = "origin/main";
+		} // no origin/HEAD ref in this worktree
+		const ahead = parseInt(await git(["rev-list", "--count", `${base}..HEAD`]), 10);
+		const dirty = (await git(["status", "--porcelain"])).length > 0;
+		const remoteBranch = (await git(["ls-remote", "--heads", "origin", rec.branch])).length > 0;
+		return { ahead: Number.isFinite(ahead) ? ahead : NaN, dirty, remoteBranch };
+	} catch {
+		return null; // unreadable git state — isReapableRecord treats null as unsafe
+	}
 }
 
 async function reapDeadBranches(p, sessions, sessDir) {
-  for (const s of sessions) {
-    const f = join(sessDir, s.id);
-    let rec;
-    try { rec = parseSessionRecord(readFileSync(f, "utf8")); } catch { continue; }
-    // Trust the RECORD's status, not the live one: ao's lifecycle never refreshes a
-    // terminal session, and its live status flaps under PR-poll rate limiting.
-    if (!isReapableRecord(rec, await gitState(rec))) continue;
-    try {
-      const tmuxName = rec.tmuxName || s.metadata?.tmuxName;
-      if (tmuxName) await execFileAsync("tmux", ["kill-session", "-t", tmuxName], { timeout: 15_000 }).catch(() => {});
-      archiveSessionRecord(sessDir, s.id);
-      await execFileAsync("git", ["-C", p.path, "worktree", "remove", "--force", rec.worktree], { env: process.env, timeout: 60_000 });
-      await execFileAsync("git", ["-C", p.path, "branch", "-D", rec.branch], { env: process.env, timeout: 30_000 }).catch(() => {});
-      rmSync(f, { force: true });
-      console.log(`[queue-poller] reaped empty dead session ${s.id} (${s.issueId || "no issue"}) — freed ${rec.branch}`);
-    } catch (e) {
-      console.log(`[queue-poller] reap failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
-    }
-  }
+	for (const s of sessions) {
+		const f = join(sessDir, s.id);
+		let rec;
+		try {
+			rec = parseSessionRecord(readFileSync(f, "utf8"));
+		} catch {
+			continue;
+		}
+		// Trust the RECORD's status, not the live one: ao's lifecycle never refreshes a
+		// terminal session, and its live status flaps under PR-poll rate limiting.
+		if (!isReapableRecord(rec, await gitState(rec))) continue;
+		try {
+			const tmuxName = rec.tmuxName || s.metadata?.tmuxName;
+			if (tmuxName) await execFileAsync("tmux", ["kill-session", "-t", tmuxName], { timeout: 15_000 }).catch(() => {});
+			archiveSessionRecord(sessDir, s.id);
+			await execFileAsync("git", ["-C", p.path, "worktree", "remove", "--force", rec.worktree], {
+				env: process.env,
+				timeout: 60_000,
+			});
+			await execFileAsync("git", ["-C", p.path, "branch", "-D", rec.branch], {
+				env: process.env,
+				timeout: 30_000,
+			}).catch(() => {});
+			rmSync(f, { force: true });
+			console.log(
+				`[queue-poller] reaped empty dead session ${s.id} (${s.issueId || "no issue"}) — freed ${rec.branch}`,
+			);
+		} catch (e) {
+			console.log(`[queue-poller] reap failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
+		}
+	}
 }
 
 // --- Orphan tmux reaper --------------------------------------------------------
@@ -690,30 +856,48 @@ async function reapDeadBranches(p, sessions, sessDir) {
 const REAP_MIN_AGE_S = 600;
 
 async function reapOrphanTmux(cfg) {
-  let hash;
-  try { hash = generateConfigHash(CONFIG_PATH); } catch { return; }
-  const known = new Set();
-  for (const p of Object.values(cfg.projects || {})) {
-    const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
-    try {
-      for (const f of readdirSync(sessDir)) {
-        try { known.add(parseSessionRecord(readFileSync(join(sessDir, f), "utf8")).tmuxName || `${hash}-${f}`); } catch { /* unreadable record: skip */ }
-      }
-    } catch { /* project has no sessions dir yet */ }
-  }
-  let out;
-  try { ({ stdout: out } = await execFileAsync("tmux", ["ls", "-F", "#{session_name} #{session_created}"], { env: process.env, timeout: 15_000 })); }
-  catch { return; } // no tmux server running — nothing to reap
-  const now = Math.floor(Date.now() / 1000);
-  for (const line of out.trim().split("\n")) {
-    const [name, created] = line.split(" ");
-    if (!name || !name.startsWith(`${hash}-`) || known.has(name)) continue;
-    if (!(now - parseInt(created, 10) >= REAP_MIN_AGE_S)) continue;
-    try {
-      await execFileAsync("tmux", ["kill-session", "-t", name], { env: process.env, timeout: 15_000 });
-      console.log(`[queue-poller] reaped orphan tmux ${name} (no session record)`);
-    } catch { /* raced with something else killing it — fine */ }
-  }
+	let hash;
+	try {
+		hash = generateConfigHash(CONFIG_PATH);
+	} catch {
+		return;
+	}
+	const known = new Set();
+	for (const p of Object.values(cfg.projects || {})) {
+		const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
+		try {
+			for (const f of readdirSync(sessDir)) {
+				try {
+					known.add(parseSessionRecord(readFileSync(join(sessDir, f), "utf8")).tmuxName || `${hash}-${f}`);
+				} catch {
+					/* unreadable record: skip */
+				}
+			}
+		} catch {
+			/* project has no sessions dir yet */
+		}
+	}
+	let out;
+	try {
+		({ stdout: out } = await execFileAsync("tmux", ["ls", "-F", "#{session_name} #{session_created}"], {
+			env: process.env,
+			timeout: 15_000,
+		}));
+	} catch {
+		return;
+	} // no tmux server running — nothing to reap
+	const now = Math.floor(Date.now() / 1000);
+	for (const line of out.trim().split("\n")) {
+		const [name, created] = line.split(" ");
+		if (!name || !name.startsWith(`${hash}-`) || known.has(name)) continue;
+		if (!(now - parseInt(created, 10) >= REAP_MIN_AGE_S)) continue;
+		try {
+			await execFileAsync("tmux", ["kill-session", "-t", name], { env: process.env, timeout: 15_000 });
+			console.log(`[queue-poller] reaped orphan tmux ${name} (no session record)`);
+		} catch {
+			/* raced with something else killing it — fine */
+		}
+	}
 }
 
 // --- Stuck-session watchdog --------------------------------------------------
@@ -745,14 +929,14 @@ const nudged = new Set();
 // Order matters: `busy` is checked first so a live agent merely *discussing* a shell
 // prompt or a "command not found" can never be misread as a dead shell.
 export function classifyPane(text) {
-  const pane = String(text || "");
-  if (!pane.trim()) return "unknown";
-  if (/esc to interrupt/.test(pane)) return "busy";
-  if (/bypass permissions|❯/.test(pane)) return "claude";
-  // A shell prompt at the START of a line (`root@host:/path#` or `$ `) is the tell.
-  // Requiring line-start plus the trailing #/$ keeps prose about prompts from matching.
-  if (/^[^\s@]+@[^\s:]+:[^\s#$]*[#$]\s*$/m.test(pane)) return "shell";
-  return "unknown";
+	const pane = String(text || "");
+	if (!pane.trim()) return "unknown";
+	if (/esc to interrupt/.test(pane)) return "busy";
+	if (/bypass permissions|❯/.test(pane)) return "claude";
+	// A shell prompt at the START of a line (`root@host:/path#` or `$ `) is the tell.
+	// Requiring line-start plus the trailing #/$ keeps prose about prompts from matching.
+	if (/^[^\s@]+@[^\s:]+:[^\s#$]*[#$]\s*$/m.test(pane)) return "shell";
+	return "unknown";
 }
 
 // Is this record's branch safe to free? A session that died before producing anything
@@ -768,35 +952,41 @@ export function classifyPane(text) {
 //   • zero commits ahead of the base, clean tree, and no branch on the remote
 // `git` is the authority on the last three; an unreadable git state (null) is unsafe.
 export function isReapableRecord(rec, git) {
-  if (!rec || !git) return false;
-  if (!rec.branch || !rec.worktree) return false;      // nothing to free
-  if (rec.pr) return false;                            // has a PR — never touch
-  if (rec.status === "merged" || rec.status === "cleanup") return false; // reclaim owns these
-  if (!DEAD.has(rec.status)) return false;             // a live agent is using it
-  return git.ahead === 0 && !git.dirty && !git.remoteBranch;
+	if (!rec || !git) return false;
+	if (!rec.branch || !rec.worktree) return false; // nothing to free
+	if (rec.pr) return false; // has a PR — never touch
+	if (rec.status === "merged" || rec.status === "cleanup") return false; // reclaim owns these
+	if (!DEAD.has(rec.status)) return false; // a live agent is using it
+	return git.ahead === 0 && !git.dirty && !git.remoteBranch;
 }
 
 async function fetchIssueForPrompt(identifier) {
-  try {
-    const data = await linearGraphQL("query($id:String!){ issue(id:$id){ identifier title description } }", { id: identifier });
-    return data?.issue || null;
-  } catch { return null; }
+	try {
+		const data = await linearGraphQL("query($id:String!){ issue(id:$id){ identifier title description } }", {
+			id: identifier,
+		});
+		return data?.issue || null;
+	} catch {
+		return null;
+	}
 }
 
 function buildNudgePrompt(issue, identifier) {
-  const title = issue?.title || "";
-  const desc = (issue?.description || "").replace(/\s+/g, " ").trim();
-  // Single line on purpose: newlines in a tmux paste would submit the prompt early.
-  return `Please work on Linear ticket ${identifier}: ${title}. ${desc} Follow your standard workflow: create a feature branch, implement the change, run the fast local checks (type-check + lint), commit, push, and open a PR — CI runs the full build + tests on the PR. Title the PR "[Type][${identifier}] Description" where Type is Feat/Bugfix/Perf/Chore/Refactor.`
-    .replace(/\s+/g, " ")
-    .trim();
+	const title = issue?.title || "";
+	const desc = (issue?.description || "").replace(/\s+/g, " ").trim();
+	// Single line on purpose: newlines in a tmux paste would submit the prompt early.
+	return `Please work on Linear ticket ${identifier}: ${title}. ${desc} Follow your standard workflow: create a feature branch, implement the change, run the fast local checks (type-check + lint), commit, push, and open a PR — CI runs the full build + tests on the PR. Title the PR "[Type][${identifier}] Description" where Type is Feat/Bugfix/Perf/Chore/Refactor.`
+		.replace(/\s+/g, " ")
+		.trim();
 }
 
 async function paneText(tmuxName) {
-  try {
-    const { stdout } = await execFileAsync("tmux", ["capture-pane", "-t", tmuxName, "-p"], { timeout: 10_000 });
-    return stdout;
-  } catch { return ""; }
+	try {
+		const { stdout } = await execFileAsync("tmux", ["capture-pane", "-t", tmuxName, "-p"], { timeout: 10_000 });
+		return stdout;
+	} catch {
+		return "";
+	}
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -804,163 +994,203 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || "/root/.agent-orchestrator/claude";
 // claude-code encodes a workspace path to its transcript dir by replacing / and . with -.
 function hasTranscript(worktree) {
-  try {
-    const dir = `${CLAUDE_DIR}/projects/${worktree.replace(/[/.]/g, "-")}`;
-    return readdirSync(dir).some((f) => f.endsWith(".jsonl") && !f.startsWith("agent-"));
-  } catch { return false; }
+	try {
+		const dir = `${CLAUDE_DIR}/projects/${worktree.replace(/[/.]/g, "-")}`;
+		return readdirSync(dir).some((f) => f.endsWith(".jsonl") && !f.startsWith("agent-"));
+	} catch {
+		return false;
+	}
 }
 async function tmuxAlive(tmuxName) {
-  try { await execFileAsync("tmux", ["has-session", "-t", tmuxName], { timeout: 10_000 }); return true; }
-  catch { return false; }
+	try {
+		await execFileAsync("tmux", ["has-session", "-t", tmuxName], { timeout: 10_000 });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 async function recoverStuck(sessions) {
-  for (const s of sessions) {
-    const tmuxName = s.metadata?.tmuxName;
-    const worktree = s.metadata?.worktree;
-    if (!s.issueId || !tmuxName || !worktree || nudged.has(s.id)) continue;
-    const createdMs = Date.parse(s.createdAt || s.metadata?.createdAt || "");
-    if (!Number.isFinite(createdMs) || Date.now() - createdMs < STUCK_AGE_MS) continue;
-    // Status-AGNOSTIC: ao often MISCLASSIFIES a launch-stuck session as killed/exited/stuck
-    // even though claude is alive at an unsubmitted/empty prompt, so keying off s.status
-    // misses those. The real signal for "stuck at launch" is: tmux alive + NO transcript
-    // (claude never processed anything). A session that got going has a transcript → skip.
-    if (!(await tmuxAlive(tmuxName))) continue; // genuinely gone — can't recover via tmux
-    if (hasTranscript(worktree)) continue; // it processed something — working/done/waiting; leave it
-    const pane = await paneText(tmuxName);
-    const state = classifyPane(pane);
-    if (state === "busy") continue;    // claude has an active turn — not stuck; never double-deliver
-    if (state === "unknown") continue; // claude UI not up yet — wait for a later tick
-    if (state === "shell") {
-      // claude is not running at all: the launch fell through to bash and ao typed the
-      // ticket in as shell commands. There is no agent here to nudge — re-pasting would
-      // just execute more of the ticket. Kill the pane so reapDeadBranches can free the
-      // branch on a later tick and the ticket gets a clean, fresh spawn.
-      console.log(`[queue-poller] watchdog: ${s.id} (${s.issueId}) fell through to a shell — killing for respawn`);
-      await execFileAsync("tmux", ["kill-session", "-t", tmuxName], { timeout: 10_000 }).catch(() => {});
-      nudged.add(s.id);
-      continue;
-    }
-    try {
-      if (/\[Pasted text/.test(pane)) {
-        // Failure mode A: ao pasted the prompt but the submit Enter was lost — the box
-        // already holds the real task, so just press Enter. Do NOT re-paste (that would
-        // concatenate a second prompt onto the first).
-        console.log(`[queue-poller] watchdog: ${s.id} (${s.issueId}) has an unsubmitted prompt — submitting`);
-        await execFileAsync("tmux", ["send-keys", "-t", tmuxName, "Enter"], { timeout: 10_000 });
-      } else {
-        // Failure mode B: nothing landed (empty box / placeholder) — re-deliver the task.
-        console.log(`[queue-poller] watchdog: ${s.id} (${s.issueId}) stuck with no prompt — re-delivering`);
-        const prompt = buildNudgePrompt(await fetchIssueForPrompt(s.issueId), s.issueId);
-        await execFileAsync("tmux", ["set-buffer", "-b", "aonudge", prompt], { timeout: 10_000 });
-        await execFileAsync("tmux", ["paste-buffer", "-d", "-b", "aonudge", "-t", tmuxName], { timeout: 10_000 });
-        await sleep(800);
-        await execFileAsync("tmux", ["send-keys", "-t", tmuxName, "Enter"], { timeout: 10_000 });
-      }
-      nudged.add(s.id);
-    } catch (e) {
-      console.log(`[queue-poller] watchdog: recover failed for ${s.id}: ${e.message}`);
-    }
-  }
+	for (const s of sessions) {
+		const tmuxName = s.metadata?.tmuxName;
+		const worktree = s.metadata?.worktree;
+		if (!s.issueId || !tmuxName || !worktree || nudged.has(s.id)) continue;
+		const createdMs = Date.parse(s.createdAt || s.metadata?.createdAt || "");
+		if (!Number.isFinite(createdMs) || Date.now() - createdMs < STUCK_AGE_MS) continue;
+		// Status-AGNOSTIC: ao often MISCLASSIFIES a launch-stuck session as killed/exited/stuck
+		// even though claude is alive at an unsubmitted/empty prompt, so keying off s.status
+		// misses those. The real signal for "stuck at launch" is: tmux alive + NO transcript
+		// (claude never processed anything). A session that got going has a transcript → skip.
+		if (!(await tmuxAlive(tmuxName))) continue; // genuinely gone — can't recover via tmux
+		if (hasTranscript(worktree)) continue; // it processed something — working/done/waiting; leave it
+		const pane = await paneText(tmuxName);
+		const state = classifyPane(pane);
+		if (state === "busy") continue; // claude has an active turn — not stuck; never double-deliver
+		if (state === "unknown") continue; // claude UI not up yet — wait for a later tick
+		if (state === "shell") {
+			// claude is not running at all: the launch fell through to bash and ao typed the
+			// ticket in as shell commands. There is no agent here to nudge — re-pasting would
+			// just execute more of the ticket. Kill the pane so reapDeadBranches can free the
+			// branch on a later tick and the ticket gets a clean, fresh spawn.
+			console.log(`[queue-poller] watchdog: ${s.id} (${s.issueId}) fell through to a shell — killing for respawn`);
+			await execFileAsync("tmux", ["kill-session", "-t", tmuxName], { timeout: 10_000 }).catch(() => {});
+			nudged.add(s.id);
+			continue;
+		}
+		try {
+			if (/\[Pasted text/.test(pane)) {
+				// Failure mode A: ao pasted the prompt but the submit Enter was lost — the box
+				// already holds the real task, so just press Enter. Do NOT re-paste (that would
+				// concatenate a second prompt onto the first).
+				console.log(`[queue-poller] watchdog: ${s.id} (${s.issueId}) has an unsubmitted prompt — submitting`);
+				await execFileAsync("tmux", ["send-keys", "-t", tmuxName, "Enter"], { timeout: 10_000 });
+			} else {
+				// Failure mode B: nothing landed (empty box / placeholder) — re-deliver the task.
+				console.log(`[queue-poller] watchdog: ${s.id} (${s.issueId}) stuck with no prompt — re-delivering`);
+				const prompt = buildNudgePrompt(await fetchIssueForPrompt(s.issueId), s.issueId);
+				await execFileAsync("tmux", ["set-buffer", "-b", "aonudge", prompt], { timeout: 10_000 });
+				await execFileAsync("tmux", ["paste-buffer", "-d", "-b", "aonudge", "-t", tmuxName], { timeout: 10_000 });
+				await sleep(800);
+				await execFileAsync("tmux", ["send-keys", "-t", tmuxName, "Enter"], { timeout: 10_000 });
+			}
+			nudged.add(s.id);
+		} catch (e) {
+			console.log(`[queue-poller] watchdog: recover failed for ${s.id}: ${e.message}`);
+		}
+	}
 }
 
 async function listSessions() {
-  try { const r = await fetch(DASH + "/api/sessions"); return (await r.json()).sessions || []; }
-  catch { return []; }
+	try {
+		const r = await fetch(DASH + "/api/sessions");
+		return (await r.json()).sessions || [];
+	} catch {
+		return [];
+	}
 }
 
 async function pollProject(pid, p) {
-  const qp = p.queuePoller;
-  if (!qp?.enabled || p.tracker?.plugin !== "linear" || !p.tracker?.teamId) return;
-  const maxSessions = qp.maxSessions || 5;
+	const qp = p.queuePoller;
+	if (!qp?.enabled || p.tracker?.plugin !== "linear" || !p.tracker?.teamId) return;
+	const maxSessions = qp.maxSessions || 5;
 
-  // Reconcile live sessions -> ticket status FIRST, before the trigger-issue query.
-  // A ticket moved to In Progress leaves the trigger column, so `issues` no longer
-  // contains it — its later pr_open/review transition must be driven off the live
-  // session list, which is independent of whether anything new is waiting to spawn.
-  const sessions = await listSessions();
-  const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
-  await repairBranchDrift(sessions, sessDir); // fix record<->worktree branch drift BEFORE any PR matching
-  await linkOrphanPrs(pid, p, qp, sessions, sessDir); // sessions ao killed before their PR opened: find + link the PR by branch
-  await syncStatuses(p.tracker.teamId, sessions, qp);
-  await recoverStuck(sessions); // re-deliver the prompt to any session ao left stuck at launch
-  await syncContext(sessions); // keep .ao-task.md current + surface new/truncated comments to the agent
-  await normalizePrTitles(p, qp, sessions); // enforce [Type][TICKET] title before it can merge
-  await autoMergePRs(pid, p, qp, sessions); // squash-merge approved+green+clean PRs (if autoMerge)
-  await relayCiFailures(p, qp, sessions); // ao's ci_failed reaction never dispatches — tell the agent ourselves
-  await relayMergeConflicts(p, qp, sessions); // conflicted PRs otherwise idle until a human clicks "ask to fix"
-  await cleanupMerged(pid, p, sessions); // retire merged sessions: free the worktree + stop enrichment
-  await reapDeadBranches(p, sessions, sessDir); // LAST before spawning: free branches dead sessions squat, else their ticket can never respawn
+	// Reconcile live sessions -> ticket status FIRST, before the trigger-issue query.
+	// A ticket moved to In Progress leaves the trigger column, so `issues` no longer
+	// contains it — its later pr_open/review transition must be driven off the live
+	// session list, which is independent of whether anything new is waiting to spawn.
+	const sessions = await listSessions();
+	const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
+	await repairBranchDrift(sessions, sessDir); // fix record<->worktree branch drift BEFORE any PR matching
+	await linkOrphanPrs(pid, p, qp, sessions, sessDir); // sessions ao killed before their PR opened: find + link the PR by branch
+	await syncStatuses(p.tracker.teamId, sessions, qp);
+	await recoverStuck(sessions); // re-deliver the prompt to any session ao left stuck at launch
+	await syncContext(sessions); // keep .ao-task.md current + surface new/truncated comments to the agent
+	await normalizePrTitles(p, qp, sessions); // enforce [Type][TICKET] title before it can merge
+	await autoMergePRs(pid, p, qp, sessions); // squash-merge approved+green+clean PRs (if autoMerge)
+	await relayCiFailures(p, qp, sessions); // ao's ci_failed reaction never dispatches — tell the agent ourselves
+	await relayMergeConflicts(p, qp, sessions); // conflicted PRs otherwise idle until a human clicks "ask to fix"
+	await cleanupMerged(pid, p, sessions); // retire merged sessions: free the worktree + stop enrichment
+	await reapDeadBranches(p, sessions, sessDir); // LAST before spawning: free branches dead sessions squat, else their ticket can never respawn
 
-  let issues;
-  try { issues = await linearIssues(p.tracker.teamId, qp.filters?.labels, qp.filters?.statusName); }
-  catch (e) { console.log(`[queue-poller] ${pid} linear error: ${e.message}`); return; }
-  if (!issues.length) return;
+	let issues;
+	try {
+		issues = await linearIssues(p.tracker.teamId, qp.filters?.labels, qp.filters?.statusName);
+	} catch (e) {
+		console.log(`[queue-poller] ${pid} linear error: ${e.message}`);
+		return;
+	}
+	if (!issues.length) return;
 
-  const live = new Set(sessions.filter((s) => s.issueId && !DEAD.has(s.status)).map((s) => String(s.issueId).toLowerCase()));
-  // ao's live status flaps when its PR polling is rate-limited (review_pending
-  // sessions get re-reported as working/stuck), which inflates a naive status
-  // count and starves spawning for days. Authoritative "busy" instead: a session
-  // with NO PR linked in the store is still building (or launch-stuck — the
-  // watchdog owns that); one WITH a PR is only busy while claude has an in-flight
-  // turn (reacting to CI/review feedback). Idle-at-prompt + PR open = waiting on
-  // review, never a slot-holder.
-  let active = 0;
-  for (const s of sessions) {
-    if (DEAD.has(s.status) || IDLE.has(s.status)) continue;
-    let rec = null;
-    try { rec = parseSessionRecord(readFileSync(join(sessDir, s.id), "utf8")); } catch { /* no record: trust live status */ }
-    if (rec && rec.pr) {
-      const tmuxName = rec.tmuxName || s.tmuxName;
-      const busy = tmuxName ? /esc to interrupt/.test(await paneText(tmuxName)) : false;
-      if (!busy) continue;
-    }
-    active++;
-  }
+	const live = new Set(
+		sessions.filter((s) => s.issueId && !DEAD.has(s.status)).map((s) => String(s.issueId).toLowerCase()),
+	);
+	// ao's live status flaps when its PR polling is rate-limited (review_pending
+	// sessions get re-reported as working/stuck), which inflates a naive status
+	// count and starves spawning for days. Authoritative "busy" instead: a session
+	// with NO PR linked in the store is still building (or launch-stuck — the
+	// watchdog owns that); one WITH a PR is only busy while claude has an in-flight
+	// turn (reacting to CI/review feedback). Idle-at-prompt + PR open = waiting on
+	// review, never a slot-holder.
+	let active = 0;
+	for (const s of sessions) {
+		if (DEAD.has(s.status) || IDLE.has(s.status)) continue;
+		let rec = null;
+		try {
+			rec = parseSessionRecord(readFileSync(join(sessDir, s.id), "utf8"));
+		} catch {
+			/* no record: trust live status */
+		}
+		if (rec && rec.pr) {
+			const tmuxName = rec.tmuxName || s.tmuxName;
+			const busy = tmuxName ? /esc to interrupt/.test(await paneText(tmuxName)) : false;
+			if (!busy) continue;
+		}
+		active++;
+	}
 
-  for (const issue of issues) {
-    if (live.has(issue.toLowerCase())) continue;               // already has a live session
-    if (active >= maxSessions) { console.log(`[queue-poller] ${pid} maxSessions ${maxSessions} reached — skipping ${issue}`); break; }
-    try {
-      console.log(`[queue-poller] ${pid} spawning ${issue}`);
-      await execFileAsync("ao", ["spawn", issue], { cwd: p.path, timeout: 180_000, maxBuffer: 32 * 1024 * 1024, env: process.env });
-      active++;
-      live.add(issue.toLowerCase());
-      // Immediate feedback: the agent is starting work, so move the ticket out of the
-      // trigger column now rather than waiting for the session to report `working`.
-      await moveIssue(p.tracker.teamId, issue, qp.onStartStatus || "In Progress");
-    } catch (e) {
-      // `ao spawn` drives an ora spinner on stderr, so a naive stderr slice just
-      // echoes "Creating session". Surface message + stdout + stderr (generously
-      // truncated) so a real spawn failure is diagnosable from the logs.
-      const detail = [`msg=${e.message}`, `stdout=${String(e.stdout || "")}`, `stderr=${String(e.stderr || "")}`].join(" || ");
-      console.log(`[queue-poller] ${pid} spawn failed for ${issue}: ${detail.slice(0, 2000)}`);
-    }
-  }
+	for (const issue of issues) {
+		if (live.has(issue.toLowerCase())) continue; // already has a live session
+		if (active >= maxSessions) {
+			console.log(`[queue-poller] ${pid} maxSessions ${maxSessions} reached — skipping ${issue}`);
+			break;
+		}
+		try {
+			console.log(`[queue-poller] ${pid} spawning ${issue}`);
+			await execFileAsync("ao", ["spawn", issue], {
+				cwd: p.path,
+				timeout: 180_000,
+				maxBuffer: 32 * 1024 * 1024,
+				env: process.env,
+			});
+			active++;
+			live.add(issue.toLowerCase());
+			// Immediate feedback: the agent is starting work, so move the ticket out of the
+			// trigger column now rather than waiting for the session to report `working`.
+			await moveIssue(p.tracker.teamId, issue, qp.onStartStatus || "In Progress");
+		} catch (e) {
+			// `ao spawn` drives an ora spinner on stderr, so a naive stderr slice just
+			// echoes "Creating session". Surface message + stdout + stderr (generously
+			// truncated) so a real spawn failure is diagnosable from the logs.
+			const detail = [`msg=${e.message}`, `stdout=${String(e.stdout || "")}`, `stderr=${String(e.stderr || "")}`].join(
+				" || ",
+			);
+			console.log(`[queue-poller] ${pid} spawn failed for ${issue}: ${detail.slice(0, 2000)}`);
+		}
+	}
 }
 
 async function pollOnce() {
-  const cfg = readConfig(CONFIG_PATH);
-  await reapOrphanTmux(cfg); // BEFORE spawning: frees squatted session names so `ao spawn` can reuse the id
-  for (const [pid, p] of Object.entries(cfg.projects || {})) await pollProject(pid, p);
+	const cfg = readConfig(CONFIG_PATH);
+	await reapOrphanTmux(cfg); // BEFORE spawning: frees squatted session names so `ao spawn` can reuse the id
+	for (const [pid, p] of Object.entries(cfg.projects || {})) await pollProject(pid, p);
 }
 
 // Only start the poll loop when run as a script — importing this module (e.g. from a
 // unit test for formatPrTitle) must not spin up polling.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  let interval = 30_000;
-  try { const c = readConfig(CONFIG_PATH); const p = c.projects[Object.keys(c.projects)[0]]; interval = parseInterval(p?.queuePoller?.interval); } catch {}
-  if (!LINEAR_KEY) console.log("[queue-poller] warning: LINEAR_API_KEY not set — polls will fail until it is");
-  console.log(`[queue-poller] starting (interval ${interval}ms)`);
+	let interval = 30_000;
+	try {
+		const c = readConfig(CONFIG_PATH);
+		const p = c.projects[Object.keys(c.projects)[0]];
+		interval = parseInterval(p?.queuePoller?.interval);
+	} catch {}
+	if (!LINEAR_KEY) console.log("[queue-poller] warning: LINEAR_API_KEY not set — polls will fail until it is");
+	console.log(`[queue-poller] starting (interval ${interval}ms)`);
 
-  let running = false;
-  const tick = async () => {
-    if (running) return;
-    running = true;
-    try { await pollOnce(); } catch (e) { console.log(`[queue-poller] error: ${e.message}`); } finally { running = false; }
-  };
-  tick();
-  setInterval(tick, interval);
-  process.on("SIGTERM", () => process.exit(0));
-  process.on("SIGINT", () => process.exit(0));
+	let running = false;
+	const tick = async () => {
+		if (running) return;
+		running = true;
+		try {
+			await pollOnce();
+		} catch (e) {
+			console.log(`[queue-poller] error: ${e.message}`);
+		} finally {
+			running = false;
+		}
+	};
+	tick();
+	setInterval(tick, interval);
+	process.on("SIGTERM", () => process.exit(0));
+	process.on("SIGINT", () => process.exit(0));
 }

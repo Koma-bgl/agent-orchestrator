@@ -15,6 +15,7 @@
 > per-bot OAuth. Three deploy-only bugs surfaced during the live run (none
 > catchable by the local single-instance test — they only exist when portal and
 > bot are separate services):
+>
 > 1. **caddy-security pinned v1.1.64 → v1.1.31.** v1.1.32+ carries two SSO-fatal
 >    regressions: #471 (portal deletes the `access_token` cookie right after login)
 >    and #481 (`cookie domain` stops scoping the token cookie). 1.1.31 predates
@@ -64,13 +65,13 @@
 
 ```js
 test("botHost derives the fleet subdomain from the account", () => {
-  assert.equal(botHost("ky@chaostheory.hk"), "ky-chaostheory-hk.binary-badger.xyz");
-  assert.equal(botHost("ky@chaostheory.hk", 2), "ky-chaostheory-hk-2.binary-badger.xyz");
-  assert.match(botHost("A.B+C@x"), /^[a-z0-9-]+\.binary-badger\.xyz$/);
+	assert.equal(botHost("ky@chaostheory.hk"), "ky-chaostheory-hk.binary-badger.xyz");
+	assert.equal(botHost("ky@chaostheory.hk", 2), "ky-chaostheory-hk-2.binary-badger.xyz");
+	assert.match(botHost("A.B+C@x"), /^[a-z0-9-]+\.binary-badger\.xyz$/);
 });
 test("FLEET_DOMAIN and AUTH_HOST are consistent", () => {
-  assert.equal(FLEET_DOMAIN, "binary-badger.xyz");
-  assert.equal(AUTH_HOST, "auth.binary-badger.xyz");
+	assert.equal(FLEET_DOMAIN, "binary-badger.xyz");
+	assert.equal(AUTH_HOST, "auth.binary-badger.xyz");
 });
 ```
 
@@ -145,7 +146,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 ```
 
 - [ ] **Step 4: Validate locally** — `sh -n deploy/portal/entrypoint.sh`; build the image locally (`docker build -t ao-portal:dev deploy/portal`) and validate **through the entrypoint** so the shebang/shell path is exercised exactly as Cloud Run will run it:
-  `docker run --rm -e GOOGLE_OAUTH_CLIENT='dummy-id|dummy-secret' -e JWT_SHARED_KEY=000…0 --entrypoint /bin/sh ao-portal:dev -c '. /entrypoint.sh 2>/dev/null || true; caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile'` — or simpler: temporarily replace `caddy run` with `caddy validate` via an env guard and `docker run` the image as-is. Expected: `Valid configuration`, and the entrypoint reaches the exec line (no bash-isms). **If the `trust login redirect uri … path prefix /` line errors, this is the DSL-drift case** — check the AuthCrunch trust-login-logout docs for the v1.1.64 form and fix.
+      `docker run --rm -e GOOGLE_OAUTH_CLIENT='dummy-id|dummy-secret' -e JWT_SHARED_KEY=000…0 --entrypoint /bin/sh ao-portal:dev -c '. /entrypoint.sh 2>/dev/null || true; caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile'` — or simpler: temporarily replace `caddy run` with `caddy validate` via an env guard and `docker run` the image as-is. Expected: `Valid configuration`, and the entrypoint reaches the exec line (no bash-isms). **If the `trust login redirect uri … path prefix /` line errors, this is the DSL-drift case** — check the AuthCrunch trust-login-logout docs for the v1.1.64 form and fix.
 - [ ] **Step 5: Commit** (`feat(deploy): fleet auth portal image (caddy-security on Cloud Run)`).
 
 ---
@@ -173,13 +174,13 @@ ENTRYPOINT ["/entrypoint.sh"]
 - [ ] **Step 1: Retrofit `Caddyfile.public`:**
   - Delete the `oauth identity provider` block, the `authentication portal` block, and the `handle /auth*` route; drop `order authenticate before respond` (keep `order authorize before basicauth`).
   - In `authorization policy mypolicy`: `set auth url {$AO_AUTH_URL}`, keep `crypto key verify {env.JWT_SHARED_KEY}`, `validate bearer header`, `inject headers with claims`.
-    **`AO_AUTH_URL` = `https://auth.binary-badger.xyz/oauth2/google`** (the login-initiation path, root mount → no `/auth` prefix) — matching today's UX where an unauthenticated user goes *straight into* the Google flow; the bare portal root would add a "Sign in with Google" click.
-  - **Multi-email allowlist:** replace the single-email rule with `match email {$ALLOWED_EMAILS}` — `{$…}` is *parse-time* substitution, so a space-separated value splats into multi-value match (reviewer-confirmed supported; `{env.…}` would NOT splat). Keep the explicit default-deny rule. Known failure mode (acceptable): an **empty/unset** `ALLOWED_EMAILS` substitutes to zero tokens → `match email` fails parse → the bot's Caddy won't start; the VM `.env` always sets it from the `dashboard-allowlist` secret.
+    **`AO_AUTH_URL` = `https://auth.binary-badger.xyz/oauth2/google`** (the login-initiation path, root mount → no `/auth` prefix) — matching today's UX where an unauthenticated user goes _straight into_ the Google flow; the bare portal root would add a "Sign in with Google" click.
+  - **Multi-email allowlist:** replace the single-email rule with `match email {$ALLOWED_EMAILS}` — `{$…}` is _parse-time_ substitution, so a space-separated value splats into multi-value match (reviewer-confirmed supported; `{env.…}` would NOT splat). Keep the explicit default-deny rule. Known failure mode (acceptable): an **empty/unset** `ALLOWED_EMAILS` substitutes to zero tokens → `match email` fails parse → the bot's Caddy won't start; the VM `.env` always sets it from the `dashboard-allowlist` secret.
 - [ ] **Step 2: `docker-compose.vm.yml`** — add to `caddy.environment`: `AO_AUTH_URL: ${AO_AUTH_URL}`, `ALLOWED_EMAILS: ${ALLOWED_EMAILS}`.
 - [ ] **Step 3: Validate** — `caddy validate` on the retrofitted `Caddyfile.public` in `ao-caddy:dev` with dummy env incl. `ALLOWED_EMAILS="a@x.com b@y.com"` and `AO_AUTH_URL=https://auth.binary-badger.xyz`; then `docker compose -f … -f docker-compose.vm.yml config` clean. Expected: valid; the adapted config shows both emails in the ACL (spot-check with `caddy adapt` if in doubt).
 - [ ] **Step 4: Commit** (`feat(deploy): bots authorize-only against the fleet portal`).
 
-**Note:** the *local* `deploy/Caddyfile` (localhost mode, own portal) is intentionally unchanged — local dev alignment is M8c.
+**Note:** the _local_ `deploy/Caddyfile` (localhost mode, own portal) is intentionally unchanged — local dev alignment is M8c.
 
 ---
 
@@ -205,7 +206,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 
 **Files:** Modify `deploy/README.md`
 
-- [ ] **Step 1:** Add an "M8a: fleet SSO" section — the architecture sketch; `deploy-portal.sh` usage; **the two once-ever steps** (Search Console verification, OAuth redirect URI); the invariant *nothing untrusted is ever hosted under `binary-badger.xyz`* (domain-wide cookie); allowlist = the `dashboard-allowlist` secret (now multi-email, comma/newline/space separated); note bots need no Console steps ever. Update the M7 section's sslip references to the fleet domain.
+- [ ] **Step 1:** Add an "M8a: fleet SSO" section — the architecture sketch; `deploy-portal.sh` usage; **the two once-ever steps** (Search Console verification, OAuth redirect URI); the invariant _nothing untrusted is ever hosted under `binary-badger.xyz`_ (domain-wide cookie); allowlist = the `dashboard-allowlist` secret (now multi-email, comma/newline/space separated); note bots need no Console steps ever. Update the M7 section's sslip references to the fleet domain.
 - [ ] **Step 2: Commit** (`docs(deploy): M8a fleet SSO runbook`).
 
 ---

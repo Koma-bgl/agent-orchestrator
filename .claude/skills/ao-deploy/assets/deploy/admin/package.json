@@ -1,13 +1,13 @@
 {
-  "name": "ao-admin-backend",
-  "version": "0.0.0",
-  "private": true,
-  "type": "module",
-  "description": "Co-located admin/setup-wizard backend for the AO fleet bot (gated by Caddy).",
-  "scripts": {
-    "test": "node --test"
-  },
-  "dependencies": {
-    "yaml": "^2.7.0"
-  }
+	"name": "ao-admin-backend",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Co-located admin/setup-wizard backend for the AO fleet bot (gated by Caddy).",
+	"scripts": {
+		"test": "node --test"
+	},
+	"dependencies": {
+		"yaml": "^2.7.0"
+	}
 }

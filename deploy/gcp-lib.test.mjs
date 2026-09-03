@@ -3,60 +3,60 @@ import assert from "node:assert/strict";
 import { vmName, ownerLabel, ipName, quotaFor, quotaAdmin, botHost, FLEET_DOMAIN, AUTH_HOST } from "./gcp-lib.mjs";
 
 test("vmName sanitizes a gcloud account to a valid GCE name", () => {
-  assert.equal(vmName("ky@chaostheory.hk"), "ao-ky-chaostheory-hk");
-  assert.match(vmName("A.B+C@x"), /^ao-[a-z0-9-]+$/);
-  // no leading/trailing dash, no double dash
-  assert.doesNotMatch(vmName("..weird..@@x.."), /--|^ao--|-$/);
+	assert.equal(vmName("ky@chaostheory.hk"), "ao-ky-chaostheory-hk");
+	assert.match(vmName("A.B+C@x"), /^ao-[a-z0-9-]+$/);
+	// no leading/trailing dash, no double dash
+	assert.doesNotMatch(vmName("..weird..@@x.."), /--|^ao--|-$/);
 });
 
 test("vmName stays within GCE's 63-char limit", () => {
-  const long = "a".repeat(100) + "@example.com";
-  assert.ok(vmName(long).length <= 63);
+	const long = "a".repeat(100) + "@example.com";
+	assert.ok(vmName(long).length <= 63);
 });
 
 test("ownerLabel is gcloud-label-safe", () => {
-  assert.match(ownerLabel("ky@chaostheory.hk"), /^[a-z0-9_-]+$/);
+	assert.match(ownerLabel("ky@chaostheory.hk"), /^[a-z0-9_-]+$/);
 });
 
 test("botHost derives the fleet subdomain from the account", () => {
-  assert.equal(botHost("ky@chaostheory.hk"), "ky-chaostheory-hk.binary-badger.xyz");
-  assert.equal(botHost("ky@chaostheory.hk", 2), "ky-chaostheory-hk-2.binary-badger.xyz");
-  assert.match(botHost("A.B+C@x"), /^[a-z0-9-]+\.binary-badger\.xyz$/);
-  // DNS label limit: the leftmost label stays <= 63 chars
-  const label = botHost("a".repeat(100) + "@x", 3).split(".")[0];
-  assert.ok(label.length <= 63);
+	assert.equal(botHost("ky@chaostheory.hk"), "ky-chaostheory-hk.binary-badger.xyz");
+	assert.equal(botHost("ky@chaostheory.hk", 2), "ky-chaostheory-hk-2.binary-badger.xyz");
+	assert.match(botHost("A.B+C@x"), /^[a-z0-9-]+\.binary-badger\.xyz$/);
+	// DNS label limit: the leftmost label stays <= 63 chars
+	const label = botHost("a".repeat(100) + "@x", 3).split(".")[0];
+	assert.ok(label.length <= 63);
 });
 
 test("FLEET_DOMAIN and AUTH_HOST are consistent", () => {
-  assert.equal(FLEET_DOMAIN, "binary-badger.xyz");
-  assert.equal(AUTH_HOST, "auth.binary-badger.xyz");
+	assert.equal(FLEET_DOMAIN, "binary-badger.xyz");
+	assert.equal(AUTH_HOST, "auth.binary-badger.xyz");
 });
 
 test("vmName supports an index for multi-VM users (index 1 = no suffix)", () => {
-  assert.equal(vmName("ky@chaostheory.hk", 1), "ao-ky-chaostheory-hk");
-  assert.equal(vmName("ky@chaostheory.hk", 2), "ao-ky-chaostheory-hk-2");
-  assert.ok(vmName("a".repeat(100) + "@x", 3).length <= 63);
+	assert.equal(vmName("ky@chaostheory.hk", 1), "ao-ky-chaostheory-hk");
+	assert.equal(vmName("ky@chaostheory.hk", 2), "ao-ky-chaostheory-hk-2");
+	assert.ok(vmName("a".repeat(100) + "@x", 3).length <= 63);
 });
 
 test("ipName mirrors vmName indexing", () => {
-  assert.equal(ipName("ky@chaostheory.hk", 1), "ao-ky-chaostheory-hk-ip");
-  assert.equal(ipName("ky@chaostheory.hk", 2), "ao-ky-chaostheory-hk-ip-2");
+	assert.equal(ipName("ky@chaostheory.hk", 1), "ao-ky-chaostheory-hk-ip");
+	assert.equal(ipName("ky@chaostheory.hk", 2), "ao-ky-chaostheory-hk-ip-2");
 });
 
 test("quotaFor reads per-user quota with default fallback", () => {
-  const doc = JSON.stringify({ default: 1, "ky@chaostheory.hk": 3 });
-  assert.equal(quotaFor(doc, "ky@chaostheory.hk"), 3);
-  assert.equal(quotaFor(doc, "someone@else.com"), 1);
+	const doc = JSON.stringify({ default: 1, "ky@chaostheory.hk": 3 });
+	assert.equal(quotaFor(doc, "ky@chaostheory.hk"), 3);
+	assert.equal(quotaFor(doc, "someone@else.com"), 1);
 });
 
 test("quotaFor tolerates a missing/invalid doc (default 1)", () => {
-  assert.equal(quotaFor("", "x@y"), 1);
-  assert.equal(quotaFor("not json", "x@y"), 1);
-  assert.equal(quotaFor("{}", "x@y"), 1);
+	assert.equal(quotaFor("", "x@y"), 1);
+	assert.equal(quotaFor("not json", "x@y"), 1);
+	assert.equal(quotaFor("{}", "x@y"), 1);
 });
 
 test("quotaAdmin surfaces the admin contact from the doc", () => {
-  assert.equal(quotaAdmin(JSON.stringify({ default: 1, admin: "ky@chaostheory.hk" })), "ky@chaostheory.hk");
-  assert.equal(quotaAdmin("{}"), "");
-  assert.equal(quotaAdmin("not json"), "");
+	assert.equal(quotaAdmin(JSON.stringify({ default: 1, admin: "ky@chaostheory.hk" })), "ky@chaostheory.hk");
+	assert.equal(quotaAdmin("{}"), "");
+	assert.equal(quotaAdmin("not json"), "");
 });

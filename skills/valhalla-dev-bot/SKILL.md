@@ -13,6 +13,7 @@ automated. Authentication is handled by the always-on fleet portal
 (`auth.binary-badger.xyz`), so **no OAuth / Console steps are ever needed per bot**.
 
 Two modes:
+
 - **Fleet (default)** — create/manage a real bot on GCP. Costs money while the VM
   runs (~$0.15/hr for `e2-standard-4`); `destroy` stops it.
 - **Local** — a free docker-compose smoke-test of the same stack on your laptop
@@ -27,7 +28,7 @@ Uses **your own `gcloud` creds**; embeds no secrets. Default project
   `dashboard-allowlist` (multi-email). The portal owns `google-oauth-client`. The
   VM's service account reads them on boot — you never handle them.
 - **Agent creds (per-user, on the box, NEVER centralized):** GitHub + Claude. Set
-  them by logging in *inside the running bot* (SSH step below). The bot boots fine
+  them by logging in _inside the running bot_ (SSH step below). The bot boots fine
   without them; it just can't do agent work until you log in.
 
 ---
@@ -37,12 +38,14 @@ Uses **your own `gcloud` creds**; embeds no secrets. Default project
 Run from `deploy/`. Everything is `deploy-gcp.sh <cmd> [--project=<id>] [--index=N]`.
 
 **Prerequisites (one-time, fleet-wide — normally already done):**
+
 - `gcloud auth login` and a project selected.
 - The fleet portal is deployed (`./deploy-portal.sh`) and `jwt-shared-key` +
   `dashboard-allowlist` exist in Secret Manager. If unsure, `./deploy-gcp.sh status`
   and a quick `gcloud secrets describe jwt-shared-key` confirm it.
 
 **Create your bot:**
+
 1. `./deploy-gcp.sh init` — one-time per user: reserves a static IP + SA/IAM/firewall.
 2. `./deploy-gcp.sh create` — provisions the VM (quota-gated, **max 1/user** by
    default), creates the `<you>.binary-badger.xyz` A-record, fetches gate secrets via
@@ -62,6 +65,7 @@ Run from `deploy/`. Everything is `deploy-gcp.sh <cmd> [--project=<id>] [--index
    lands — just re-auth.)
 
 **Manage:**
+
 - `./deploy-gcp.sh status` — your bot's URL, VM state, quota usage.
 - `./deploy-gcp.sh destroy` — deletes the VM **and its DNS record**; the reserved
   IP/SA/secrets persist so recreate is cheap. **Stops the billing.**
@@ -86,11 +90,12 @@ node skills/valhalla-dev-bot/run.mjs verify              # gated 302s, healthz, 
 # → open https://localhost:8443 (accept the internal-cert warning), sign in
 node skills/valhalla-dev-bot/run.mjs down [--wipe]       # stop (and wipe volumes)
 ```
+
 Local uses the localhost OAuth redirect (`https://localhost:8443/auth/oauth2/google/authorization-code-callback`) — a separate registered URI from the fleet portal's, left intact for local dev.
 
 > **Allowlist caveat (local only):** local mode matches a **single** email
 > (`ALLOWED_EMAIL_1` — the whole `dashboard-allowlist` secret stuffed into one
-> match), *not* the fleet's multi-email splat. If `dashboard-allowlist` holds
+> match), _not_ the fleet's multi-email splat. If `dashboard-allowlist` holds
 > several emails, local sign-in only works for a single-email secret; the fleet
 > path handles the multi-email list correctly. (Aligning local with the fleet
 > multi-email + shared portal is the M8c cleanup.)

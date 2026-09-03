@@ -35,6 +35,7 @@
 ## Task 1: The SPA (static file)
 
 **Files:**
+
 - Create: `deploy/web/index.html`
 
 - [ ] **Step 1: Write the SPA**
@@ -44,107 +45,233 @@
 ```html
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Agent Orchestrator</title>
-<style>
-  :root { color-scheme: light dark; --bg:#0f1115; --card:#181b22; --fg:#e6e8eb; --muted:#9aa3af; --line:#262b35; }
-  * { box-sizing: border-box; }
-  body { margin:0; font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
-  header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
-  header h1 { font-size:15px; margin:0; font-weight:600; }
-  #conn { font-size:12px; color:var(--muted); margin-left:auto; }
-  #conn.live::before { content:"● "; color:#34d399; }
-  #conn.down::before { content:"● "; color:#f87171; }
-  main { padding:20px; max-width:1000px; margin:0 auto; }
-  .project { margin-bottom:24px; }
-  .project h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; }
-  .session { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:8px; display:flex; align-items:center; gap:12px; }
-  .session .id { font-weight:600; }
-  .session .meta { color:var(--muted); font-size:12px; }
-  .session .branch { font-family:ui-monospace,monospace; font-size:12px; color:var(--muted); margin-left:auto; }
-  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; text-transform:lowercase; }
-  .b-working,.b-approved,.b-mergeable { background:#064e3b; color:#6ee7b7; }
-  .b-needs_input,.b-changes_requested,.b-ci_failed,.b-merge_conflict { background:#7f1d1d; color:#fca5a5; }
-  .b-pr_open,.b-review_pending,.b-draft,.b-no_signal { background:#1e3a5f; color:#93c5fd; }
-  .b-idle,.b-merged,.b-terminated { background:#33373f; color:var(--muted); }
-  .empty,.error { color:var(--muted); padding:40px 0; text-align:center; }
-  .error { color:#fca5a5; }
-</style>
-</head>
-<body>
-<header>
-  <h1>Agent Orchestrator</h1>
-  <span id="conn" class="down">connecting…</span>
-</header>
-<main id="app"><div class="empty">Loading…</div></main>
-<script>
-const app = document.getElementById("app");
-const conn = document.getElementById("conn");
-let refetchTimer = null;
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Agent Orchestrator</title>
+		<style>
+			:root {
+				color-scheme: light dark;
+				--bg: #0f1115;
+				--card: #181b22;
+				--fg: #e6e8eb;
+				--muted: #9aa3af;
+				--line: #262b35;
+			}
+			* {
+				box-sizing: border-box;
+			}
+			body {
+				margin: 0;
+				font:
+					14px/1.5 system-ui,
+					-apple-system,
+					Segoe UI,
+					Roboto,
+					sans-serif;
+				background: var(--bg);
+				color: var(--fg);
+			}
+			header {
+				padding: 16px 20px;
+				border-bottom: 1px solid var(--line);
+				display: flex;
+				align-items: center;
+				gap: 12px;
+			}
+			header h1 {
+				font-size: 15px;
+				margin: 0;
+				font-weight: 600;
+			}
+			#conn {
+				font-size: 12px;
+				color: var(--muted);
+				margin-left: auto;
+			}
+			#conn.live::before {
+				content: "● ";
+				color: #34d399;
+			}
+			#conn.down::before {
+				content: "● ";
+				color: #f87171;
+			}
+			main {
+				padding: 20px;
+				max-width: 1000px;
+				margin: 0 auto;
+			}
+			.project {
+				margin-bottom: 24px;
+			}
+			.project h2 {
+				font-size: 13px;
+				text-transform: uppercase;
+				letter-spacing: 0.04em;
+				color: var(--muted);
+				margin: 0 0 8px;
+			}
+			.session {
+				background: var(--card);
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				padding: 12px 14px;
+				margin-bottom: 8px;
+				display: flex;
+				align-items: center;
+				gap: 12px;
+			}
+			.session .id {
+				font-weight: 600;
+			}
+			.session .meta {
+				color: var(--muted);
+				font-size: 12px;
+			}
+			.session .branch {
+				font-family: ui-monospace, monospace;
+				font-size: 12px;
+				color: var(--muted);
+				margin-left: auto;
+			}
+			.badge {
+				display: inline-block;
+				padding: 2px 8px;
+				border-radius: 999px;
+				font-size: 11px;
+				font-weight: 600;
+				text-transform: lowercase;
+			}
+			.b-working,
+			.b-approved,
+			.b-mergeable {
+				background: #064e3b;
+				color: #6ee7b7;
+			}
+			.b-needs_input,
+			.b-changes_requested,
+			.b-ci_failed,
+			.b-merge_conflict {
+				background: #7f1d1d;
+				color: #fca5a5;
+			}
+			.b-pr_open,
+			.b-review_pending,
+			.b-draft,
+			.b-no_signal {
+				background: #1e3a5f;
+				color: #93c5fd;
+			}
+			.b-idle,
+			.b-merged,
+			.b-terminated {
+				background: #33373f;
+				color: var(--muted);
+			}
+			.empty,
+			.error {
+				color: var(--muted);
+				padding: 40px 0;
+				text-align: center;
+			}
+			.error {
+				color: #fca5a5;
+			}
+		</style>
+	</head>
+	<body>
+		<header>
+			<h1>Agent Orchestrator</h1>
+			<span id="conn" class="down">connecting…</span>
+		</header>
+		<main id="app"><div class="empty">Loading…</div></main>
+		<script>
+			const app = document.getElementById("app");
+			const conn = document.getElementById("conn");
+			let refetchTimer = null;
 
-function esc(v) {
-  return String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
-}
-function badge(status) {
-  const s = (status || "no_signal").replace(/[^a-z_]/gi, "");
-  return `<span class="badge b-${s}">${s}</span>`;
-}
-function age(iso) {
-  if (!iso) return "";
-  const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (secs < 60) return Math.floor(secs) + "s";
-  if (secs < 3600) return Math.floor(secs / 60) + "m";
-  if (secs < 86400) return Math.floor(secs / 3600) + "h";
-  return Math.floor(secs / 86400) + "d";
-}
-function render(sessions) {
-  if (!sessions.length) { app.innerHTML = '<div class="empty">No active sessions.</div>'; return; }
-  const byProject = {};
-  for (const s of sessions) (byProject[s.projectId] ||= []).push(s);
-  app.innerHTML = Object.keys(byProject).sort().map(pid => `
+			function esc(v) {
+				return String(v ?? "").replace(
+					/[&<>"']/g,
+					(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+				);
+			}
+			function badge(status) {
+				const s = (status || "no_signal").replace(/[^a-z_]/gi, "");
+				return `<span class="badge b-${s}">${s}</span>`;
+			}
+			function age(iso) {
+				if (!iso) return "";
+				const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+				if (secs < 60) return Math.floor(secs) + "s";
+				if (secs < 3600) return Math.floor(secs / 60) + "m";
+				if (secs < 86400) return Math.floor(secs / 3600) + "h";
+				return Math.floor(secs / 86400) + "d";
+			}
+			function render(sessions) {
+				if (!sessions.length) {
+					app.innerHTML = '<div class="empty">No active sessions.</div>';
+					return;
+				}
+				const byProject = {};
+				for (const s of sessions) (byProject[s.projectId] ||= []).push(s);
+				app.innerHTML = Object.keys(byProject)
+					.sort()
+					.map(
+						(pid) => `
     <section class="project">
       <h2>${esc(pid)}</h2>
-      ${byProject[pid].map(s => `
+      ${byProject[pid]
+				.map(
+					(s) => `
         <div class="session">
           <span class="id">${esc(s.id)}</span>
           ${badge(s.status)}
           <span class="meta">${esc(s.harness)} · ${esc(s.kind)} · ${age(s.updatedAt || s.createdAt)}</span>
           <span class="branch">${esc(s.branch)}</span>
-        </div>`).join("")}
-    </section>`).join("");
-}
-async function refetch() {
-  try {
-    const r = await fetch("/api/v1/sessions", { headers: { Accept: "application/json" } });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const data = await r.json();
-    render(data.sessions || []);
-  } catch (e) {
-    // A redirect to Google (expired session) surfaces as an opaque/fetch error.
-    app.innerHTML = '<div class="error">Could not load sessions — your session may have expired. <a href="/" style="color:#93c5fd">Reload</a>.</div>';
-  }
-}
-function debouncedRefetch() {
-  clearTimeout(refetchTimer);
-  refetchTimer = setTimeout(refetch, 250);
-}
-function connectSSE() {
-  const es = new EventSource("/api/v1/events");
-  es.onopen = () => { conn.className = "live"; conn.textContent = "live"; };
-  es.onmessage = debouncedRefetch;
-  es.onerror = () => {
-    conn.className = "down"; conn.textContent = "reconnecting…";
-    // EventSource auto-reconnects; nothing else needed.
-  };
-}
-refetch();
-connectSSE();
-// Polling fallback in case SSE is unavailable.
-setInterval(refetch, 15000);
-</script>
-</body>
+        </div>`,
+				)
+				.join("")}
+    </section>`,
+					)
+					.join("");
+			}
+			async function refetch() {
+				try {
+					const r = await fetch("/api/v1/sessions", { headers: { Accept: "application/json" } });
+					if (!r.ok) throw new Error("HTTP " + r.status);
+					const data = await r.json();
+					render(data.sessions || []);
+				} catch (e) {
+					// A redirect to Google (expired session) surfaces as an opaque/fetch error.
+					app.innerHTML =
+						'<div class="error">Could not load sessions — your session may have expired. <a href="/" style="color:#93c5fd">Reload</a>.</div>';
+				}
+			}
+			function debouncedRefetch() {
+				clearTimeout(refetchTimer);
+				refetchTimer = setTimeout(refetch, 250);
+			}
+			function connectSSE() {
+				const es = new EventSource("/api/v1/events");
+				es.onopen = () => {
+					conn.className = "live";
+					conn.textContent = "live";
+				};
+				es.onmessage = debouncedRefetch;
+				es.onerror = () => {
+					conn.className = "down";
+					conn.textContent = "reconnecting…";
+					// EventSource auto-reconnects; nothing else needed.
+				};
+			}
+			refetch();
+			connectSSE();
+			// Polling fallback in case SSE is unavailable.
+			setInterval(refetch, 15000);
+		</script>
+	</body>
 </html>
 ```
 
@@ -165,6 +292,7 @@ git commit -m "feat(deploy): monitoring SPA — sessions + live status via SSE"
 ## Task 2: Caddyfile — serve the SPA, proxy the API
 
 **Files:**
+
 - Modify: `deploy/Caddyfile`
 
 - [ ] **Step 1: Replace the site block's route handling**
@@ -212,6 +340,7 @@ docker run --rm \
   -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
   ao-caddy:dev caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1 | tail -3
 ```
+
 Expected: `Valid configuration`. If a `handle`/`file_server` keyword errors, fix per Caddy docs before proceeding.
 
 - [ ] **Step 3: Commit**
@@ -226,6 +355,7 @@ git commit -m "feat(deploy): Caddy serves the SPA, proxies /api behind the auth 
 ## Task 3: compose — mount the SPA into Caddy
 
 **Files:**
+
 - Modify: `deploy/docker-compose.yml`
 
 - [ ] **Step 1: Mount `./web` at `/srv` (read-only) in the `caddy` service**
@@ -233,7 +363,7 @@ git commit -m "feat(deploy): Caddy serves the SPA, proxies /api behind the auth 
 Add to the `caddy` service `volumes:` (alongside the Caddyfile + data mounts):
 
 ```yaml
-      - ./web:/srv:ro
+- ./web:/srv:ro
 ```
 
 (M6/M7 note: for Watchtower-driven UI updates, the SPA should later be baked into the Caddy image instead of host-mounted — mounting is fine for local + the M7 repo-checkout VM.)
@@ -255,6 +385,7 @@ git commit -m "feat(deploy): mount monitoring SPA into the caddy container"
 ## Task 4: README — dashboard section
 
 **Files:**
+
 - Modify: `deploy/README.md`
 
 - [ ] **Step 1: Add an "M4: monitoring dashboard" note** under the M3 section:
@@ -293,6 +424,7 @@ docker compose ps   # ao healthy, caddy up
 curl -sk -o /dev/null -w "GET / -> HTTP %{http_code}\n" https://localhost:8443/
 curl -sk -i https://localhost:8443/ | grep -i '^location:'
 ```
+
 Expected: `302`, `location:` pointing at `/auth/oauth2/google` — the SPA is gated, not served to anonymous users. (This confirms the `handle` ordering: `/` falls through to the authorized static handler.)
 
 - [ ] **Step 3: The static file is actually present + correct in the container**
@@ -300,6 +432,7 @@ Expected: `302`, `location:` pointing at `/auth/oauth2/google` — the SPA is ga
 ```bash
 docker compose exec -T caddy sh -c 'head -5 /srv/index.html; grep -c "api/v1/events" /srv/index.html'
 ```
+
 Expected: the SPA's `<!doctype html>` head + a non-zero grep count — proving the mount works and Caddy would serve our file (not the stock welcome page).
 
 - [ ] **Step 4: Daemon data contract the SPA depends on — list + SSE-on-spawn**
@@ -324,6 +457,7 @@ docker compose exec -T ao sh -c '
   ao session ls
 '
 ```
+
 Expected: (a) returns `{"sessions":[...]}`. (b) **Hard gate:** the spawn produces a session in `ao session ls`. **Soft signal:** the backgrounded SSE curl prints at least one `data:`/event line — this is timing-sensitive (1s connect window, 3s drain) and may occasionally miss under arm64 emulation; treat a missed line as inconclusive, not a failure, as long as `ao session ls` shows the session. Clean up: `docker compose exec -T ao sh -c 'ao session kill m4-1 || true'`.
 
 - [ ] **Step 5: Tear down**

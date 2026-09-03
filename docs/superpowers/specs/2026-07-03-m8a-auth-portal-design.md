@@ -34,16 +34,16 @@ one sign-in works on every bot.
 
 ## Key decisions
 
-| Decision | Choice | Rationale |
-|---|---|---|
-| Portal engine | **caddy-security on Cloud Run** (our existing custom image) | The bots' `authorize` policies already validate exactly the JWT this portal mints (same `jwt-shared-key`); AuthCrunch's documented multi-subdomain SSO pattern; zero new auth code |
-| Session sharing | JWT cookie with **`cookie domain binary-badger.xyz`** | All `*.binary-badger.xyz` hosts receive it; bots validate it statelessly with the shared key |
-| Allowlist enforcement | **Bot-side, unchanged** — every bot fetches the same `dashboard-allowlist` secret | Fleet-wide by construction (shared list); portal authenticates, bots authorize; no new moving part |
-| Portal TLS/ingress | Cloud Run (terminates TLS) + **domain mapping** for `auth.binary-badger.xyz` | Managed cert, no Caddy-ACME on the portal. Domain verification TXT is automatable via our own Cloud DNS zone. Fallback if domain mapping fights us: serverless-NEG LB (~$18/mo) — decide at plan time only if needed |
-| Portal listener | Caddy `http_port 8080`, `auto_https off`, site `:8080` | Cloud Run provides `$PORT`/TLS; Caddy serves plain HTTP internally |
-| Portal secrets | `GOOGLE_CLIENT_ID/SECRET` split from `google-oauth-client`, `JWT_SHARED_KEY` — via Cloud Run's native Secret Manager env integration | Same source of truth as the bots; no new secrets |
-| Bot hostnames | `<user>.binary-badger.xyz` (sanitized account, same `gcp-lib` derivation), A-record automated in `deploy-gcp.sh` | Replaces sslip.io; per-bot Let's Encrypt via the bot's own Caddy (unchanged mechanism, real hostname) |
-| One-time manual step (last ever) | Register `https://auth.binary-badger.xyz/<callback-path>` in the OAuth client | The single Console visit for the fleet's lifetime |
+| Decision                         | Choice                                                                                                                               | Rationale                                                                                                                                                                                                            |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Portal engine                    | **caddy-security on Cloud Run** (our existing custom image)                                                                          | The bots' `authorize` policies already validate exactly the JWT this portal mints (same `jwt-shared-key`); AuthCrunch's documented multi-subdomain SSO pattern; zero new auth code                                   |
+| Session sharing                  | JWT cookie with **`cookie domain binary-badger.xyz`**                                                                                | All `*.binary-badger.xyz` hosts receive it; bots validate it statelessly with the shared key                                                                                                                         |
+| Allowlist enforcement            | **Bot-side, unchanged** — every bot fetches the same `dashboard-allowlist` secret                                                    | Fleet-wide by construction (shared list); portal authenticates, bots authorize; no new moving part                                                                                                                   |
+| Portal TLS/ingress               | Cloud Run (terminates TLS) + **domain mapping** for `auth.binary-badger.xyz`                                                         | Managed cert, no Caddy-ACME on the portal. Domain verification TXT is automatable via our own Cloud DNS zone. Fallback if domain mapping fights us: serverless-NEG LB (~$18/mo) — decide at plan time only if needed |
+| Portal listener                  | Caddy `http_port 8080`, `auto_https off`, site `:8080`                                                                               | Cloud Run provides `$PORT`/TLS; Caddy serves plain HTTP internally                                                                                                                                                   |
+| Portal secrets                   | `GOOGLE_CLIENT_ID/SECRET` split from `google-oauth-client`, `JWT_SHARED_KEY` — via Cloud Run's native Secret Manager env integration | Same source of truth as the bots; no new secrets                                                                                                                                                                     |
+| Bot hostnames                    | `<user>.binary-badger.xyz` (sanitized account, same `gcp-lib` derivation), A-record automated in `deploy-gcp.sh`                     | Replaces sslip.io; per-bot Let's Encrypt via the bot's own Caddy (unchanged mechanism, real hostname)                                                                                                                |
+| One-time manual step (last ever) | Register `https://auth.binary-badger.xyz/<callback-path>` in the OAuth client                                                        | The single Console visit for the fleet's lifetime                                                                                                                                                                    |
 
 ## Architecture
 
@@ -70,16 +70,17 @@ back to the bot → `authorize` validates the JWT + allowlist → in. Every othe
 ## Changes by component
 
 ### New: `deploy/portal/`
+
 - `Caddyfile.portal` — global: `http_port 8080`, `auto_https off`,
   `order authenticate before respond`, the `security` block (Google OIDC provider
-  + `authentication portal` with `cookie domain binary-badger.xyz`,
-  `cookie samesite lax`, `crypto key sign-verify {env.JWT_SHARED_KEY}`, **and a
-  trusted-redirect rule** — reviewer-confirmed against the AuthCrunch source that
-  cross-host `redirect_url` values are IGNORED unless trusted, which would strand
-  users on the portal welcome page instead of returning them to the bot. Scope it
-  tightly to the fleet domain (suffix match on `binary-badger.xyz`), never a
-  permissive wildcard — this directive is exactly the open-redirect guard);
-  site `:8080` → `authenticate with myportal`. No authorization policy here.
+  - `authentication portal` with `cookie domain binary-badger.xyz`,
+    `cookie samesite lax`, `crypto key sign-verify {env.JWT_SHARED_KEY}`, **and a
+    trusted-redirect rule** — reviewer-confirmed against the AuthCrunch source that
+    cross-host `redirect_url` values are IGNORED unless trusted, which would strand
+    users on the portal welcome page instead of returning them to the bot. Scope it
+    tightly to the fleet domain (suffix match on `binary-badger.xyz`), never a
+    permissive wildcard — this directive is exactly the open-redirect guard);
+    site `:8080` → `authenticate with myportal`. No authorization policy here.
 - `Dockerfile` — tiny portal image: the existing `ao-caddy` base + the portal
   Caddyfile baked in + an **entrypoint that splits the pipe-joined
   `google-oauth-client` secret** into `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`
@@ -97,11 +98,12 @@ back to the bot → `authorize` validates the JWT + allowlist → in. Every othe
   prefix** — `https://auth.binary-badger.xyz/oauth2/google/authorization-code-callback`.
   Still `caddy validate`-gated at plan time (DSL-drift guard).
 - **Domain-verification nuance:** creating the TXT record is automatable via our
-  zone, but Search Console *verification itself* is a once-ever browser step for
+  zone, but Search Console _verification itself_ is a once-ever browser step for
   the verifying account — it joins the OAuth-URI registration in the "one-time
   manual" bucket (not claimed as fully automatic).
 
 ### Modified: `deploy/Caddyfile.public` (bot side)
+
 - **Remove** the `authentication portal` block and the `handle /auth*` route
   (bots no longer authenticate anyone).
 - Authorization policies gain `set auth url https://auth.binary-badger.xyz/...`
@@ -112,13 +114,14 @@ back to the bot → `authorize` validates the JWT + allowlist → in. Every othe
   `caddy validate`.
 
 ### Modified: `deploy/deploy-gcp.sh` + `deploy/gcp-lib.mjs`
+
 - `create`: derive `<user>.binary-badger.xyz`, create/update the A-record in the
   `ao-fleet` zone → the VM's reserved IP; set `AO_SITE_ADDRESS`/`AO_SITE_URL`/
   `AO_AUTH_URL` in the remote `.env`. Drop the printed per-bot redirect-URI step.
 - `destroy`: also delete the bot's A-record (instance-only ethos otherwise
   unchanged; the record is free to recreate).
 - `init`: no longer prints a redirect URI (portal owns it).
-- **Full sslip sweep:** remove sslip assumptions from *all* call sites — `init`,
+- **Full sslip sweep:** remove sslip assumptions from _all_ call sites — `init`,
   `create`, `destroy`, **`status`**, and `gcp-lib.mjs` (`sslipHost`/`redirectUri`
   helpers + their tests become `botHost(account)`/fleet equivalents).
 - **Same-project assumption stated:** the `ao-fleet` DNS zone lives in the same
@@ -126,6 +129,7 @@ back to the bot → `authorize` validates the JWT + allowlist → in. Every othe
   the DNS calls need a `--dns-project` parameter (not built now).
 
 ### Unchanged
+
 - The daemon image/stack, admin backend, Watchtower, secrets fetch via SA,
   quotas + admin visibility, the `valhalla-dev-bot` local skill (still uses the
   local portal mode — local dev doesn't traverse the fleet portal; noted as a
@@ -150,7 +154,7 @@ back to the bot → `authorize` validates the JWT + allowlist → in. Every othe
 - `jwt-shared-key` rotation invalidates all sessions fleet-wide (portal + bots
   read the same secret; rotate → restart portal revision + bots).
 - Cloud Run ingress: public (it must be, for browsers). **No state post-login**
-  (sessions are JWT cookies); the OAuth *handshake* state is in-memory per
+  (sessions are JWT cookies); the OAuth _handshake_ state is in-memory per
   process, hence the `--max-instances=1` pin above.
 
 ## Verification (tiers)
@@ -173,8 +177,8 @@ back to the bot → `authorize` validates the JWT + allowlist → in. Every othe
 ## Risks / open questions
 
 - **Cloud Run domain mapping is Preview** ("not production-ready" per Google —
-  acceptable for a login page); managed cert can take up to ~24h on first issue.
-  LB fallback (~$18/mo serverless NEG) documented if it fights us. Search Console
+  acceptable for a login page); managed cert can take up to ~~24h on first issue.
+  LB fallback (~~$18/mo serverless NEG) documented if it fights us. Search Console
   domain verification is a once-ever browser step (see the one-time bucket).
 - **Cross-host redirects: both directions now specified** — bot→portal via
   `set auth url`, portal→bot via the **trusted-redirect rule** (B1, reviewer-

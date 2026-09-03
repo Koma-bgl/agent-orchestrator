@@ -25,6 +25,7 @@
 > render, and the terminal-through-gate WS test.
 
 > **⚠️ Two verifications that CANNOT be skipped on paper (spec-review findings):**
+>
 > 1. **`ttyd` terminal through the gate** — the dashboard embeds `ttyd` (external C binary, ports 7800–7900) via iframe. Must be installed AND reachable through Caddy or terminals silently break.
 > 2. **WebSocket `Upgrade` through the caddy-security `authorize` gate** — cookie-JWT on a WS handshake is exactly what silently 401s. Live-test end-to-end, not just HTTP.
 
@@ -77,7 +78,7 @@ Inspected the **published npm tarballs** (`@composio/ao-cli@0.2.2`, `@composio/a
 ## Task 2: entrypoint.sh — boot the dashboard, drop the Go plumbing
 
 - [ ] Keep the secret-load block (`:1-47`) unchanged.
-- [ ] **Delete** the socat loopback bridge (`:49-55`) — *iff* Task 0 confirmed WS/ttyd bind 0.0.0.0. If they bind localhost, keep a socat relay for exactly those terminal ports and note why.
+- [ ] **Delete** the socat loopback bridge (`:49-55`) — _iff_ Task 0 confirmed WS/ttyd bind 0.0.0.0. If they bind localhost, keep a socat relay for exactly those terminal ports and note why.
 - [ ] Keep the admin backend background launch (`:57-61`) — Milestone B builds on it. (Its Go-daemon-facing endpoints are dead until B; acceptable.)
 - [ ] **Delete** the Go platform-binary resolve + `exec` block (`:63-80`).
 - [ ] Add: ensure the config exists — `if [ ! -f "$AO_CONFIG_PATH" ]; then mkdir -p "$(dirname "$AO_CONFIG_PATH")"; printf 'projects: {}\n' > "$AO_CONFIG_PATH"; fi` (map, NOT `[]`).
@@ -128,6 +129,7 @@ Inspected the **published npm tarballs** (`@composio/ao-cli@0.2.2`, `@composio/a
 ---
 
 ### What this plan deliberately does NOT do (Milestone B)
+
 - Writing a **real** `agent-orchestrator.yaml` (repo, `tracker: linear`, `teamId`, `queuePoller`, `reactions`) — the wizard.
 - Token entry (`LINEAR_API_KEY`/`ANTHROPIC_API_KEY`/GitHub PAT) via the bot UI + on-box persistence.
 - Restarting `ao dashboard` after a config change (no hot-reload).

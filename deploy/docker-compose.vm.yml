@@ -28,11 +28,11 @@ services:
   caddy:
     image: ${AO_CADDY_IMAGE:-us-central1-docker.pkg.dev/cloudbet-native/ao-fleet/caddy:latest}
     ports: !override
-      - "80:80"      # Let's Encrypt HTTP-01 challenge + HTTP→HTTPS redirect
-      - "443:443"    # public HTTPS
+      - "80:80" # Let's Encrypt HTTP-01 challenge + HTTP→HTTPS redirect
+      - "443:443" # public HTTPS
     volumes: !override
-      - ./Caddyfile.public:/etc/caddy/Caddyfile:ro   # public-mode config (auto-TLS)
-      - caddy-data:/data                             # ACME/cert storage (persist!)
+      - ./Caddyfile.public:/etc/caddy/Caddyfile:ro # public-mode config (auto-TLS)
+      - caddy-data:/data # ACME/cert storage (persist!)
       - caddy-config:/config
     environment:
       # The bot's fleet hostname (<user>.binary-badger.xyz), supplied by

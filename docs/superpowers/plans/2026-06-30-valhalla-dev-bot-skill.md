@@ -2,13 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Package the *already-validated* local deploy-test flow into an invokable skill (`skills/valhalla-dev-bot/`) — one command to fetch the 3 gate secrets from Secret Manager, bring up the gated stack, verify it, and guide the human through real sign-in + on-box agent auth.
+**Goal:** Package the _already-validated_ local deploy-test flow into an invokable skill (`skills/valhalla-dev-bot/`) — one command to fetch the 3 gate secrets from Secret Manager, bring up the gated stack, verify it, and guide the human through real sign-in + on-box agent auth.
 
 **Architecture:** A `SKILL.md` orchestrates; a Node CLI (`run.mjs`) does the deterministic mechanics (preflight, fetch, materialize `.env`, `docker compose up`, verify, teardown) via subcommands; pure helpers (`lib.mjs`) are unit-tested. The flow was proven by hand against `cloudbet-native` this session — this plan only codifies it, folding in the two learnings (robust gcloud read; agent creds are on-box, not in Secret Manager).
 
 **Tech Stack:** Node ESM (`node:test`, `execFileSync`), gcloud CLI, docker compose. Skill format matches `skills/bug-triage/SKILL.md` (frontmatter: `name`/`description`/`trigger`).
 
 > **Validated facts (from the live run this session):**
+>
 > - 3 gate secrets in Secret Manager: `google-oauth-client` (format `CLIENT_ID|CLIENT_SECRET`), `jwt-shared-key`, `dashboard-allowlist`. Agent creds (`github-pat`/`claude-oauth-token`) are **on-box**, not fetched.
 > - The stack is `deploy/docker-compose.yml` (ao + caddy + watchtower); Caddy publishes `8443`; `.env` keys: `AO_SECRET_SOURCE`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `JWT_SHARED_KEY`, `ALLOWED_EMAIL_1`, `GITHUB_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `AO_SITE_ADDRESS`, `AO_SITE_URL`, `WATCHTOWER_TOKEN`.
 > - Verification that passed live: `GET / → 302`; `/admin/api/version → 302`; in-container `/healthz` OK; `/auth/oauth2/google → 302 accounts.google.com` with the real client_id.
@@ -35,36 +36,42 @@ import assert from "node:assert/strict";
 import { GATE_SECRETS, parseGoogleClient, buildEnv } from "./lib.mjs";
 
 test("GATE_SECRETS is exactly the three shared gate secrets", () => {
-  assert.deepEqual([...GATE_SECRETS].sort(),
-    ["dashboard-allowlist", "google-oauth-client", "jwt-shared-key"]);
+	assert.deepEqual([...GATE_SECRETS].sort(), ["dashboard-allowlist", "google-oauth-client", "jwt-shared-key"]);
 });
 
 test("parseGoogleClient splits id|secret", () => {
-  const r = parseGoogleClient("123.apps.googleusercontent.com|GOCSPX-abc");
-  assert.equal(r.id, "123.apps.googleusercontent.com");
-  assert.equal(r.secret, "GOCSPX-abc");
+	const r = parseGoogleClient("123.apps.googleusercontent.com|GOCSPX-abc");
+	assert.equal(r.id, "123.apps.googleusercontent.com");
+	assert.equal(r.secret, "GOCSPX-abc");
 });
 
 test("parseGoogleClient trims and tolerates secret containing nothing weird", () => {
-  const r = parseGoogleClient("  id123|sec456  \n");
-  assert.equal(r.id, "id123"); assert.equal(r.secret, "sec456");
+	const r = parseGoogleClient("  id123|sec456  \n");
+	assert.equal(r.id, "id123");
+	assert.equal(r.secret, "sec456");
 });
 
 test("parseGoogleClient throws on missing separator", () => {
-  assert.throws(() => parseGoogleClient("no-separator-here"));
+	assert.throws(() => parseGoogleClient("no-separator-here"));
 });
 
 test("buildEnv renders all keys; agent tokens empty (on-box model)", () => {
-  const env = buildEnv({ googleId: "gid", googleSecret: "gsec", jwt: "jjj", allowlist: "me@x.com", watchtowerToken: "wt" });
-  assert.match(env, /^AO_SECRET_SOURCE=env$/m);
-  assert.match(env, /^GOOGLE_CLIENT_ID=gid$/m);
-  assert.match(env, /^GOOGLE_CLIENT_SECRET=gsec$/m);
-  assert.match(env, /^JWT_SHARED_KEY=jjj$/m);
-  assert.match(env, /^ALLOWED_EMAIL_1=me@x\.com$/m);
-  assert.match(env, /^WATCHTOWER_TOKEN=wt$/m);
-  assert.match(env, /^GITHUB_TOKEN=$/m);            // on-box, intentionally empty
-  assert.match(env, /^CLAUDE_CODE_OAUTH_TOKEN=$/m);  // on-box, intentionally empty
-  assert.match(env, /^AO_SITE_ADDRESS=localhost:8443$/m);
+	const env = buildEnv({
+		googleId: "gid",
+		googleSecret: "gsec",
+		jwt: "jjj",
+		allowlist: "me@x.com",
+		watchtowerToken: "wt",
+	});
+	assert.match(env, /^AO_SECRET_SOURCE=env$/m);
+	assert.match(env, /^GOOGLE_CLIENT_ID=gid$/m);
+	assert.match(env, /^GOOGLE_CLIENT_SECRET=gsec$/m);
+	assert.match(env, /^JWT_SHARED_KEY=jjj$/m);
+	assert.match(env, /^ALLOWED_EMAIL_1=me@x\.com$/m);
+	assert.match(env, /^WATCHTOWER_TOKEN=wt$/m);
+	assert.match(env, /^GITHUB_TOKEN=$/m); // on-box, intentionally empty
+	assert.match(env, /^CLAUDE_CODE_OAUTH_TOKEN=$/m); // on-box, intentionally empty
+	assert.match(env, /^AO_SITE_ADDRESS=localhost:8443$/m);
 });
 ```
 
@@ -76,28 +83,29 @@ test("buildEnv renders all keys; agent tokens empty (on-box model)", () => {
 export const GATE_SECRETS = ["google-oauth-client", "jwt-shared-key", "dashboard-allowlist"];
 
 export function parseGoogleClient(raw) {
-  const v = String(raw ?? "").trim();
-  const i = v.indexOf("|");
-  if (i < 0) throw new Error("google-oauth-client must be 'CLIENT_ID|CLIENT_SECRET'");
-  const id = v.slice(0, i).trim(), secret = v.slice(i + 1).trim();
-  if (!id || !secret) throw new Error("google-oauth-client id or secret is empty");
-  return { id, secret };
+	const v = String(raw ?? "").trim();
+	const i = v.indexOf("|");
+	if (i < 0) throw new Error("google-oauth-client must be 'CLIENT_ID|CLIENT_SECRET'");
+	const id = v.slice(0, i).trim(),
+		secret = v.slice(i + 1).trim();
+	if (!id || !secret) throw new Error("google-oauth-client id or secret is empty");
+	return { id, secret };
 }
 
 export function buildEnv({ googleId, googleSecret, jwt, allowlist, watchtowerToken }) {
-  return [
-    "AO_SECRET_SOURCE=env",
-    `GOOGLE_CLIENT_ID=${googleId}`,
-    `GOOGLE_CLIENT_SECRET=${googleSecret}`,
-    `JWT_SHARED_KEY=${jwt}`,
-    `ALLOWED_EMAIL_1=${allowlist}`,
-    "GITHUB_TOKEN=",                 // agent creds are on-box, not fetched
-    "CLAUDE_CODE_OAUTH_TOKEN=",
-    "AO_SITE_ADDRESS=localhost:8443",
-    "AO_SITE_URL=https://localhost:8443",
-    `WATCHTOWER_TOKEN=${watchtowerToken}`,
-    "",
-  ].join("\n");
+	return [
+		"AO_SECRET_SOURCE=env",
+		`GOOGLE_CLIENT_ID=${googleId}`,
+		`GOOGLE_CLIENT_SECRET=${googleSecret}`,
+		`JWT_SHARED_KEY=${jwt}`,
+		`ALLOWED_EMAIL_1=${allowlist}`,
+		"GITHUB_TOKEN=", // agent creds are on-box, not fetched
+		"CLAUDE_CODE_OAUTH_TOKEN=",
+		"AO_SITE_ADDRESS=localhost:8443",
+		"AO_SITE_URL=https://localhost:8443",
+		`WATCHTOWER_TOKEN=${watchtowerToken}`,
+		"",
+	].join("\n");
 }
 ```
 
@@ -113,13 +121,14 @@ export function buildEnv({ googleId, googleSecret, jwt, allowlist, watchtowerTok
 - [ ] **Step 1: Implement preflight + check + a robust secret reader**
 
 Key requirements (do NOT deviate):
+
 - **Robust read:** `readSecret(name, project)` runs `gcloud secrets versions access latest --secret=<name> --project=<project>` writing **stdout to a temp file** (`execFileSync(..., { stdio: ["ignore", fd, "ignore"] })` or write the buffer then re-check), reads it back, and **throws if empty** — retry once before throwing. (Shell `$(...)` capture proved flaky this session.)
 - `project` resolves from `--project=` arg, else `AO_PROJECT` env, else `gcloud config get-value project`.
 - `preflight`: assert `docker info` works; assert a GCP credential resolves (`gcloud auth print-access-token` succeeds, or ADC, or `AO_GCP_ACCESS_TOKEN`); print the resolved project and ask the human to confirm (print, don't block).
 - `check`: for each `GATE_SECRETS`, `gcloud secrets describe`; print ✓/✗. Exit non-zero if any missing, printing the exact one-time create command for the missing ones (from the design's table). Agent creds are NOT checked.
 
 - [ ] **Step 2: Run against the real project** — `node skills/valhalla-dev-bot/run.mjs preflight` then `... check --project=cloudbet-native`.
-Expected: preflight passes; check reports all 3 gate secrets ✓ (they exist from this session).
+      Expected: preflight passes; check reports all 3 gate secrets ✓ (they exist from this session).
 
 - [ ] **Step 3: Commit** (`feat(skill): run.mjs preflight + secret check`).
 
@@ -141,16 +150,18 @@ Expected: preflight passes; check reports all 3 gate secrets ✓ (they exist fro
   - same on `/admin/api/version` → `302`
   - `docker compose exec -T ao curl -fsS http://127.0.0.1:3001/healthz` → ok
   - `curl -sk -i https://localhost:8443/auth/oauth2/google` → `Location` contains `accounts.google.com` + a non-dummy `client_id`
-  Exit non-zero if any hard check fails.
+    Exit non-zero if any hard check fails.
 
 - [ ] **Step 3: Implement `down`** — `docker compose -f deploy/docker-compose.yml down` (accept `--wipe` → `down -v`).
 
 - [ ] **Step 4: Run the full cycle against the real project**
+
 ```
 node skills/valhalla-dev-bot/run.mjs up --project=cloudbet-native
 node skills/valhalla-dev-bot/run.mjs verify
 node skills/valhalla-dev-bot/run.mjs down
 ```
+
 Expected: stack healthy; verify table all-pass (reproduces today's manual result); clean teardown.
 
 - [ ] **Step 5: Commit** (`feat(skill): run.mjs up/verify/down`).

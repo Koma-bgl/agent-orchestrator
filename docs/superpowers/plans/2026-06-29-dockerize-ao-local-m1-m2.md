@@ -11,13 +11,14 @@
 > **Live-verification amendments (applied & committed during M1/M2 execution).**
 > Two real defects surfaced only when the image was actually built/run; both
 > would also break on the x86 VM, so they are folded into the deploy kit:
+>
 > 1. **Pin `linux/amd64`.** `@aoagents/ao` ships a `linux-x64` binary only (no
 >    `linux-arm64`), so the build fails on arm64 dev machines. The Dockerfile uses
 >    `FROM --platform=linux/amd64` and compose sets `platform: linux/amd64` —
 >    native on the GCE VM + CI ubuntu runner, emulated on Apple Silicon.
-> 2. **Resolve the binary from the shim dir.** The platform binary is a *nested*
+> 2. **Resolve the binary from the shim dir.** The platform binary is a _nested_
 >    optional dep of the global `ao` shim package (`.../@aoagents/ao/node_modules/
->    @aoagents/ao-linux-x64/bin/ao`), not resolvable from `/app`. The entrypoint
+@aoagents/ao-linux-x64/bin/ao`), not resolvable from `/app`. The entrypoint
 >    follows the PATH symlink to the shim and `require.resolve`s with that dir as
 >    the base, then `exec`s the real binary (PID 1, graceful SIGTERM).
 >
@@ -47,6 +48,7 @@ The compose `build.context` is set to **`deploy/`** (the directory holding the D
 The Go daemon's SCM/tracker reads `AO_GITHUB_TOKEN`/`GITHUB_TOKEN`; `gh` reads `GITHUB_TOKEN`. Setting `GITHUB_TOKEN` covers both, so the old `GH_TOKEN` mapping must change. Linear is **not wired** in this Go build yet — keep the mapping (harmless, forward-compatible) but annotate it.
 
 **Files:**
+
 - Modify: `deploy/scripts/resolve-secrets.mjs`
 - Modify (test): `deploy/scripts/resolve-secrets.test.mjs`
 
@@ -56,14 +58,14 @@ In `deploy/scripts/resolve-secrets.test.mjs`, change the `"secret env map covers
 
 ```javascript
 test("secret env map covers the three M2 secrets", () => {
-  assert.deepEqual(secretNames(), ["claude-oauth-token", "github-pat", "linear-api-key"]);
-  assert.equal(SECRET_ENV_MAP["claude-oauth-token"], "CLAUDE_CODE_OAUTH_TOKEN");
-  // GITHUB_TOKEN (not GH_TOKEN): the Go daemon reads AO_GITHUB_TOKEN/GITHUB_TOKEN
-  // and gh reads GITHUB_TOKEN — one var covers both.
-  assert.equal(SECRET_ENV_MAP["github-pat"], "GITHUB_TOKEN");
-  // linear-api-key is mapped but NOT yet consumed by the Go build (no Linear
-  // adapter). Kept forward-compatible; safe to export, simply unused for now.
-  assert.equal(SECRET_ENV_MAP["linear-api-key"], "LINEAR_API_KEY");
+	assert.deepEqual(secretNames(), ["claude-oauth-token", "github-pat", "linear-api-key"]);
+	assert.equal(SECRET_ENV_MAP["claude-oauth-token"], "CLAUDE_CODE_OAUTH_TOKEN");
+	// GITHUB_TOKEN (not GH_TOKEN): the Go daemon reads AO_GITHUB_TOKEN/GITHUB_TOKEN
+	// and gh reads GITHUB_TOKEN — one var covers both.
+	assert.equal(SECRET_ENV_MAP["github-pat"], "GITHUB_TOKEN");
+	// linear-api-key is mapped but NOT yet consumed by the Go build (no Linear
+	// adapter). Kept forward-compatible; safe to export, simply unused for now.
+	assert.equal(SECRET_ENV_MAP["linear-api-key"], "LINEAR_API_KEY");
 });
 ```
 
@@ -78,11 +80,11 @@ In `deploy/scripts/resolve-secrets.mjs`, change the GitHub mapping and add the L
 
 ```javascript
 export const SECRET_ENV_MAP = {
-  "claude-oauth-token": "CLAUDE_CODE_OAUTH_TOKEN",
-  // GITHUB_TOKEN covers both the Go daemon (AO_GITHUB_TOKEN/GITHUB_TOKEN) and gh.
-  "github-pat": "GITHUB_TOKEN",
-  // Not consumed by the Go build yet (no Linear adapter); mapped for forward-compat.
-  "linear-api-key": "LINEAR_API_KEY",
+	"claude-oauth-token": "CLAUDE_CODE_OAUTH_TOKEN",
+	// GITHUB_TOKEN covers both the Go daemon (AO_GITHUB_TOKEN/GITHUB_TOKEN) and gh.
+	"github-pat": "GITHUB_TOKEN",
+	// Not consumed by the Go build yet (no Linear adapter); mapped for forward-compat.
+	"linear-api-key": "LINEAR_API_KEY",
 };
 ```
 
@@ -103,6 +105,7 @@ git commit -m "fix(deploy): map github-pat to GITHUB_TOKEN for the Go daemon"
 ## Task 2: Rewrite the Dockerfile (binary install, no build)
 
 **Files:**
+
 - Replace: `deploy/Dockerfile`
 - Delete: `deploy/Dockerfile.dockerignore` (no longer needed — see Step 2)
 - Create: `deploy/.dockerignore`
@@ -168,10 +171,12 @@ docs
 - [ ] **Step 3: Build the image, verify it builds and the binary runs**
 
 Run:
+
 ```bash
 cd deploy && docker build -t ao-local:dev .
 docker run --rm ao-local:dev /bin/sh -c "ao --version && which tmux git gh claude"
 ```
+
 Expected: image builds; `ao --version` prints a version; all four binaries resolve on PATH.
 
 - [ ] **Step 4: Commit**
@@ -188,6 +193,7 @@ git commit -m "feat(deploy): Go-daemon Dockerfile via prebuilt ao binary"
 Drops all sample-project / baked-config / `--no-restore` logic (Go daemon needs none). Keeps the secret-resolution flow and adds an `AO_GCP_ACCESS_TOKEN` shortcut so the gcp source is testable locally **without** installing gcloud in the image.
 
 **Files:**
+
 - Replace: `deploy/entrypoint.sh`
 
 - [ ] **Step 1: Replace `deploy/entrypoint.sh`**
@@ -272,6 +278,7 @@ git commit -m "feat(deploy): entrypoint launches ao daemon, adds local gcp token
 ## Task 4: Rewrite docker-compose.yml + .env.example
 
 **Files:**
+
 - Replace: `deploy/docker-compose.yml`
 - Replace: `deploy/.env.example`
 
@@ -336,6 +343,7 @@ git commit -m "feat(deploy): compose for the daemon (no published port, .ao volu
 ## Task 5: Remove obsolete TS-architecture artifacts
 
 **Files:**
+
 - Delete: `deploy/default-config/` (baked `agent-orchestrator.yaml` — Go daemon needs none)
 
 - [ ] **Step 1: Remove the baked-config dir**
@@ -375,10 +383,12 @@ docker compose up -d --build
 - [ ] **Step 2: Wait for health, confirm the daemon is live**
 
 Run:
+
 ```bash
 docker compose ps                      # STATUS should reach "healthy"
 docker compose exec ao curl -fsS http://127.0.0.1:3001/healthz
 ```
+
 Expected: a 200 / JSON health body. (Run from `exec`, not the host — the daemon is loopback-bound.)
 
 - [ ] **Step 3: Confirm the REST API serves**
@@ -400,6 +410,7 @@ docker compose exec ao ps -o pid,comm           # PID 1 should be `ao` (the Go b
 time docker compose stop ao                      # should return in ~1-2s, well under the 10s SIGKILL timeout
 docker compose logs ao | tail -20                # should show the daemon's graceful-shutdown log, no SIGKILL
 ```
+
 Expected: PID 1 is `ao`; `docker compose stop` returns quickly; logs show graceful shutdown (and `running.json` is cleaned up). If stop takes ~10s and the process is killed, the exec-the-real-binary fix in Task 3 is not working — stop and debug before proceeding.
 
 - [ ] **Step 6: Tear down**
@@ -417,16 +428,19 @@ Proves both secret sources feed the daemon's environment.
 - [ ] **Step 1: Verify the `env` source passes vars through**
 
 Set a sentinel in `.env` (e.g. `GITHUB_TOKEN=test-sentinel-123`), then:
+
 ```bash
 docker compose up -d --build
 docker compose exec ao printenv GITHUB_TOKEN
 ```
+
 Expected: `test-sentinel-123` (the env-source path exports it for the daemon + agents).
 
 - [ ] **Step 2: Verify the resolver plan output**
 
 Run: `docker compose exec ao node /app/scripts/resolve-secrets.mjs`
 Expected:
+
 ```
 SOURCE=env
 MAP claude-oauth-token CLAUDE_CODE_OAUTH_TOKEN
@@ -437,11 +451,13 @@ MAP linear-api-key LINEAR_API_KEY
 - [ ] **Step 3 (optional, requires a real GCP project): verify the `gcp` source**
 
 With a Secret Manager secret `github-pat` created in your project:
+
 ```bash
 # in .env:  AO_SECRET_SOURCE=gcp  and  AO_GCP_PROJECT=<your-project>
 export AO_GCP_ACCESS_TOKEN="$(gcloud auth print-access-token)"
 docker compose run --rm -e AO_GCP_ACCESS_TOKEN ao printenv GITHUB_TOKEN
 ```
+
 Expected: the secret value from Secret Manager, proving the fetch path without a VM. (Skip if no GCP project handy — the `.env` path is sufficient for M2 sign-off; the metadata path is exercised in Phase 2.)
 
 - [ ] **Step 4: Reset `.env`** back to the committed example (don't commit real/sentinel creds).
@@ -453,6 +469,7 @@ Expected: the secret value from Secret Manager, proving the fetch path without a
 Builds and pushes the image on release so Watchtower (M6) has a `:stable` to watch.
 
 **Files:**
+
 - Create: `.github/workflows/image.yml`
 
 - [ ] **Step 1: Create `.github/workflows/image.yml`**

@@ -26,7 +26,7 @@
 - M1–M4 committed: `deploy/docker-compose.yml` has `ao` (image `ao-local:dev`, `init: true`, `expose: 8080`, `restart: unless-stopped`) and `caddy` (image `ao-caddy:dev`, publishes `8443`, mounts Caddyfile + `./web` + data volumes, `restart: unless-stopped`); top-level `volumes:` has `ao-state`, `caddy-data`, `caddy-config`.
 - On the deployed VM the images will be `ghcr.io/composiohq/agent-orchestrator:stable` (the publish workflow tags `:stable`). Watchtower watches whatever image tag the running container uses, so on the VM it watches `:stable`.
 - Watchtower's schedule is a **6-field cron** (`sec min hr dom mon dow`); `"0 0 0 * * *"` = 00:00:00 daily.
-- Watchtower's HTTP API listens on container port **8080**; `--http-api-update` enables the on-demand `/v1/update` endpoint (token via `WATCHTOWER_HTTP_API_TOKEN`). To keep the schedule running *and* enable the API, set `WATCHTOWER_HTTP_API_PERIODIC_POLLS=true`.
+- Watchtower's HTTP API listens on container port **8080**; `--http-api-update` enables the on-demand `/v1/update` endpoint (token via `WATCHTOWER_HTTP_API_TOKEN`). To keep the schedule running _and_ enable the API, set `WATCHTOWER_HTTP_API_PERIODIC_POLLS=true`.
 - `--label-enable` restricts Watchtower to containers labelled `com.centurylinklabs.watchtower.enable=true`; `--cleanup` removes the old image after an update.
 
 ### File structure
@@ -40,6 +40,7 @@
 ## Task 1: Label the watched services
 
 **Files:**
+
 - Modify: `deploy/docker-compose.yml`
 
 - [ ] **Step 1: Add the watchtower-enable label to `ao` and `caddy`**
@@ -47,8 +48,8 @@
 Add to BOTH the `ao` and `caddy` services:
 
 ```yaml
-    labels:
-      com.centurylinklabs.watchtower.enable: "true"
+labels:
+  com.centurylinklabs.watchtower.enable: "true"
 ```
 
 - [ ] **Step 2: Validate compose**
@@ -68,33 +69,34 @@ git commit -m "feat(deploy): label ao + caddy for watchtower"
 ## Task 2: Add the Watchtower service
 
 **Files:**
+
 - Modify: `deploy/docker-compose.yml`
 
 - [ ] **Step 1: Add the `watchtower` service**
 
 ```yaml
-  watchtower:
-    image: containrrr/watchtower:1.7.1
-    restart: unless-stopped
-    volumes:
-      # Required: Watchtower recreates sibling containers via the Docker API.
-      # This is root-equivalent on the host — the documented trust boundary.
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      # 6-field cron (sec min hr dom mon dow) = 00:00:00 daily.
-      WATCHTOWER_SCHEDULE: "0 0 0 * * *"
-      # Only touch containers we labelled; never update Watchtower itself.
-      WATCHTOWER_LABEL_ENABLE: "true"
-      # Remove the old image after a successful update.
-      WATCHTOWER_CLEANUP: "true"
-      # On-demand update API (M5 "update now" calls this); keep the schedule too.
-      WATCHTOWER_HTTP_API_UPDATE: "true"
-      WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_TOKEN:-changeme-local}
-      WATCHTOWER_HTTP_API_PERIODIC_POLLS: "true"
-    # API on container :8080 — exposed to the compose network for M5 only,
-    # NOT published to the host.
-    expose:
-      - "8080"
+watchtower:
+  image: containrrr/watchtower:1.7.1
+  restart: unless-stopped
+  volumes:
+    # Required: Watchtower recreates sibling containers via the Docker API.
+    # This is root-equivalent on the host — the documented trust boundary.
+    - /var/run/docker.sock:/var/run/docker.sock
+  environment:
+    # 6-field cron (sec min hr dom mon dow) = 00:00:00 daily.
+    WATCHTOWER_SCHEDULE: "0 0 0 * * *"
+    # Only touch containers we labelled; never update Watchtower itself.
+    WATCHTOWER_LABEL_ENABLE: "true"
+    # Remove the old image after a successful update.
+    WATCHTOWER_CLEANUP: "true"
+    # On-demand update API (M5 "update now" calls this); keep the schedule too.
+    WATCHTOWER_HTTP_API_UPDATE: "true"
+    WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_TOKEN:-changeme-local}
+    WATCHTOWER_HTTP_API_PERIODIC_POLLS: "true"
+  # API on container :8080 — exposed to the compose network for M5 only,
+  # NOT published to the host.
+  expose:
+    - "8080"
 ```
 
 - [ ] **Step 2: Validate compose**
@@ -119,6 +121,7 @@ git commit -m "feat(deploy): add Watchtower — midnight self-update + on-demand
 ## Task 3: .env.example — Watchtower token
 
 **Files:**
+
 - Modify: `deploy/.env.example`
 
 - [ ] **Step 1: Append**
@@ -142,6 +145,7 @@ git commit -m "docs(deploy): add WATCHTOWER_TOKEN env var"
 ## Task 4: README — self-update section
 
 **Files:**
+
 - Modify: `deploy/README.md`
 
 - [ ] **Step 1: Add an "M6: self-update" section** covering:
@@ -171,6 +175,7 @@ docker compose up -d 2>&1 | tail -5
 sleep 6
 docker compose ps --format '{{.Name}}: {{.Status}}'
 ```
+
 Expected: `ao` healthy, `caddy` up, `watchtower` up.
 
 - [ ] **Step 2: Watchtower scheduled + watching the right containers**
@@ -178,6 +183,7 @@ Expected: `ao` healthy, `caddy` up, `watchtower` up.
 ```bash
 docker compose logs --no-color watchtower | tail -20
 ```
+
 Expected: logs show it started, the **schedule / next run** time, and that it is **watching 2 containers** (ao + caddy) — not watchtower itself. No fatal errors.
 
 - [ ] **Step 3: Forced run-once completes gracefully**
@@ -186,6 +192,7 @@ Expected: logs show it started, the **schedule / next run** time, and that it is
 docker run --rm -e DOCKER_API_VERSION=1.44 -v /var/run/docker.sock:/var/run/docker.sock \
   containrrr/watchtower:1.7.1 --run-once --label-enable 2>&1 | tail -20
 ```
+
 Expected: it inspects the labelled containers and reports **no update / unable to resolve registry for the local `:dev` images** — gracefully (exit without crash). This proves the mechanism runs; the actual pull is a registry-tier behavior. (Acceptable outcomes: "Found 0 containers to update" / "no registry" / "Session done" — what matters is it does not crash and does not tear down the running stack.)
 
 - [ ] **Step 4: Running stack undisturbed**
@@ -194,6 +201,7 @@ Expected: it inspects the labelled containers and reports **no update / unable t
 docker compose ps --format '{{.Name}}: {{.Status}}'
 curl -sk -o /dev/null -w "caddy 8443 -> HTTP %{http_code}\n" https://localhost:8443/
 ```
+
 Expected: `ao`/`caddy` still up; Caddy still answers (302). Watchtower's run-once did not disrupt the stack.
 
 - [ ] **Step 5: (optional) On-demand API reachable from the compose network**
@@ -202,6 +210,7 @@ Expected: `ao`/`caddy` still up; Caddy still answers (302). Watchtower's run-onc
 # From the caddy container (a compose-network sibling), the API requires the token:
 docker compose exec -T caddy sh -c 'wget -qO- --header="Authorization: Bearer ${WATCHTOWER_TOKEN:-changeme-local}" http://watchtower:8080/v1/update 2>&1 | head -3 || echo "(api reachable check)"'
 ```
+
 Expected: best-effort **reachability probe only** (is `watchtower:8080` reachable on the compose net) — NOT an auth-success check: `${WATCHTOWER_TOKEN}` expands in the caddy shell where it's likely unset, falling back to `changeme-local`, which matches the watchtower default only when no real token is set. A 401 here is fine; M5 will own the real authenticated call. Non-blocking.
 
 - [ ] **Step 6: Tear down**
