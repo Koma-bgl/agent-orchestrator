@@ -7,7 +7,8 @@
 // sessions, respect maxSessions, and `ao spawn <issueId>` the new ones. The reaction
 // engine (CI/review) is still handled by `ao lifecycle-worker`; this only spawns.
 import { execFile } from "node:child_process";
-import { writeFileSync, readdirSync, readFileSync, existsSync, rmSync, mkdirSync } from "node:fs";
+import { writeFileSync, readdirSync, readFileSync, existsSync, rmSync, mkdirSync, statSync } from "node:fs";
+import { statfs } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { readConfig, projectBaseDir, generateConfigHash } from "./config-writer.mjs";
@@ -435,7 +436,7 @@ async function autoMergePRs(pid, p, qp, sessions) {
 			mergedPRs.add(r.url);
 			if (r.dead) {
 				// A dead session's status is never refreshed by the lifecycle, so nothing would
-				// ever flip it to merged — write it ourselves so cleanupMerged can reclaim the
+				// ever flip it to merged — write it ourselves so reclaimRetired can reclaim the
 				// worktree + record instead of leaving them behind forever.
 				try {
 					const f = join(projectBaseDir(CONFIG_PATH, p.path), "sessions", r.sid);
@@ -600,51 +601,159 @@ export function archiveSessionRecord(sessDir, sessionId) {
 	return dest;
 }
 
-// Retire sessions whose PR has merged: remove the git worktree (frees disk) and the
-// store record (stops ao-web enriching it). STRICTLY gated on status===merged from BOTH
-// the live list AND the authoritative store file, so a killed-but-unmerged session
-// (e.g. one whose PR is still open) is never touched.
-async function cleanupMerged(pid, p, sessions) {
+// Which retirement path a session qualifies for, or null. Pure + exported for tests.
+//   • "merged": status===merged in BOTH the live list and the authoritative store file.
+//   • "closed": a dead (killed/exited/…) session whose linked PR GitHub reports CLOSED
+//     (rejected/abandoned, never merged). Nothing else ever retires these, so their
+//     worktrees (~2.4GB each with node_modules) accumulate until the disk fills —
+//     observed 2026-09-04: ao-ky at 100% with 3 closed-PR worktrees from August.
+// A live session is never a candidate, whatever its PR says.
+export function retireReason(liveStatus, rec, prState) {
+	if (liveStatus === "merged") return rec?.status === "merged" ? "merged" : null;
+	if (!DEAD.has(liveStatus) || liveStatus === "cleanup") return null;
+	if (!rec || !DEAD.has(rec.status) || !rec.pr) return null;
+	return prState === "CLOSED" ? "closed" : null;
+}
+
+// A closed PR's worktree may only go if it holds nothing the branch on GitHub doesn't:
+// clean tree (the orchestrator's own untracked .ao-task.md excepted) and zero unpushed
+// commits. `unpushed` null (no upstream / git error) is treated as unsafe.
+export function isWorktreeSafeToDrop(porcelain, unpushed) {
+	if (typeof unpushed !== "number" || unpushed !== 0) return false;
+	const lines = String(porcelain || "")
+		.split("\n")
+		.map((l) => l.trimEnd())
+		.filter(Boolean);
+	return lines.every((l) => /^\?\? \.ao-task\.md$/.test(l));
+}
+
+// ao-core writes session records atomically (write <id>.tmp.<pid>.<ts>, rename). When
+// the rename fails (ENOSPC) the tmp file is left behind — hundreds of them once the disk
+// is full. Anything older than an hour is not an in-flight write.
+const TMP_RECORD = /^[^/]+\.tmp\.\d+\.\d+$/;
+export function isStaleTmpRecord(name, mtimeMs, nowMs, maxAgeMs = 3_600_000) {
+	return TMP_RECORD.test(name) && nowMs - mtimeMs > maxAgeMs;
+}
+
+function pruneStaleTmpRecords(sessDir) {
+	let names;
+	try {
+		names = readdirSync(sessDir);
+	} catch {
+		return;
+	}
+	let n = 0;
+	for (const name of names) {
+		const f = join(sessDir, name);
+		try {
+			if (!isStaleTmpRecord(name, statSync(f).mtimeMs, Date.now())) continue;
+			rmSync(f);
+			n++;
+		} catch {
+			/* raced with ao — fine */
+		}
+	}
+	if (n) console.log(`[queue-poller] removed ${n} stale session tmp file(s) from ${sessDir}`);
+}
+
+const CLOSED_CHECK_WINDOW_MS = 600_000; // one `gh pr view` per dead-with-PR session per 10 min
+const closedCheckedAt = new Map(); // `${id}:${issueId}` -> last lookup ms
+
+async function retireSession(p, sessDir, s, rec, reason) {
+	// Kill the tmux session FIRST. Leaving it running leaks an idle claude (RAM)
+	// and — worse — deadlocks spawning: with the record gone, ao reuses this
+	// session id and `tmux new-session` fails with "duplicate session" forever.
+	const tmuxName = rec.tmuxName || s.tmuxName;
+	if (tmuxName)
+		await execFileAsync("tmux", ["kill-session", "-t", tmuxName], { env: process.env, timeout: 15_000 }).catch(
+			() => {},
+		);
+	const wt = rec.worktree;
+	if (wt && existsSync(wt)) {
+		// --force: merged → nothing is lost; closed → gated on isWorktreeSafeToDrop above.
+		// Either way force clears the untracked .ao-task.md that would block removal.
+		await execFileAsync("git", ["-C", p.path, "worktree", "remove", "--force", wt], {
+			env: process.env,
+			timeout: 60_000,
+		}).catch(async (e) => {
+			// A worktree git no longer tracks (record drifted) — just delete the dir.
+			if (/not a working tree|is not a working tree/i.test(String(e.stderr || e.message)))
+				rmSync(wt, { recursive: true, force: true });
+			else throw e;
+		});
+	}
+	archiveSessionRecord(sessDir, s.id); // keep history: sessions/archive/<id>_<ts>
+	rmSync(join(sessDir, s.id)); // remove the session record → ao-web stops listing/enriching it
+	console.log(
+		`[queue-poller] reclaimed ${reason} session ${s.id} (${s.issueId}) — worktree + record removed (record archived)`,
+	);
+}
+
+// Retire sessions whose PR has merged OR closed: remove the git worktree (frees disk)
+// and the store record (stops ao-web enriching it). Merged is gated STRICTLY on
+// status===merged from BOTH the live list AND the authoritative store file; closed is
+// gated on a dead status in both, a fresh `gh pr view` saying CLOSED, and a worktree
+// with nothing unpushed. A live session — or a killed one whose PR is still open — is
+// never touched, so this can run every tick without interrupting work.
+async function reclaimRetired(pid, p, qp, sessions) {
 	const sessDir = join(projectBaseDir(CONFIG_PATH, p.path), "sessions");
+	pruneStaleTmpRecords(sessDir);
+	let rateChecked = false,
+		rateOk = true;
 	for (const s of sessions) {
 		const key = `${s.id}:${s.issueId}`;
-		if (s.projectId !== pid || s.status !== "merged" || reclaimed.has(key)) continue;
+		if (s.projectId !== pid || reclaimed.has(key) || !DEAD.has(s.status)) continue;
 		const f = join(sessDir, s.id);
 		try {
 			if (!existsSync(f)) {
-				reclaimed.add(key);
+				if (s.status === "merged") reclaimed.add(key);
 				continue;
 			}
 			const rec = parseSessionRecord(readFileSync(f, "utf8"));
-			if (rec.status !== "merged") continue; // authoritative store must agree — belt + suspenders
-			// Kill the tmux session FIRST. Leaving it running leaks an idle claude (RAM)
-			// and — worse — deadlocks spawning: with the record gone, ao reuses this
-			// session id and `tmux new-session` fails with "duplicate session" forever.
-			const tmuxName = rec.tmuxName || s.tmuxName;
-			if (tmuxName)
-				await execFileAsync("tmux", ["kill-session", "-t", tmuxName], { env: process.env, timeout: 15_000 }).catch(
-					() => {},
+			let reason = retireReason(s.status, rec, undefined);
+			if (!reason) {
+				// Closed-PR path: needs one GitHub read, throttled + rate-limit gated.
+				if (retireReason(s.status, rec, "CLOSED") !== "closed" || !p.repo) continue;
+				const m = String(rec.pr).match(/\/pull\/(\d+)/);
+				if (!m || Date.now() - (closedCheckedAt.get(key) ?? 0) < CLOSED_CHECK_WINDOW_MS) continue;
+				if (!rateChecked) {
+					rateChecked = true;
+					const r = await graphqlRemaining();
+					rateOk = r == null || r >= (qp?.rateLimitFloor ?? 500);
+				}
+				if (!rateOk) continue;
+				closedCheckedAt.set(key, Date.now());
+				const { stdout } = await execFileAsync(
+					"gh",
+					["pr", "view", m[1], "--repo", p.repo, "--json", "state", "--jq", ".state"],
+					{ env: process.env, timeout: 30_000 },
 				);
-			const wt = rec.worktree;
-			if (wt && existsSync(wt)) {
-				// --force: the branch is merged so nothing is lost; force clears the untracked
-				// .ao-task.md and any build detritus that would otherwise block removal.
-				await execFileAsync("git", ["-C", p.path, "worktree", "remove", "--force", wt], {
-					env: process.env,
-					timeout: 60_000,
-				}).catch(async (e) => {
-					// A worktree git no longer tracks (record drifted) — just delete the dir.
-					if (/not a working tree|is not a working tree/i.test(String(e.stderr || e.message)))
-						rmSync(wt, { recursive: true, force: true });
-					else throw e;
-				});
+				reason = retireReason(s.status, rec, stdout.trim());
+				if (!reason) continue;
+				if (rec.worktree && existsSync(rec.worktree)) {
+					const porcelain = await execFileAsync("git", ["-C", rec.worktree, "status", "--porcelain"], {
+						env: process.env,
+						timeout: 30_000,
+					})
+						.then((r) => r.stdout)
+						.catch(() => null);
+					const unpushed = await execFileAsync("git", ["-C", rec.worktree, "rev-list", "--count", "@{u}..HEAD"], {
+						env: process.env,
+						timeout: 30_000,
+					})
+						.then((r) => Number(r.stdout.trim()))
+						.catch(() => null);
+					if (porcelain == null || !isWorktreeSafeToDrop(porcelain, unpushed)) {
+						console.log(
+							`[queue-poller] not reclaiming ${s.id} (${s.issueId}): PR closed but worktree has local changes/unpushed commits`,
+						);
+						reclaimed.add(key); // don't re-check every window; a human owns this one
+						continue;
+					}
+				}
 			}
-			archiveSessionRecord(sessDir, s.id); // keep history: sessions/archive/<id>_<ts>
-			rmSync(f); // remove the session record → ao-web stops listing/enriching it
+			await retireSession(p, sessDir, s, rec, reason);
 			reclaimed.add(key);
-			console.log(
-				`[queue-poller] reclaimed merged session ${s.id} (${s.issueId}) — worktree + record removed (record archived)`,
-			);
 		} catch (e) {
 			console.log(`[queue-poller] reclaim failed for ${s.id}: ${String(e.stderr || e.message).slice(0, 200)}`);
 		}
@@ -652,6 +761,47 @@ async function cleanupMerged(pid, p, sessions) {
 	await execFileAsync("git", ["-C", p.path, "worktree", "prune"], { env: process.env, timeout: 30_000 }).catch(
 		() => {},
 	);
+}
+
+// --- Disk-pressure gate ---------------------------------------------------------
+// Every spawn costs ~2.4GB (worktree + node_modules) and a full disk kills the sessions
+// already running (claude can't write its transcript — ENOSPC — and ao's atomic record
+// writes fail). So before spawning: if free space on the project volume is under
+// qp.minFreeGb (default 5), first drop the npm cache (safe: only makes the next
+// `npm ci` slower; it was 7GB on ao-ky), and if that's still not enough, skip spawning
+// this tick and say so. Running sessions are never touched.
+export function isLowDisk(freeBytes, minFreeGb) {
+	if (typeof freeBytes !== "number" || !(minFreeGb > 0)) return false;
+	return freeBytes < minFreeGb * 1024 ** 3;
+}
+
+async function freeBytesAt(path) {
+	try {
+		const st = await statfs(path);
+		return Number(st.bavail) * Number(st.bsize);
+	} catch {
+		return null;
+	}
+}
+
+let npmCacheCleanedAt = 0;
+async function diskHasRoomToSpawn(pid, p, qp) {
+	const minFreeGb = qp.minFreeGb ?? 5;
+	let free = await freeBytesAt(p.path);
+	if (!isLowDisk(free, minFreeGb)) return true;
+	if (Date.now() - npmCacheCleanedAt > 3_600_000) {
+		npmCacheCleanedAt = Date.now();
+		console.log(
+			`[queue-poller] ${pid} low disk (${(free / 1024 ** 3).toFixed(1)}GB free < ${minFreeGb}GB) — clearing npm cache`,
+		);
+		await execFileAsync("npm", ["cache", "clean", "--force"], { env: process.env, timeout: 120_000 }).catch(() => {});
+		free = await freeBytesAt(p.path);
+		if (!isLowDisk(free, minFreeGb)) return true;
+	}
+	console.log(
+		`[queue-poller] ${pid} low disk (${(free / 1024 ** 3).toFixed(1)}GB free < ${minFreeGb}GB) — not spawning this tick`,
+	);
+	return false;
 }
 
 // --- Orphan-PR linking -----------------------------------------------------------
@@ -665,7 +815,7 @@ async function cleanupMerged(pid, p, sessions) {
 // no pr= but a branch=, look the PR up by head branch via gh.
 //   • OPEN PR   -> write pr= into the record; ao-web serves it next tick and the
 //     normal orphan-verify path in autoMergePRs takes over.
-//   • MERGED PR -> write pr= AND status=merged, so cleanupMerged reclaims the
+//   • MERGED PR -> write pr= AND status=merged, so reclaimRetired reclaims the
 //     worktree + record on its next pass.
 // Throttled per session; candidates are rare (a handful of terminal records), so
 // this adds at most one gh call per candidate per window.
@@ -947,7 +1097,7 @@ export function classifyPane(text) {
 //
 // Deliberately paranoid — this deletes a branch, so every one of these must hold:
 //   • the session is DEAD (a live agent owns its worktree)
-//   • ...but not merged/cleanup: those belong to cleanupMerged, which archives first
+//   • ...but not merged/cleanup: those belong to reclaimRetired, which archives first
 //   • no pr= linked (linkOrphanPrs runs FIRST, so a real PR is already attached)
 //   • zero commits ahead of the base, clean tree, and no branch on the remote
 // `git` is the authority on the last three; an unreadable git state (null) is unsafe.
@@ -1089,7 +1239,7 @@ async function pollProject(pid, p) {
 	await autoMergePRs(pid, p, qp, sessions); // squash-merge approved+green+clean PRs (if autoMerge)
 	await relayCiFailures(p, qp, sessions); // ao's ci_failed reaction never dispatches — tell the agent ourselves
 	await relayMergeConflicts(p, qp, sessions); // conflicted PRs otherwise idle until a human clicks "ask to fix"
-	await cleanupMerged(pid, p, sessions); // retire merged sessions: free the worktree + stop enrichment
+	await reclaimRetired(pid, p, qp, sessions); // retire merged/closed-PR sessions: free the worktree + stop enrichment
 	await reapDeadBranches(p, sessions, sessDir); // LAST before spawning: free branches dead sessions squat, else their ticket can never respawn
 
 	let issues;
@@ -1100,6 +1250,7 @@ async function pollProject(pid, p) {
 		return;
 	}
 	if (!issues.length) return;
+	if (!(await diskHasRoomToSpawn(pid, p, qp))) return; // a full disk kills the sessions already running
 
 	const live = new Set(
 		sessions.filter((s) => s.issueId && !DEAD.has(s.status)).map((s) => String(s.issueId).toLowerCase()),
