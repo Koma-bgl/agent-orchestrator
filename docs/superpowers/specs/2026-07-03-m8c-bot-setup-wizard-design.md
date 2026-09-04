@@ -18,7 +18,7 @@ auth, no registered project** → "No active sessions" forever.
 A fleet bot boots the daemon (gated, healthy) but is **idle** — nothing to work
 on. Making it useful today requires manual SSH + `gh auth login` + clone +
 `ao project add`. We want an **admin-UI wizard on the bot itself** that walks the
-operator through onboarding a repo, entirely from the browser (the setup *state*
+operator through onboarding a repo, entirely from the browser (the setup _state_
 lives on the bot, so the UI that reads/writes it belongs on the bot).
 
 ## Goals
@@ -45,15 +45,15 @@ lives on the bot, so the UI that reads/writes it belongs on the bot).
 
 ## Key decisions
 
-| Decision | Choice | Rationale |
-|---|---|---|
-| Surface | **Admin-UI wizard** (Setup page in the bot dashboard) + admin-backend endpoints | Setup state lives on the bot; user picked UI over a laptop skill |
-| GitHub auth | **Paste a PAT** (v1); device flow deferred | ~4× less build, no GitHub OAuth App to register; delivers the value (usable bot) now |
-| Where creds live | **On-box** — `gh`/`claude` config dirs on the `/root/.ao` volume | Matches the fleet "agent creds are per-user, on-box, never centralized" model |
+| Decision             | Choice                                                                                                                                                                                                                                                                                                                                                                                                                                 | Rationale                                                                                                      |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Surface              | **Admin-UI wizard** (Setup page in the bot dashboard) + admin-backend endpoints                                                                                                                                                                                                                                                                                                                                                        | Setup state lives on the bot; user picked UI over a laptop skill                                               |
+| GitHub auth          | **Paste a PAT** (v1); device flow deferred                                                                                                                                                                                                                                                                                                                                                                                             | ~4× less build, no GitHub OAuth App to register; delivers the value (usable bot) now                           |
+| Where creds live     | **On-box** — `gh`/`claude` config dirs on the `/root/.ao` volume                                                                                                                                                                                                                                                                                                                                                                       | Matches the fleet "agent creds are per-user, on-box, never centralized" model                                  |
 | Persistence (prereq) | `GH_CONFIG_DIR=/root/.ao/gh` via **Dockerfile `ENV`** (uniform across daemon/agents/admin, zero per-deploy wiring); `gh auth login --with-token --insecure-storage` so the PAT persists as plaintext `hosts.yml` on the volume (no keyring in the slim image — assert it). **Claude/Linear tokens persist via the daemon's project config** (`set-config --env`, stored in the daemon's on-box state on the volume), NOT a config dir. | So Connect-GitHub survives restart + Watchtower recreate; agent tokens ride the daemon's persisted project env |
-| Repo location | Clone to `/root/.ao/projects/<repo>` (on the volume) | Survives restarts; `ao project add --path` points here |
-| Auto-pull | Admin backend **30-min timer**; the load-bearing step is **`git -C <repo> fetch --prune origin`** (new session worktrees are cut from `origin/<branch>` — reviewer-confirmed — so freshness comes from the fetch, not the local checkout), then `--ff-only` update of the checked-out branch. Record `lastPull`/`lastError` in state. | Fetch feeds worktrees; a fetch failure (expired PAT) must be visible, not a silent stall |
-| Project register | `ao project add --path <repo> --worker-agent claude-code` (confirm flags at plan time) | The Go daemon has no yaml; a project == a daemon registration |
+| Repo location        | Clone to `/root/.ao/projects/<repo>` (on the volume)                                                                                                                                                                                                                                                                                                                                                                                   | Survives restarts; `ao project add --path` points here                                                         |
+| Auto-pull            | Admin backend **30-min timer**; the load-bearing step is **`git -C <repo> fetch --prune origin`** (new session worktrees are cut from `origin/<branch>` — reviewer-confirmed — so freshness comes from the fetch, not the local checkout), then `--ff-only` update of the checked-out branch. Record `lastPull`/`lastError` in state.                                                                                                  | Fetch feeds worktrees; a fetch failure (expired PAT) must be visible, not a silent stall                       |
+| Project register     | `ao project add --path <repo> --worker-agent claude-code` (confirm flags at plan time)                                                                                                                                                                                                                                                                                                                                                 | The Go daemon has no yaml; a project == a daemon registration                                                  |
 
 ## Architecture
 
@@ -61,26 +61,30 @@ Extends the co-located admin backend (`deploy/admin/server.mjs`) and the SPA
 (`deploy/web/`). All endpoints are behind the fleet auth gate already.
 
 ### New admin endpoints (on-box actions in the `ao` container)
-| Endpoint | Does |
-|---|---|
-| `GET /admin/api/setup` | The wizard's state: `{github:{connected,login}, repo:{name,path}|null, project:{registered,id}|null, autopull:{enabled,lastPull,lastError}, claude:bool, linear:bool}` — derive `github` from **`gh auth status`** (never read/echo `hosts.yml` or the token), project from the daemon's `GET /api/v1/projects`, and the rest from `/root/.ao/setup-state.json`. Surface **auto-pull last-run status/error** so a stalled pull (e.g. expired PAT) is visible, not silent. |
-| `POST /admin/api/github/connect` | body `{pat}` → `gh auth login --with-token` (writes to `GH_CONFIG_DIR`) → verify `gh auth status`; never echo the PAT |
-| `GET /admin/api/github/repos` | `gh repo list --json nameWithOwner,url,updatedAt` for the picker (paginate/search) |
-| `POST /admin/api/project/setup` | body `{repo, autopull}` → clone to `/root/.ao/projects/<repo>` (skip if present), enable the auto-pull timer, `ao project add`, persist `setup-state.json` |
-| `POST /admin/api/agent-token` | body `{which:"claude"\|"linear", value}` → store as a **project env var** via `ao project set-config --env KEY=VALUE` (the daemon forwards it into spawned sessions and persists it in its on-box state) — NOT a config-dir file, NOT Secret Manager. **Claude → `CLAUDE_CODE_OAUTH_TOKEN`** (the agent's actual auth is this env var, NOT a `CLAUDE_CONFIG_DIR` file — reviewer-confirmed); Linear → its confirmed env var (from the capabilities investigation). Never log the body. |
+
+| Endpoint                         | Does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /admin/api/setup`           | The wizard's state: `{github:{connected,login}, repo:{name,path}                                                                                                                                                                                                                                                                                                                                                                                                                       | null, project:{registered,id} | null, autopull:{enabled,lastPull,lastError}, claude:bool, linear:bool}`— derive`github` from **`gh auth status`** (never read/echo `hosts.yml`or the token), project from the daemon's`GET /api/v1/projects`, and the rest from `/root/.ao/setup-state.json`. Surface **auto-pull last-run status/error** so a stalled pull (e.g. expired PAT) is visible, not silent. |
+| `POST /admin/api/github/connect` | body `{pat}` → `gh auth login --with-token` (writes to `GH_CONFIG_DIR`) → verify `gh auth status`; never echo the PAT                                                                                                                                                                                                                                                                                                                                                                  |
+| `GET /admin/api/github/repos`    | `gh repo list --json nameWithOwner,url,updatedAt` for the picker (paginate/search)                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `POST /admin/api/project/setup`  | body `{repo, autopull}` → clone to `/root/.ao/projects/<repo>` (skip if present), enable the auto-pull timer, `ao project add`, persist `setup-state.json`                                                                                                                                                                                                                                                                                                                             |
+| `POST /admin/api/agent-token`    | body `{which:"claude"\|"linear", value}` → store as a **project env var** via `ao project set-config --env KEY=VALUE` (the daemon forwards it into spawned sessions and persists it in its on-box state) — NOT a config-dir file, NOT Secret Manager. **Claude → `CLAUDE_CODE_OAUTH_TOKEN`** (the agent's actual auth is this env var, NOT a `CLAUDE_CONFIG_DIR` file — reviewer-confirmed); Linear → its confirmed env var (from the capabilities investigation). Never log the body. |
 
 ### The Setup page (SPA)
+
 A dedicated **`/setup` view** (also answers the earlier "admin on its own page"
 ask — move Version/Update there too, off the session list). A 5-step checklist,
 each row showing state + its action:
+
 1. **GitHub** — “Connected as `<login>`” or a PAT paste box + Connect.
 2. **Repo** — the picked repo, or a searchable list (from `/github/repos`) + paste-URL fallback.
 3. **Clone & auto-pull** — clone status + a 30-min-refresh toggle.
 4. **Project** — “Registered as `<id>`” or an Add-project button.
 5. **Tokens** — Claude / Linear connected badges + paste boxes.
-Reads `GET /admin/api/setup` on load; each action re-fetches to update state.
+   Reads `GET /admin/api/setup` on load; each action re-fetches to update state.
 
 ### Prerequisite wiring (this milestone)
+
 - **Dockerfile `ENV GH_CONFIG_DIR=/root/.ao/gh`** (reviewer's recommendation — set
   it in the image so the daemon, its spawned agents, and the admin backend all
   agree with zero per-deploy wiring; env → `entrypoint.sh` → both the exec'd daemon
@@ -93,6 +97,7 @@ Reads `GET /admin/api/setup` on load; each action re-fetches to update state.
 - `git` + `gh` already in the image and usable by the admin backend.
 
 ## Reconciliations (leftovers to fix here)
+
 - **The M5 "Rotate credential" panel targets Secret Manager** (`claude-oauth-token`,
   `github-pat`, `linear-api-key`) — but the fleet model keeps agent creds **on-box**,
   so those Secret-Manager entries are unused by fleet bots. M8c should **repoint
@@ -102,9 +107,10 @@ Reads `GET /admin/api/setup` on load; each action re-fetches to update state.
   exposes the common knob (worker agent) and defaults the rest.
 
 ## Risks / open questions
+
 - **`ao project add` exact flags + whether it needs a remote/branch** — confirm
   against the daemon CLI/API at plan time (I saw `--path/--name/--worker-agent/
-  --orchestrator-agent/--as-workspace`).
+--orchestrator-agent/--as-workspace`).
 - **PAT SSO** — org/private repos with SSO need the PAT authorized for the org
   (a GitHub-side step); surface a clear error if `gh repo list`/clone 403s.
 - **Auto-pull vs active worktrees** — pulling the default branch is safe; but if the
@@ -116,6 +122,7 @@ Reads `GET /admin/api/setup` on load; each action re-fetches to update state.
   re-clone, re-register) since the wizard is stateful and re-entrant.
 
 ## Verification
+
 1. **Local (Mode-2 stack):** the Setup endpoints + page work against the local
    docker-compose bot — connect a PAT, list repos, clone a small test repo, register
    it, confirm `GET /api/v1/sessions`/`projects` reflects it. Persistence: restart the

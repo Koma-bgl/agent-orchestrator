@@ -42,8 +42,8 @@ silently adds your key to project SSH metadata. If `$VM_NAME` doesn't exist,
 the operator hasn't deployed yet — offer to create it, don't fall back to
 another VM.
 
-`--for` rules: only an **admin** passes it, and only to deploy a VM *owned by
-the named teammate*. Never pass `--for` with someone else's email to work
+`--for` rules: only an **admin** passes it, and only to deploy a VM _owned by
+the named teammate_. Never pass `--for` with someone else's email to work
 around a permission error — it changes whose name goes on the VM, not whose
 credentials are used, so it can't fix permissions and risks colliding with
 that person's real VM. If you lack GCP permissions, use the self-service
@@ -62,7 +62,7 @@ fleet admin to allowlist their email — never partial/manual provisioning
 The checks below apply to the **admin path** (`deploy-gcp.sh`) only:
 
 - `gcloud auth list` — an active account with compute + DNS + Secret Manager
-  permissions on the target project (the *deployer's* perms; the operator
+  permissions on the target project (the _deployer's_ perms; the operator
   needs none — see "Deploying for a teammate").
 - GCP project — there is no default. Ask which project and pass
   `--project=<id>` on every command.
@@ -145,6 +145,7 @@ gcloud compute ssh "$VM_NAME" --zone=us-central1-a --project=<gcp-project> --com
   sudo docker logs --tail 20 deploy-ao-1 2>&1 | grep queue-poller
   sudo docker exec deploy-ao-1 gh api rate_limit --jq .resources.graphql.remaining'
 ```
+
 Healthy = 3 containers up; poller active in logs; dashboard reachable over
 HTTPS; terminal connects (WS is `:14801 /ws` via the `/terminal-ws*` Caddy
 rewrite — NOT `:14800`).
@@ -164,6 +165,7 @@ dashboard's "update now"), same drain gate. Also run `./publish-kit.sh` when
 `bootstrap-gcs.sh` / compose files changed, so NEW VMs bootstrap current.
 
 **Single VM, same-day hot fix** — pick the lightest path that ships the change:
+
 - **Poller/admin `.mjs` change only** → hot-swap, zero session impact:
   `gcloud compute scp` the file → `docker cp` into `deploy-ao-1` →
   `node --check` it → `pkill -f queue-poller.mjs` → relaunch:
@@ -180,6 +182,7 @@ dashboard's "update now"), same drain gate. Also run `./publish-kit.sh` when
 ```bash
 ./deploy-gcp.sh destroy --project=<gcp-project> [--for=operator@email] [--index=N]
 ```
+
 Confirm with the operator first — on-box auth tokens and any un-pushed session
 work are destroyed with the VM.
 

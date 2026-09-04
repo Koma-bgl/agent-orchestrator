@@ -11,9 +11,10 @@
 > **⚠️ Top risk — caddy-security DSL drift.** The `security {}` Caddyfile DSL is version-specific. Every Caddyfile change in this plan MUST be validated with `caddy validate` against the pinned custom image before proceeding. If a keyword errors (`crypto key sign-verify`, `transform user`, `acl rule`, `set auth url`, `inject headers with claims`), consult the v1.1.64 docs (authcrunch.com / greenpau/caddy-auth-docs) and adjust — do not guess past a validation failure.
 
 > **Live-verification amendments (applied during execution):**
+>
 > 1. **Caddy version:** `caddy-security@v1.1.64` actually requires **Caddy `v2.11.4`** (+ Go ≥ 1.25.8), not `2.8.4` as the research suggested. The custom image pins `2.11.4` and sets `GOTOOLCHAIN=auto`.
 > 2. **Caddyfile mount:** the compose `caddy` service must mount `./Caddyfile:/etc/caddy/Caddyfile:ro` — without it Caddy runs the stock image's default (file-server welcome page), not our auth+proxy config. Added to Task 4.
-> Both were caught only by the live build/run; verified end-to-end (302→portal, daemon unreachable from host).
+>    Both were caught only by the live build/run; verified end-to-end (302→portal, daemon unreachable from host).
 
 > **Scope (M3, local only):** raw daemon API behind the auth gate at `https://localhost:8443`. NOT in scope: the monitoring SPA (M4), admin ops (M5), Watchtower (M6), real domain + Let's Encrypt TLS (M7). The Caddyfile is parameterized by `{$AO_SITE_ADDRESS}` so M7 swaps localhost→domain with minimal change.
 
@@ -45,6 +46,7 @@
 ## Task 1: socat loopback bridge in the `ao` container
 
 **Files:**
+
 - Modify: `deploy/Dockerfile` (apt install `socat`)
 - Modify: `deploy/entrypoint.sh` (launch socat before the daemon)
 
@@ -83,6 +85,7 @@ sleep 8
 # the bridge port reaches the daemon's API (via socat -> loopback):
 docker compose exec -T ao curl -fsS http://127.0.0.1:8080/healthz
 ```
+
 Expected: `{"status":"ok",...}` (same payload as `:3001/healthz`).
 
 - [ ] **Step 5: Commit**
@@ -97,6 +100,7 @@ git commit -m "feat(deploy): socat loopback bridge so Caddy can reach the daemon
 ## Task 2: Custom Caddy image with caddy-security
 
 **Files:**
+
 - Create: `deploy/caddy/Dockerfile`
 
 - [ ] **Step 1: Write the custom Caddy Dockerfile**
@@ -121,6 +125,7 @@ COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 docker build -t ao-caddy:dev deploy/caddy
 docker run --rm ao-caddy:dev caddy list-modules | grep -Ei 'security|authenticate|authorize'
 ```
+
 Expected: lists `security` (app) + `http.handlers.authenticator`/`authorizer` (or similar `authcrunch`/`authp` modules). If empty, the plugin did not compile in — stop and fix before continuing.
 
 - [ ] **Step 3: Commit**
@@ -135,6 +140,7 @@ git commit -m "feat(deploy): custom Caddy image with caddy-security plugin"
 ## Task 3: Caddyfile — Google OIDC portal + email allowlist + proxy
 
 **Files:**
+
 - Create: `deploy/Caddyfile`
 
 - [ ] **Step 1: Write the Caddyfile (local-first, env-parameterized)**
@@ -224,6 +230,7 @@ docker run --rm \
   -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
   ao-caddy:dev caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 ```
+
 Expected: `Valid configuration`. **If a keyword errors, this is the DSL-drift risk** — consult the v1.1.64 docs and fix the offending directive, then re-run. Do not proceed past a validation error.
 
 - [ ] **Step 3: Commit**
@@ -238,6 +245,7 @@ git commit -m "feat(deploy): Caddyfile with Google OIDC portal + email allowlist
 ## Task 4: docker-compose — add Caddy, expose the bridge
 
 **Files:**
+
 - Modify: `deploy/docker-compose.yml`
 
 - [ ] **Step 1: Expose the bridge port on the `ao` service (compose-network only)**
@@ -245,38 +253,38 @@ git commit -m "feat(deploy): Caddyfile with Google OIDC portal + email allowlist
 In the `ao` service, add (do NOT add a `ports:` mapping — `expose` keeps it off the host):
 
 ```yaml
-    expose:
-      - "8080"
+expose:
+  - "8080"
 ```
 
 - [ ] **Step 2: Add the `caddy` service**
 
 ```yaml
-  caddy:
-    build:
-      context: ./caddy
-    image: ao-caddy:dev
-    depends_on:
-      - ao
-    env_file:
-      - .env
-    environment:
-      # Local defaults; M7 overrides AO_SITE_ADDRESS/AO_SITE_URL with the domain.
-      AO_SITE_ADDRESS: ${AO_SITE_ADDRESS:-localhost:8443}
-      AO_SITE_URL: ${AO_SITE_URL:-https://localhost:8443}
-    ports:
-      - "8443:8443"   # local HTTPS (M7: 80:80 + 443:443)
-    volumes:
-      - caddy-data:/data      # cert/ACME storage; persists internal CA locally
-      - caddy-config:/config
-    restart: unless-stopped
+caddy:
+  build:
+    context: ./caddy
+  image: ao-caddy:dev
+  depends_on:
+    - ao
+  env_file:
+    - .env
+  environment:
+    # Local defaults; M7 overrides AO_SITE_ADDRESS/AO_SITE_URL with the domain.
+    AO_SITE_ADDRESS: ${AO_SITE_ADDRESS:-localhost:8443}
+    AO_SITE_URL: ${AO_SITE_URL:-https://localhost:8443}
+  ports:
+    - "8443:8443" # local HTTPS (M7: 80:80 + 443:443)
+  volumes:
+    - caddy-data:/data # cert/ACME storage; persists internal CA locally
+    - caddy-config:/config
+  restart: unless-stopped
 ```
 
 And add to the top-level `volumes:`:
 
 ```yaml
-  caddy-data:
-  caddy-config:
+caddy-data:
+caddy-config:
 ```
 
 - [ ] **Step 2b: Confirm the daemon port stays unpublished**
@@ -300,6 +308,7 @@ git commit -m "feat(deploy): add Caddy service, expose ao bridge on compose net 
 ## Task 5: .env.example — auth secrets
 
 **Files:**
+
 - Modify: `deploy/.env.example`
 
 - [ ] **Step 1: Append the M3 variables with guidance**
@@ -331,6 +340,7 @@ git commit -m "docs(deploy): add Google auth / JWT / allowlist env vars"
 ## Task 6: README — Google OAuth setup + local test
 
 **Files:**
+
 - Modify: `deploy/README.md`
 
 - [ ] **Step 1: Add an "M3: authenticated access (local)" section** covering:
@@ -364,6 +374,7 @@ docker compose up -d --build
 sleep 10
 docker compose ps
 ```
+
 Expected: `ao` healthy, `caddy` running.
 
 - [ ] **Step 2: Daemon port is NOT reachable from the host**
@@ -372,6 +383,7 @@ Expected: `ao` healthy, `caddy` running.
 curl -s -m 3 http://127.0.0.1:3001/healthz; echo "exit=$?"
 curl -s -m 3 http://127.0.0.1:8080/healthz; echo "exit=$?"
 ```
+
 Expected: both fail to connect (non-zero exit / empty) — neither the daemon nor the bridge is published. Only Caddy's 8443 is.
 
 - [ ] **Step 3: Unauthenticated request is bounced to Google sign-in**
@@ -379,6 +391,7 @@ Expected: both fail to connect (non-zero exit / empty) — neither the daemon no
 ```bash
 curl -sk -i https://localhost:8443/api/v1/sessions | head -20
 ```
+
 Expected: a **302** whose `Location` points at the portal login path (`https://localhost:8443/auth/oauth2/google`) — NOT a `200 {"sessions":...}`. (The redirect is to the portal, not `accounts.google.com` directly; the portal initiates the Google dance only after you follow it, which is why dummy Google creds are fine for this check.) This proves the authorize policy gates the proxied daemon API.
 
 - [ ] **Step 4: The portal route is served**
@@ -386,6 +399,7 @@ Expected: a **302** whose `Location` points at the portal login path (`https://l
 ```bash
 curl -sk -i https://localhost:8443/auth | head -20
 ```
+
 Expected: the authentication portal responds (200 / login UI), not a proxy error.
 
 - [ ] **Step 5: Caddy logs show the security app loaded**
@@ -393,6 +407,7 @@ Expected: the authentication portal responds (200 / login UI), not a proxy error
 ```bash
 docker compose logs --no-color caddy | grep -Ei 'security|authp|authcrunch|provisioned' | head
 ```
+
 Expected: evidence the security app/portal/policy provisioned without error.
 
 - [ ] **Step 6: Tear down**

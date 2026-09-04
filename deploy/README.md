@@ -74,11 +74,11 @@ State persists in the `ao-state` volume (`/root/.ao`).
 
 ### How to get each token
 
-| Token | How |
-|-------|-----|
-| `CLAUDE_CODE_OAUTH_TOKEN` | Run `claude setup-token` locally and paste the long-lived token |
-| `GITHUB_TOKEN` | GitHub → Settings → Developer settings → Personal access tokens; scopes `repo` + `workflow` |
-| `LINEAR_API_KEY` | Linear → Settings → API → Personal API key (not yet consumed by the Go build) |
+| Token                     | How                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------- |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Run `claude setup-token` locally and paste the long-lived token                             |
+| `GITHUB_TOKEN`            | GitHub → Settings → Developer settings → Personal access tokens; scopes `repo` + `workflow` |
+| `LINEAR_API_KEY`          | Linear → Settings → API → Personal API key (not yet consumed by the Go build)               |
 
 ## gcp source — validate Secret Manager without a VM
 
@@ -293,11 +293,13 @@ message tells users to contact — keep it current. Additional bots use `--index
 enforcement (no direct compute perms + a broker) is the M8 fleet model.
 
 **Admin visibility:**
+
 ```bash
 ./deploy-gcp.sh admin-list    # every AO bot: name, owner, created, status, IP
 ./deploy-gcp.sh admin-audit   # authoritative: who actually created VMs (Cloud
                               # Audit Logs, immutable — catches label spoofing)
 ```
+
 (Your own usage vs quota shows in `./deploy-gcp.sh status`.)
 
 **Delete-often friendly:** `destroy` removes the instance and its A-record — the
@@ -306,11 +308,13 @@ changes and `create` is cheap to re-run.
 
 **Agent auth (on-box, after sign-in):** GitHub/Claude are NOT stored centrally —
 SSH in and log in:
+
 ```bash
 gcloud compute ssh ao-<account> --zone=us-central1-a
 sudo docker compose -f /opt/ao/deploy/docker-compose.yml exec ao gh auth login
 sudo docker compose -f /opt/ao/deploy/docker-compose.yml exec ao claude setup-token
 ```
+
 (Until config-dir persistence lands, a VM recreate may drop these — just re-auth.)
 
 **Notes:** the kit is `scp`'d from your local checkout (the deploy branch is
@@ -333,6 +337,7 @@ the fleet allowlist — no portal, no OAuth client, no Console steps, ever.
 ```
 
 **Two once-ever steps for the whole fleet** (the script prints both):
+
 1. Search Console domain verification for `binary-badger.xyz` (if domain mapping
    asks for it).
 2. Register the portal's redirect URI in the OAuth client:

@@ -13,6 +13,7 @@
 > **Model-B compatibility (future fleet SSO, M8):** keep `jwt-shared-key` sourced from Secret Manager (shared) and do **not** hardcode a cookie domain — M7 uses a host-only cookie (single host), M8 will switch to `.<domain>` + a central portal. Nothing here should block that.
 
 ### Key decisions (resolved in brainstorming)
+
 - **Hostname:** `<ip-dashed>.sslip.io` off a **reserved** static IP (stable across recreate). DNS automation deferred (sslip.io needs none).
 - **Max 1/user:** deterministic VM name `ao-<sanitized-account>` + label `ao-owner=<account>`; `create` refuses if one exists.
 - **Ephemeral:** `destroy` = instance only; IP/SA/secrets/firewall persist.
@@ -21,6 +22,7 @@
 - **One-time manual:** add `https://<ip>.sslip.io/auth/oauth2/google/authorization-code-callback` to the OAuth client (printed by `init`).
 
 ### File structure
+
 - Create `deploy/deploy-gcp.sh` — `init | create | destroy | status` (+ pure helpers).
 - Create `deploy/deploy-gcp.test.mjs` — unit tests for the pure helpers (sanitize, ip→host).
 - Create `deploy/startup-script.sh` — VM boot: install Docker + gcloud.
@@ -44,19 +46,21 @@ import assert from "node:assert/strict";
 import { vmName, ownerLabel, sslipHost, redirectUri } from "./gcp-lib.mjs";
 
 test("vmName sanitizes a gcloud account to a valid GCE name", () => {
-  assert.equal(vmName("ky@chaostheory.hk"), "ao-ky-chaostheory-hk");
-  // GCE names: lowercase, [a-z0-9-], start with a letter, <=63 chars
-  assert.match(vmName("A.B+C@x"), /^ao-[a-z0-9-]+$/);
+	assert.equal(vmName("ky@chaostheory.hk"), "ao-ky-chaostheory-hk");
+	// GCE names: lowercase, [a-z0-9-], start with a letter, <=63 chars
+	assert.match(vmName("A.B+C@x"), /^ao-[a-z0-9-]+$/);
 });
 test("ownerLabel is gcloud-label-safe", () => {
-  assert.match(ownerLabel("ky@chaostheory.hk"), /^[a-z0-9_-]+$/);
+	assert.match(ownerLabel("ky@chaostheory.hk"), /^[a-z0-9_-]+$/);
 });
 test("sslipHost turns an IP into a dashed sslip.io host", () => {
-  assert.equal(sslipHost("34.12.34.56"), "34-12-34-56.sslip.io");
+	assert.equal(sslipHost("34.12.34.56"), "34-12-34-56.sslip.io");
 });
 test("redirectUri builds the OAuth callback for the host", () => {
-  assert.equal(redirectUri("34-12-34-56.sslip.io"),
-    "https://34-12-34-56.sslip.io/auth/oauth2/google/authorization-code-callback");
+	assert.equal(
+		redirectUri("34-12-34-56.sslip.io"),
+		"https://34-12-34-56.sslip.io/auth/oauth2/google/authorization-code-callback",
+	);
 });
 ```
 
@@ -92,10 +96,10 @@ test("redirectUri builds the OAuth callback for the host", () => {
 - [ ] **Step 1: `Caddyfile.public`** — copy `deploy/Caddyfile` and **remove** the local-only bits: drop `http_port 8080` / `https_port 8443` (use default 80/443) and drop `tls internal` (Caddy auto-provisions Let's Encrypt for `{$AO_SITE_ADDRESS}`). Everything else (security block, the `/auth* / /api/* / /admin/api/* / SPA` handles) is identical.
 
 - [ ] **Step 2: `docker-compose.vm.yml`** (override on top of the base file).
-  **⚠️ Compose merges `ports`/`volumes` lists by APPENDING, not replacing** — a naive
-  override would publish `8443` *and* `80/443`, and mount **two** Caddyfiles at
-  `/etc/caddy/Caddyfile`. Use the Compose **`!override` tag** to REPLACE the whole
-  list (requires a modern compose plugin — the VM installs latest):
+      **⚠️ Compose merges `ports`/`volumes` lists by APPENDING, not replacing** — a naive
+      override would publish `8443` _and_ `80/443`, and mount **two** Caddyfiles at
+      `/etc/caddy/Caddyfile`. Use the Compose **`!override` tag** to REPLACE the whole
+      list (requires a modern compose plugin — the VM installs latest):
   - `caddy.ports`: `!override ["80:80", "443:443"]`
   - `caddy.volumes`: `!override` re-listing **all** caddy mounts with the public
     Caddyfile: `./Caddyfile.public:/etc/caddy/Caddyfile:ro`, `./web:/srv:ro`,
@@ -123,7 +127,7 @@ test("redirectUri builds the OAuth callback for the host", () => {
 **Files:** Modify `deploy/deploy-gcp.sh`
 
 - [ ] **Step 1: `create`** (idempotent, enforces max-1):
-  1. **Max-1 check:** `gcloud compute instances list --filter="labels.ao-owner=<label>"` — if a VM exists, print it + its URL and exit non-zero ("you already have a bot; `destroy` first"). 
+  1. **Max-1 check:** `gcloud compute instances list --filter="labels.ao-owner=<label>"` — if a VM exists, print it + its URL and exit non-zero ("you already have a bot; `destroy` first").
   2. Require `init` ran: the reserved IP must exist (else tell them to run `init`).
   3. Create the VM: name `ao-<sanitized>`, `--zone`, `--machine-type=${AO_MACHINE_TYPE:-e2-standard-4}`, `--address=<reserved-ip>`, `--service-account=<SA>`, `--scopes=cloud-platform`, `--tags=ao-bot`, `--labels=ao-owner=<label>`, `--metadata-from-file=startup-script=deploy/startup-script.sh`, a Debian image.
   4. **Wait for SSH** (`gcloud compute ssh … --command=true` retry loop) and for the startup-script to finish (poll for docker ready).
@@ -163,6 +167,7 @@ Not automated (spends real GCP money); run by the operator when ready. Documente
 ---
 
 ## Done criteria
+
 - `deploy/`: `deploy-gcp.sh` (`init`/`create`/`destroy`/`status`), `gcp-lib.mjs` (+ tests), `startup-script.sh`, `Caddyfile.public`, `docker-compose.vm.yml`, README runbook.
 - Helpers unit-tested; scripts pass `bash -n`/shellcheck; public Caddyfile validates; override merges.
 - `create` enforces max-1 and is idempotent; `destroy` is instance-only and idempotent; reserved IP/SA/secrets persist.
@@ -170,4 +175,5 @@ Not automated (spends real GCP money); run by the operator when ready. Documente
 - Live provision is a documented operator runbook (Task 7), Model-B-compatible for the M8 fleet.
 
 ## Out of scope (→ M8 fleet)
+
 Central auth portal, per-user subdomains, shared-SSO cookie, Cloud DNS automation, real-domain TLS, pulling prebuilt `:stable` (vs scp). M7 is the reusable single-bot foundation.

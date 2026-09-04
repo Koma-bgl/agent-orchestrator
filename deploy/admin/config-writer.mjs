@@ -15,16 +15,16 @@ const DEFAULT_DATA_DIR = join(homedir(), ".agent-orchestrator");
 
 /** Parse the config (or an empty skeleton if absent). */
 export function readConfig(configPath) {
-  if (!existsSync(configPath)) return { projects: {} };
-  return parse(readFileSync(configPath, "utf8")) || { projects: {} };
+	if (!existsSync(configPath)) return { projects: {} };
+	return parse(readFileSync(configPath, "utf8")) || { projects: {} };
 }
 
 /** First configured project as {id, project}, or null on an empty bot. */
 export function getFirstProject(configPath) {
-  const cfg = readConfig(configPath);
-  const ids = Object.keys(cfg.projects || {});
-  if (ids.length === 0) return null;
-  return { id: ids[0], project: cfg.projects[ids[0]] };
+	const cfg = readConfig(configPath);
+	const ids = Object.keys(cfg.projects || {});
+	if (ids.length === 0) return null;
+	return { id: ids[0], project: cfg.projects[ids[0]] };
 }
 
 /**
@@ -34,75 +34,81 @@ export function getFirstProject(configPath) {
  * load-time defaults, so we don't write them. Idempotent — re-apply overwrites.
  * Uses parseDocument so any surrounding structure/comments are preserved.
  */
-export function addProject(configPath, { id, repo, path, teamId, labels, statusName, startStatusName, reviewStatusName }) {
-  if (!id || !repo || !path || !teamId) {
-    throw new Error("addProject requires id, repo, path, teamId");
-  }
-  const src = existsSync(configPath) ? readFileSync(configPath, "utf8") : "projects: {}\n";
-  const doc = parseDocument(src);
-  if (!doc.has("projects")) doc.set("projects", {});
-  // The poller matches Linear labels + status by NAME. With no filter it would pick
-  // up ALL of the team's tickets, so a trigger label and/or status scope which
-  // tickets this bot acts on. maxSessions:1 serializes agents — a single agent
-  // session (esp. one running `npm run build`) can use 5-7GB RAM + all cores, so
-  // concurrent builds would OOM the default e2-standard-4 (16GB) VM. Raise only
-  // after sizing the VM (RAM is the binding constraint) + boot disk accordingly.
-  // onStartStatus / onReviewStatus are the Linear columns the poller moves a ticket
-  // to when its agent starts working / opens a PR (0.2.2 ships no status sync, so the
-  // poller does it — see deploy/admin/queue-poller.mjs). Names are per-team; these
-  // defaults match a standard board and are overridable here or in the yaml.
-  // autoMerge: fully autonomous — the poller squash-merges a PR once GitHub reports it
-  // approved + green + clean (readiness read from /api/sessions, no extra API). With
-  // CodeRabbit auto-approve this merges to the default branch with no human review
-  // (operator's explicit choice). ao's own reaction-based auto-merge is unreliable here
-  // (misses the transition), so the poller owns it — see deploy/admin/queue-poller.mjs.
-  // NOTE: no onDoneStatus by default — a merged PR intentionally leaves the ticket at
-  // onReviewStatus so a human owns the final Done call. Set onDoneStatus later to opt in.
-  const queuePoller = {
-    enabled: true,
-    maxSessions: 1,
-    autoMerge: true,
-    onStartStatus: (startStatusName && String(startStatusName).trim()) || "In Progress",
-    onReviewStatus: (reviewStatusName && String(reviewStatusName).trim()) || "Ready for review",
-  };
-  const filters = {};
-  const labelList = (labels || []).map((l) => String(l).trim()).filter(Boolean);
-  if (labelList.length) filters.labels = labelList;
-  const status = statusName && String(statusName).trim();
-  if (status) filters.statusName = status;
-  if (Object.keys(filters).length) queuePoller.filters = filters;
-  // postCreate runs in each fresh worktree after ao creates it. Share the base clone's
-  // node_modules via a SYMLINK (worktrees live on a different volume than the base, so a
-  // hardlink copy can't span filesystems) — but only when the lockfiles match, so a
-  // branch that changed deps falls back to its own `npm ci`. Turns a ~2min install into
-  // an instant symlink for the common case. The base install is warmed on boot by
-  // entrypoint.sh. `; true` so a miss never fails worktree creation.
-  const postCreate = [
-    `BASE=${path}; [ -d "$BASE/node_modules" ] && cmp -s "$BASE/package-lock.json" package-lock.json && ln -sfn "$BASE/node_modules" node_modules; true`,
-  ];
-  doc.setIn(["projects", id], {
-    repo,
-    path,
-    tracker: { plugin: "linear", teamId },
-    postCreate,
-    queuePoller,
-  });
-  // Force block style: a `projects: {}` skeleton is a flow map, so setIn'd children
-  // inherit flow (valid but unreadable). Flip the relevant nodes to block style.
-  const toBlock = (node) => {
-    if (node && typeof node === "object" && "flow" in node) node.flow = false;
-    if (node?.items) for (const it of node.items) toBlock(it.value ?? it);
-  };
-  toBlock(doc.get("projects", true));
-  writeFileSync(configPath, String(doc));
-  return { id, project: readConfig(configPath).projects[id] };
+export function addProject(
+	configPath,
+	{ id, repo, path, teamId, labels, statusName, startStatusName, reviewStatusName },
+) {
+	if (!id || !repo || !path || !teamId) {
+		throw new Error("addProject requires id, repo, path, teamId");
+	}
+	const src = existsSync(configPath) ? readFileSync(configPath, "utf8") : "projects: {}\n";
+	const doc = parseDocument(src);
+	if (!doc.has("projects")) doc.set("projects", {});
+	// The poller matches Linear labels + status by NAME. With no filter it would pick
+	// up ALL of the team's tickets, so a trigger label and/or status scope which
+	// tickets this bot acts on. maxSessions:1 serializes agents — a single agent
+	// session (esp. one running `npm run build`) can use 5-7GB RAM + all cores, so
+	// concurrent builds would OOM the default e2-standard-4 (16GB) VM. Raise only
+	// after sizing the VM (RAM is the binding constraint) + boot disk accordingly.
+	// onStartStatus / onReviewStatus are the Linear columns the poller moves a ticket
+	// to when its agent starts working / opens a PR (0.2.2 ships no status sync, so the
+	// poller does it — see deploy/admin/queue-poller.mjs). Names are per-team; these
+	// defaults match a standard board and are overridable here or in the yaml.
+	// autoMerge: fully autonomous — the poller squash-merges a PR once GitHub reports it
+	// approved + green + clean (readiness read from /api/sessions, no extra API). With
+	// CodeRabbit auto-approve this merges to the default branch with no human review
+	// (operator's explicit choice). ao's own reaction-based auto-merge is unreliable here
+	// (misses the transition), so the poller owns it — see deploy/admin/queue-poller.mjs.
+	// NOTE: no onDoneStatus by default — a merged PR intentionally leaves the ticket at
+	// onReviewStatus so a human owns the final Done call. Set onDoneStatus later to opt in.
+	const queuePoller = {
+		enabled: true,
+		maxSessions: 1,
+		autoMerge: true,
+		onStartStatus: (startStatusName && String(startStatusName).trim()) || "In Progress",
+		onReviewStatus: (reviewStatusName && String(reviewStatusName).trim()) || "Ready for review",
+	};
+	const filters = {};
+	const labelList = (labels || []).map((l) => String(l).trim()).filter(Boolean);
+	if (labelList.length) filters.labels = labelList;
+	const status = statusName && String(statusName).trim();
+	if (status) filters.statusName = status;
+	if (Object.keys(filters).length) queuePoller.filters = filters;
+	// postCreate runs in each fresh worktree after ao creates it. Share the base clone's
+	// node_modules via a SYMLINK (worktrees live on a different volume than the base, so a
+	// hardlink copy can't span filesystems) — but only when the lockfiles match, so a
+	// branch that changed deps falls back to its own `npm ci`. Turns a ~2min install into
+	// an instant symlink for the common case. The base install is warmed on boot by
+	// entrypoint.sh. `; true` so a miss never fails worktree creation.
+	const postCreate = [
+		`BASE=${path}; [ -d "$BASE/node_modules" ] && cmp -s "$BASE/package-lock.json" package-lock.json && ln -sfn "$BASE/node_modules" node_modules; true`,
+	];
+	doc.setIn(["projects", id], {
+		repo,
+		path,
+		tracker: { plugin: "linear", teamId },
+		postCreate,
+		queuePoller,
+	});
+	// Force block style: a `projects: {}` skeleton is a flow map, so setIn'd children
+	// inherit flow (valid but unreadable). Flip the relevant nodes to block style.
+	const toBlock = (node) => {
+		if (node && typeof node === "object" && "flow" in node) node.flow = false;
+		if (node?.items) for (const it of node.items) toBlock(it.value ?? it);
+	};
+	toBlock(doc.get("projects", true));
+	writeFileSync(configPath, String(doc));
+	return { id, project: readConfig(configPath).projects[id] };
 }
 
 // --- lifecycle-worker status (mirrors ao-core getProjectBaseDir) -------------
 
 /** 12-char sha256 of the config file's resolved parent dir (ao-core algorithm). */
 export function generateConfigHash(configPath) {
-  return createHash("sha256").update(dirname(realpathSync(configPath))).digest("hex").slice(0, 12);
+	return createHash("sha256")
+		.update(dirname(realpathSync(configPath)))
+		.digest("hex")
+		.slice(0, 12);
 }
 
 /**
@@ -111,23 +117,23 @@ export function generateConfigHash(configPath) {
  * production uses ao-core's hardcoded ~/.agent-orchestrator.
  */
 export function projectBaseDir(configPath, projectPath, dataDir = DEFAULT_DATA_DIR) {
-  return join(dataDir, `${generateConfigHash(configPath)}-${basename(projectPath)}`);
+	return join(dataDir, `${generateConfigHash(configPath)}-${basename(projectPath)}`);
 }
 
 /** {running, pid} from the worker PID file + a kill(pid,0) liveness probe. */
 export function workerStatus(configPath, projectPath, dataDir) {
-  try {
-    const pidFile = join(projectBaseDir(configPath, projectPath, dataDir), "lifecycle-worker.pid");
-    if (!existsSync(pidFile)) return { running: false, pid: null };
-    const pid = parseInt(readFileSync(pidFile, "utf8").trim(), 10);
-    if (!Number.isFinite(pid)) return { running: false, pid: null };
-    try {
-      process.kill(pid, 0);
-      return { running: true, pid };
-    } catch {
-      return { running: false, pid };
-    }
-  } catch {
-    return { running: false, pid: null };
-  }
+	try {
+		const pidFile = join(projectBaseDir(configPath, projectPath, dataDir), "lifecycle-worker.pid");
+		if (!existsSync(pidFile)) return { running: false, pid: null };
+		const pid = parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+		if (!Number.isFinite(pid)) return { running: false, pid: null };
+		try {
+			process.kill(pid, 0);
+			return { running: true, pid };
+		} catch {
+			return { running: false, pid };
+		}
+	} catch {
+		return { running: false, pid: null };
+	}
 }
