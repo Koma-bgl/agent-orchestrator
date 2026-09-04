@@ -70,6 +70,8 @@ registry_login() {
     | docker login -u oauth2accesstoken --password-stdin https://us-central1-docker.pkg.dev >/dev/null 2>&1
 }
 bash /opt/ao/deploy/scripts/install-registry-login.sh
+# Weekly host-side prune of unused images + build cache (nothing else reclaims them).
+bash /opt/ao/deploy/scripts/install-docker-prune.sh
 
 log "starting the stack…"
 # Registry-first: pull the fleet images so this VM runs (and Watchtower tracks)

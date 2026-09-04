@@ -7,9 +7,13 @@ import {
 	archiveSessionRecord,
 	classifyPane,
 	formatPrTitle,
+	isLowDisk,
 	isReapableRecord,
+	isStaleTmpRecord,
+	isWorktreeSafeToDrop,
 	parseSessionRecord,
 	pickOrphanPr,
+	retireReason,
 	upsertRecordField,
 } from "./queue-poller.mjs";
 
@@ -241,4 +245,96 @@ test("isReapableRecord: a record with no branch or no worktree has nothing to fr
 test("isReapableRecord: unknown git state is treated as unsafe", () => {
 	const rec = { status: "killed", branch: "feat/SPOR-3537", worktree: "/w/val-18" };
 	assert.equal(isReapableRecord(rec, null), false);
+});
+
+// --- Retirement (merged + closed-PR reclaim) --------------------------------------
+
+test("retireReason: merged in live list AND store -> merged", () => {
+	assert.equal(retireReason("merged", { status: "merged" }, undefined), "merged");
+});
+
+test("retireReason: merged live but store disagrees -> null (store is authoritative)", () => {
+	assert.equal(retireReason("merged", { status: "killed" }, undefined), null);
+});
+
+test("retireReason: dead session whose PR is CLOSED -> closed", () => {
+	const rec = { status: "killed", pr: "https://github.com/o/r/pull/1" };
+	assert.equal(retireReason("killed", rec, "CLOSED"), "closed");
+	assert.equal(retireReason("errored", { status: "exited", pr: "x" }, "CLOSED"), "closed");
+});
+
+test("retireReason: dead session with OPEN or MERGED PR is not the closed path", () => {
+	const rec = { status: "killed", pr: "https://github.com/o/r/pull/1" };
+	assert.equal(retireReason("killed", rec, "OPEN"), null);
+	assert.equal(retireReason("killed", rec, "MERGED"), null); // orphan-link flips it to merged first
+	assert.equal(retireReason("killed", rec, undefined), null);
+});
+
+test("retireReason: live session is never retired, even with a CLOSED PR", () => {
+	for (const st of ["working", "review_pending", "stuck", "pr_open", "idle"]) {
+		assert.equal(retireReason(st, { status: st, pr: "x" }, "CLOSED"), null, st);
+	}
+});
+
+test("retireReason: dead session with no PR is never the closed path", () => {
+	assert.equal(retireReason("killed", { status: "killed" }, "CLOSED"), null);
+});
+
+test("retireReason: store says live while list says dead -> null", () => {
+	assert.equal(retireReason("killed", { status: "working", pr: "x" }, "CLOSED"), null);
+});
+
+test("isWorktreeSafeToDrop: clean tree, nothing unpushed -> true", () => {
+	assert.equal(isWorktreeSafeToDrop("", 0), true);
+});
+
+test("isWorktreeSafeToDrop: only the orchestrator's .ao-task.md is untracked -> true", () => {
+	assert.equal(isWorktreeSafeToDrop("?? .ao-task.md\n", 0), true);
+});
+
+test("isWorktreeSafeToDrop: real uncommitted changes -> false", () => {
+	assert.equal(isWorktreeSafeToDrop(" M src/app.ts\n?? .ao-task.md\n", 0), false);
+	assert.equal(isWorktreeSafeToDrop("?? notes.md\n", 0), false);
+});
+
+test("isWorktreeSafeToDrop: unpushed commits -> false", () => {
+	assert.equal(isWorktreeSafeToDrop("", 2), false);
+});
+
+test("isWorktreeSafeToDrop: unknown unpushed count (no upstream) -> false, be conservative", () => {
+	assert.equal(isWorktreeSafeToDrop("", null), false);
+});
+
+// --- Disk pressure gate ----------------------------------------------------------
+
+test("isLowDisk: below the floor -> true, at/above -> false", () => {
+	const GB = 1024 ** 3;
+	assert.equal(isLowDisk(4 * GB, 5), true);
+	assert.equal(isLowDisk(5 * GB, 5), false);
+	assert.equal(isLowDisk(50 * GB, 5), false);
+});
+
+test("isLowDisk: floor <= 0 or unknown free bytes disables the gate", () => {
+	assert.equal(isLowDisk(0, 0), false);
+	assert.equal(isLowDisk(null, 5), false);
+	assert.equal(isLowDisk(undefined, 5), false);
+});
+
+// --- Stale atomic-write leftovers ---------------------------------------------------
+
+test("isStaleTmpRecord: ENOSPC leftover older than an hour -> true", () => {
+	const now = 1_788_500_000_000;
+	assert.equal(isStaleTmpRecord("val-23.tmp.115.1788496006826", now - 2 * 3_600_000, now), true);
+});
+
+test("isStaleTmpRecord: fresh tmp (in-flight atomic write) -> false", () => {
+	const now = 1_788_500_000_000;
+	assert.equal(isStaleTmpRecord("val-23.tmp.115.1788496006826", now - 5_000, now), false);
+});
+
+test("isStaleTmpRecord: real records and the archive dir are never matched", () => {
+	const now = 1_788_500_000_000;
+	assert.equal(isStaleTmpRecord("val-23", 0, now), false);
+	assert.equal(isStaleTmpRecord("archive", 0, now), false);
+	assert.equal(isStaleTmpRecord("val-23.tmp", 0, now), false);
 });
