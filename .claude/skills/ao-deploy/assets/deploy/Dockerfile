@@ -124,7 +124,11 @@ RUN chmod +x /app/entrypoint.sh \
 # symlink, silently dropping the headless dialog gates. AUTOUPDATER kills the
 # background check; UPDATES also blocks an agent running `claude update` by hand.
 # Version bumps happen by editing the pin above and republishing the image.
+# ANTHROPIC_MODEL: fleet-wide default agent model. Without it the pinned CLI falls
+# back to its built-in default (claude-sonnet-5 on 2.1.228). A project's own model
+# override (`claude --model`) still wins over this env var.
 ENV AO_CONFIG_PATH=/root/.agent-orchestrator/agent-orchestrator.yaml \
+    ANTHROPIC_MODEL=claude-sonnet-5-5 \
     IS_SANDBOX=1 \
     DISABLE_AUTOUPDATER=1 \
     DISABLE_UPDATES=1 \
