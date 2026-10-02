@@ -76,7 +76,7 @@ test("FLEET_DOMAIN and AUTH_HOST are consistent", () => {
 ```
 
 - [ ] **Step 2: Run — expect FAIL** (`node --test deploy/gcp-lib.test.mjs`).
-- [ ] **Step 3: Implement** — `export const FLEET_DOMAIN = "binary-badger.xyz"`, `export const AUTH_HOST = \`auth.${FLEET_DOMAIN}\``, `botHost(account, index=1)` = `` `${ownerLabel-style-sanitized}${idx>1?`-${idx}`:""}.${FLEET_DOMAIN}` `` (reuse the sanitizer; DNS label ≤63 chars). Delete `sslipHost`/`redirectUri`. Keep the CLI tail working (`node gcp-lib.mjs botHost ky@x 2`; also expose `AUTH_HOST` via a `fn` like `authHost`).
+- [ ] **Step 3: Implement** — `export const FLEET_DOMAIN = "binary-badger.xyz"`, `export const AUTH_HOST = \`auth.${FLEET_DOMAIN}\``, `botHost(account, index=1)` = `` `${ownerLabel-style-sanitized}${idx>1?`-${idx}`:""}.${FLEET_DOMAIN}` `` (reuse the sanitizer; DNS label ≤63 chars). Delete `sslipHost`/`redirectUri`. Keep the CLI tail working (`node gcp-lib.mjs botHost ky@x 2`; also expose `AUTH_HOST`via a`fn`like`authHost`).
 - [ ] **Step 4: Run — expect PASS.**
 - [ ] **Step 5: Commit** (`feat(deploy): fleet host helpers; drop sslip (TDD)`).
 
